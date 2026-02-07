@@ -568,6 +568,7 @@ std::vector<DatabaseConfig> ConfigLoader::extract_databases(const nlohmann::json
     for (const auto& db : arr) {
         DatabaseConfig cfg;
         cfg.name = json_string(db, "name", "default");
+        cfg.type_str = json_string(db, "type", "postgresql");
         cfg.connection_string = json_string(db, "connection_string", "");
         cfg.min_connections = json_size(db, "min_connections", 2);
         cfg.max_connections = json_size(db, "max_connections", 10);

@@ -82,7 +82,21 @@ RUN mkdir -p build && \
     cmake -DCMAKE_BUILD_TYPE=Release .. && \
     make -j$(nproc)
 
-# Stage 5: Runtime (minimal production image)
+# Stage 5: Build and run unit tests (optional, used by docker compose run tests)
+FROM proxy-builder AS test-builder
+
+# Copy test sources
+COPY tests /build/sql_proxy/tests
+
+# Rebuild with tests enabled (library is already built, only tests compile)
+RUN cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON .. && \
+    make -j$(nproc) sql_proxy_tests
+
+# Run tests
+RUN cd build && ./sql_proxy_tests --reporter compact
+
+# Stage 6: Runtime (minimal production image)
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive

@@ -60,6 +60,37 @@ services:
       - sql_proxy_network
     restart: unless-stopped
 
+  # Unit tests (run with: docker compose run --rm unit-tests)
+  unit-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test-builder
+    container_name: sql_proxy_unit_tests
+    entrypoint: ["/build/sql_proxy/build/sql_proxy_tests"]
+    command: ["--reporter", "compact"]
+    profiles:
+      - test
+
+  # E2E tests (run with: docker compose --profile e2e up --abort-on-container-exit)
+  e2e-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sql_proxy_e2e_tests
+    entrypoint: ["/bin/bash", "/app/test_suite.sh"]
+    volumes:
+      - ./test_suite.sh:/app/test_suite.sh:ro
+    environment:
+      BASE_URL: "http://proxy:8080"
+    depends_on:
+      proxy:
+        condition: service_healthy
+    networks:
+      - sql_proxy_network
+    profiles:
+      - e2e
+
 volumes:
   postgres_data:
     driver: local

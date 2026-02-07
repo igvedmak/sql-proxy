@@ -696,8 +696,20 @@ AnalysisResult SQLAnalyzer::analyze(const ParsedQuery& parsed, void* parse_tree)
     result.sub_type = statement_type_to_string(parsed.type);
 
     if (!parse_tree) {
-        // No parse tree available - return minimal analysis from ParsedQuery
-        result.source_tables = parsed.tables;
+        // No parse tree available - classify tables from ParsedQuery
+        for (const auto& table : parsed.tables) {
+            if ((parsed.type == StatementType::INSERT ||
+                 parsed.type == StatementType::UPDATE ||
+                 parsed.type == StatementType::DELETE) &&
+                result.target_tables.empty()) {
+                result.target_tables.push_back(table);
+                result.table_usage[table.full_name()] = TableUsage::WRITE;
+            } else {
+                result.source_tables.push_back(table);
+                result.table_usage[table.full_name()] = TableUsage::READ;
+            }
+        }
+        result.alias_to_table = build_alias_map(parsed.tables);
         return result;
     }
 

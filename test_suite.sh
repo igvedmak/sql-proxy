@@ -2,7 +2,8 @@
 # SQL Proxy Test Suite
 # Comprehensive tests for all proxy endpoints and functionality
 
-set -e
+# Don't use set -e: tests track pass/fail individually
+set +e
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -16,8 +17,8 @@ PASSED=0
 FAILED=0
 TOTAL=0
 
-# Base URL
-BASE_URL="http://localhost:8080"
+# Base URL (use env var if set, otherwise default to localhost)
+BASE_URL="${BASE_URL:-http://localhost:8080}"
 
 # Test helper function
 run_test() {
@@ -52,6 +53,20 @@ run_test() {
     echo -e "---\n"
     sleep 0.5
 }
+
+# Wait for proxy to be ready
+echo "Waiting for proxy at $BASE_URL ..."
+for i in $(seq 1 30); do
+    if curl -sf "$BASE_URL/health" > /dev/null 2>&1; then
+        echo "Proxy is ready!"
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        echo "ERROR: Proxy not ready after 30s"
+        exit 1
+    fi
+    sleep 1
+done
 
 # Print header
 echo "========================================"

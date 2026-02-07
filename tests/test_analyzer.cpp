@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 #include "analyzer/sql_analyzer.hpp"
-#include "parser/sql_parser.hpp"
 
 using namespace sqlproxy;
 

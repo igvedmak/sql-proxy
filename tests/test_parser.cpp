@@ -1,12 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
-#include "parser/sql_parser.hpp"
+#include "db/postgresql/pg_sql_parser.hpp"
 #include "parser/parse_cache.hpp"
 
 using namespace sqlproxy;
 
-TEST_CASE("SQLParser statement type detection", "[parser]") {
+TEST_CASE("PgSqlParser statement type detection", "[parser]") {
 
-    SQLParser parser;
+    PgSqlParser parser;
 
     SECTION("SELECT statement") {
         auto result = parser.parse("SELECT * FROM users");
@@ -90,9 +90,9 @@ TEST_CASE("SQLParser statement type detection", "[parser]") {
     }
 }
 
-TEST_CASE("SQLParser table extraction", "[parser]") {
+TEST_CASE("PgSqlParser table extraction", "[parser]") {
 
-    SQLParser parser;
+    PgSqlParser parser;
 
     SECTION("Simple SELECT - single table") {
         auto result = parser.parse("SELECT * FROM users");
@@ -199,26 +199,26 @@ TEST_CASE("SQLParser table extraction", "[parser]") {
     }
 }
 
-TEST_CASE("SQLParser error handling", "[parser]") {
+TEST_CASE("PgSqlParser error handling", "[parser]") {
 
-    SQLParser parser;
+    PgSqlParser parser;
 
     SECTION("Empty query returns error") {
         auto result = parser.parse("");
         REQUIRE_FALSE(result.success);
-        REQUIRE(result.error_code == SQLParser::ErrorCode::EMPTY_QUERY);
+        REQUIRE(result.error_code == ISqlParser::ErrorCode::EMPTY_QUERY);
     }
 
     SECTION("Whitespace-only query returns error") {
         auto result = parser.parse("   \t\n  ");
         REQUIRE_FALSE(result.success);
-        REQUIRE(result.error_code == SQLParser::ErrorCode::EMPTY_QUERY);
+        REQUIRE(result.error_code == ISqlParser::ErrorCode::EMPTY_QUERY);
     }
 
     SECTION("Syntax error detected") {
         auto result = parser.parse("SELCT * FORM users");
         REQUIRE_FALSE(result.success);
-        REQUIRE(result.error_code == SQLParser::ErrorCode::SYNTAX_ERROR);
+        REQUIRE(result.error_code == ISqlParser::ErrorCode::SYNTAX_ERROR);
         REQUIRE_FALSE(result.error_message.empty());
     }
 
@@ -234,10 +234,10 @@ TEST_CASE("SQLParser error handling", "[parser]") {
     }
 }
 
-TEST_CASE("SQLParser with cache", "[parser]") {
+TEST_CASE("PgSqlParser with cache", "[parser]") {
 
     auto cache = std::make_shared<ParseCache>(1000, 4);
-    SQLParser parser(cache);
+    PgSqlParser parser(cache);
 
     SECTION("Cache hit returns same result") {
         auto result1 = parser.parse("SELECT * FROM users WHERE id = 1");
@@ -253,24 +253,24 @@ TEST_CASE("SQLParser with cache", "[parser]") {
     }
 
     SECTION("Different queries produce different cache entries") {
-        parser.parse("SELECT * FROM users");
-        parser.parse("SELECT * FROM orders");
+        (void)parser.parse("SELECT * FROM users");
+        (void)parser.parse("SELECT * FROM orders");
 
         auto stats = parser.get_cache_stats();
         REQUIRE(stats.total_entries >= 2);
     }
 
     SECTION("Cache clear works") {
-        parser.parse("SELECT * FROM users");
+        (void)parser.parse("SELECT * FROM users");
         parser.clear_cache();
         auto stats = parser.get_cache_stats();
         REQUIRE(stats.total_entries == 0);
     }
 }
 
-TEST_CASE("SQLParser fingerprint populated", "[parser]") {
+TEST_CASE("PgSqlParser fingerprint populated", "[parser]") {
 
-    SQLParser parser;
+    PgSqlParser parser;
 
     SECTION("Fingerprint hash is set on successful parse") {
         auto result = parser.parse("SELECT * FROM users WHERE id = 42");

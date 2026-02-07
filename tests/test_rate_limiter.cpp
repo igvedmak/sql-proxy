@@ -148,7 +148,7 @@ TEST_CASE("HierarchicalRateLimiter 4-level checks", "[rate_limiter]") {
 
         // Exhaust global bucket
         for (int i = 0; i < 5; ++i) {
-            limiter.check("user" + std::to_string(i), "db" + std::to_string(i));
+            (void)limiter.check("user" + std::to_string(i), "db" + std::to_string(i));
         }
 
         auto result = limiter.check("alice", "mydb");
@@ -246,7 +246,7 @@ TEST_CASE("HierarchicalRateLimiter per-user bucket isolation", "[rate_limiter]")
 
         // Exhaust alice's quota
         for (int i = 0; i < 3; ++i) {
-            limiter.check("alice", "mydb");
+            (void)limiter.check("alice", "mydb");
         }
 
         // Alice should be rate limited
@@ -276,7 +276,7 @@ TEST_CASE("HierarchicalRateLimiter per-database bucket isolation", "[rate_limite
 
         // Exhaust db1's quota
         for (int i = 0; i < 3; ++i) {
-            limiter.check("user" + std::to_string(i), "db1");
+            (void)limiter.check("user" + std::to_string(i), "db1");
         }
 
         // db1 should be rate limited
@@ -378,7 +378,7 @@ TEST_CASE("HierarchicalRateLimiter reset_all", "[rate_limiter]") {
 
         // Exhaust all buckets
         for (int i = 0; i < 5; ++i) {
-            limiter.check("alice", "mydb");
+            (void)limiter.check("alice", "mydb");
         }
 
         // Should be rate limited now
@@ -409,9 +409,9 @@ TEST_CASE("HierarchicalRateLimiter statistics", "[rate_limiter]") {
 
         HierarchicalRateLimiter limiter(config);
 
-        limiter.check("alice", "db1");
-        limiter.check("bob", "db2");
-        limiter.check("charlie", "db1");
+        (void)limiter.check("alice", "db1");
+        (void)limiter.check("bob", "db2");
+        (void)limiter.check("charlie", "db1");
 
         auto stats = limiter.get_stats();
         REQUIRE(stats.total_checks == 3);
@@ -431,11 +431,11 @@ TEST_CASE("HierarchicalRateLimiter statistics", "[rate_limiter]") {
         HierarchicalRateLimiter limiter(config);
 
         // Use up global tokens
-        limiter.check("alice", "db1");
-        limiter.check("bob", "db2");
+        (void)limiter.check("alice", "db1");
+        (void)limiter.check("bob", "db2");
 
         // Next should be rejected at global level
-        limiter.check("charlie", "db3");
+        (void)limiter.check("charlie", "db3");
 
         auto stats = limiter.get_stats();
         REQUIRE(stats.global_rejects >= 1);

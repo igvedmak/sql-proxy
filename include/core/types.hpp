@@ -467,6 +467,7 @@ struct ServerConfig {
 
 struct DatabaseConfig {
     std::string name;
+    std::string type_str = "postgresql";  // Database type string (parsed at use site)
     std::string connection_string;
     size_t min_connections;
     size_t max_connections;

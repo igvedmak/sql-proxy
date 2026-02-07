@@ -1,17 +1,27 @@
 #include "core/pipeline.hpp"
 #include "core/utils.hpp"
+#include "core/database_type.hpp"
 #include "config/config_loader.hpp"
 #include "server/http_server.hpp"
-#include "parser/sql_parser.hpp"
 #include "parser/parse_cache.hpp"
 #include "policy/policy_engine.hpp"
 #include "policy/policy_loader.hpp"
 #include "server/rate_limiter.hpp"
-#include "executor/query_executor.hpp"
+#include "db/backend_registry.hpp"
+#include "db/idb_backend.hpp"
+#include "db/iconnection_pool.hpp"
+#include "db/generic_query_executor.hpp"
 #include "executor/circuit_breaker.hpp"
-#include "executor/connection_pool.hpp"
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
+
+// Force-link backends (auto-register via static init)
+#ifdef ENABLE_POSTGRESQL
+#include "db/postgresql/pg_backend.hpp"
+#endif
+#ifdef ENABLE_MYSQL
+#include "db/mysql/mysql_backend.hpp"
+#endif
 
 #include <memory>
 #include <csignal>
@@ -53,6 +63,7 @@ int main(int argc, char* argv[]) {
         std::vector<Policy> policies;
         std::unordered_map<std::string, UserInfo> users;
         std::string db_conn_string = "postgresql://proxy_user:secure_password@postgres:5432/testdb";
+        std::string db_type_str = "postgresql";
         std::string audit_file = "logs/audit.jsonl";
         AuditConfig audit_config;
 
@@ -61,7 +72,7 @@ int main(int argc, char* argv[]) {
         cache_config.max_entries = 10000;
         cache_config.num_shards = 16;
 
-        ConnectionPool::Config pool_config;
+        PoolConfig pool_config;
         pool_config.connection_string = db_conn_string;
         pool_config.min_connections = 2;
         pool_config.max_connections = 10;
@@ -83,6 +94,7 @@ int main(int argc, char* argv[]) {
             if (!cfg.databases.empty()) {
                 const auto& db = cfg.databases[0];
                 db_conn_string = db.connection_string;
+                db_type_str = db.type_str;
                 pool_config.connection_string = db.connection_string;
                 pool_config.min_connections = db.min_connections;
                 pool_config.max_connections = db.max_connections;
@@ -133,20 +145,27 @@ int main(int argc, char* argv[]) {
             users["auditor"] = UserInfo{"auditor", {"auditor", "readonly"}};
         }
 
-        utils::log::info("[2/8] Parse cache: " + std::to_string(cache_config.max_entries)
+        // Resolve database type
+        DatabaseType db_type = parse_database_type(db_type_str);
+        utils::log::info("[2/8] Database backend: " + std::string(database_type_to_string(db_type)));
+
+        // Create backend via registry
+        auto backend = BackendRegistry::instance().create(db_type);
+
+        utils::log::info("[3/8] Parse cache: " + std::to_string(cache_config.max_entries)
             + " entries, " + std::to_string(cache_config.num_shards) + " shards");
         auto parse_cache = std::make_shared<ParseCache>(
             cache_config.max_entries, cache_config.num_shards);
 
-        utils::log::info("[3/8] SQL parser: libpg_query ready");
-        auto parser = std::make_shared<SQLParser>(parse_cache);
+        utils::log::info("[4/8] SQL parser: " + std::string(database_type_to_string(db_type)) + " ready");
+        auto parser = backend->create_parser(parse_cache);
 
-        utils::log::info("[4/8] Policy engine initializing...");
+        utils::log::info("[5/8] Policy engine initializing...");
         auto policy_engine = std::make_shared<PolicyEngine>();
         policy_engine->load_policies(policies);
         utils::log::info("Policies: " + std::to_string(policy_engine->policy_count()) + " loaded");
 
-        utils::log::info("[5/8] Rate limiter: 4 levels (Global -> User -> DB -> User+DB)");
+        utils::log::info("[6/8] Rate limiter: 4 levels (Global -> User -> DB -> User+DB)");
         auto rate_limiter = std::make_shared<HierarchicalRateLimiter>(rate_config);
 
         // Apply per-user rate limit overrides from config
@@ -165,24 +184,24 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        utils::log::info("[6/8] Connection pool & executor initializing...");
+        utils::log::info("[7/8] Connection pool & executor initializing...");
         std::string db_name = "testdb";
         if (config_result.success && !config_result.config.databases.empty()) {
             db_name = config_result.config.databases[0].name;
         }
 
         auto circuit_breaker = std::make_shared<CircuitBreaker>(db_name);
-        auto pool = std::make_shared<ConnectionPool>(db_name, pool_config, circuit_breaker);
+        auto pool = backend->create_pool(db_name, pool_config, circuit_breaker);
 
-        auto executor = std::make_shared<QueryExecutor>(pool, circuit_breaker);
-        utils::log::info("Executor: PostgreSQL libpq with circuit breaker");
+        auto executor = std::make_shared<GenericQueryExecutor>(pool, circuit_breaker);
+        utils::log::info("Executor: " + std::string(database_type_to_string(db_type)) + " with circuit breaker");
 
-        utils::log::info("[7/8] Classifier & audit initializing...");
+        utils::log::info("[8/8] Classifier & audit initializing...");
         auto classifier = std::make_shared<ClassifierRegistry>();
         auto audit_emitter = std::make_shared<AuditEmitter>(audit_file);
         utils::log::info("Audit: writing to " + audit_file);
 
-        utils::log::info("[8/8] Starting HTTP server...");
+        utils::log::info("Starting HTTP server...");
 
         // Create pipeline
         auto pipeline = std::make_shared<Pipeline>(

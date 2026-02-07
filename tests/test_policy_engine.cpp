@@ -80,7 +80,7 @@ TEST_CASE("PolicyEngine basic ALLOW and BLOCK", "[policy]") {
         engine.load_policies({allow});
 
         auto analysis = make_select_analysis("customers", "public");
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         REQUIRE(result.decision == Decision::ALLOW);
     }
@@ -91,7 +91,7 @@ TEST_CASE("PolicyEngine basic ALLOW and BLOCK", "[policy]") {
         engine.load_policies({block});
 
         auto analysis = make_select_analysis("sensitive_data", "public");
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         REQUIRE(result.decision == Decision::BLOCK);
     }
@@ -100,7 +100,7 @@ TEST_CASE("PolicyEngine basic ALLOW and BLOCK", "[policy]") {
         engine.clear();
 
         auto analysis = make_select_analysis("customers");
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         REQUIRE(result.decision == Decision::BLOCK);
     }
@@ -112,7 +112,7 @@ TEST_CASE("PolicyEngine basic ALLOW and BLOCK", "[policy]") {
 
         // Query accesses 'customers', but only 'orders' policy exists
         auto analysis = make_select_analysis("customers");
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         REQUIRE(result.decision == Decision::BLOCK);
     }
@@ -135,7 +135,7 @@ TEST_CASE("PolicyEngine specificity resolution", "[policy]") {
         engine.load_policies({schema_allow, table_block});
 
         auto analysis = make_select_analysis("sensitive_data", "public");
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         // Table-level specificity (110) > Schema-level (10), so BLOCK wins
         REQUIRE(result.decision == Decision::BLOCK);
@@ -161,7 +161,7 @@ TEST_CASE("PolicyEngine specificity resolution", "[policy]") {
         engine.load_policies({db_allow, schema_block});
 
         auto analysis = make_select_analysis("customers", "secret");
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         REQUIRE(result.decision == Decision::BLOCK);
     }
@@ -176,7 +176,7 @@ TEST_CASE("PolicyEngine specificity resolution", "[policy]") {
         engine.load_policies({allow, block});
 
         auto analysis = make_select_analysis("customers", "public");
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         // At same specificity, BLOCK wins
         REQUIRE(result.decision == Decision::BLOCK);
@@ -197,7 +197,7 @@ TEST_CASE("PolicyEngine multi-table evaluation", "[policy]") {
 
         // Query accesses both customers and sensitive_data
         auto analysis = make_multi_table_analysis({"customers", "sensitive_data"});
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         REQUIRE(result.decision == Decision::BLOCK);
     }
@@ -211,7 +211,7 @@ TEST_CASE("PolicyEngine multi-table evaluation", "[policy]") {
         engine.load_policies({allow_customers, allow_orders});
 
         auto analysis = make_multi_table_analysis({"customers", "orders"});
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         REQUIRE(result.decision == Decision::ALLOW);
     }
@@ -223,7 +223,7 @@ TEST_CASE("PolicyEngine multi-table evaluation", "[policy]") {
 
         // orders has no policy -> default deny
         auto analysis = make_multi_table_analysis({"customers", "orders"});
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
 
         REQUIRE(result.decision == Decision::BLOCK);
     }
@@ -246,11 +246,11 @@ TEST_CASE("PolicyEngine user matching", "[policy]") {
         auto analysis = make_select_analysis("customers", "public");
 
         // Alice should be allowed
-        auto result_alice = engine.evaluate("alice", {}, analysis);
+        auto result_alice = engine.evaluate("alice", {}, "testdb", analysis);
         REQUIRE(result_alice.decision == Decision::ALLOW);
 
         // Bob should be blocked (no matching policy)
-        auto result_bob = engine.evaluate("bob", {}, analysis);
+        auto result_bob = engine.evaluate("bob", {}, "testdb", analysis);
         REQUIRE(result_bob.decision == Decision::BLOCK);
     }
 
@@ -262,9 +262,9 @@ TEST_CASE("PolicyEngine user matching", "[policy]") {
 
         auto analysis = make_select_analysis("customers", "public");
 
-        REQUIRE(engine.evaluate("alice", {}, analysis).decision == Decision::ALLOW);
-        REQUIRE(engine.evaluate("bob", {}, analysis).decision == Decision::ALLOW);
-        REQUIRE(engine.evaluate("charlie", {}, analysis).decision == Decision::ALLOW);
+        REQUIRE(engine.evaluate("alice", {}, "testdb", analysis).decision == Decision::ALLOW);
+        REQUIRE(engine.evaluate("bob", {}, "testdb", analysis).decision == Decision::ALLOW);
+        REQUIRE(engine.evaluate("charlie", {}, "testdb", analysis).decision == Decision::ALLOW);
     }
 }
 
@@ -285,11 +285,11 @@ TEST_CASE("PolicyEngine role matching", "[policy]") {
         auto analysis = make_select_analysis("customers", "public");
 
         // User with analyst role should be allowed
-        auto result = engine.evaluate("alice", {"analyst"}, analysis);
+        auto result = engine.evaluate("alice", {"analyst"}, "testdb", analysis);
         REQUIRE(result.decision == Decision::ALLOW);
 
         // User without analyst role should be blocked
-        auto result2 = engine.evaluate("bob", {"developer"}, analysis);
+        auto result2 = engine.evaluate("bob", {"developer"}, "testdb", analysis);
         REQUIRE(result2.decision == Decision::BLOCK);
     }
 
@@ -306,7 +306,7 @@ TEST_CASE("PolicyEngine role matching", "[policy]") {
         auto analysis = make_select_analysis("sensitive_data", "public");
 
         // User with admin among their roles should match
-        auto result = engine.evaluate("alice", {"developer", "admin"}, analysis);
+        auto result = engine.evaluate("alice", {"developer", "admin"}, "testdb", analysis);
         REQUIRE(result.decision == Decision::ALLOW);
     }
 }
@@ -329,11 +329,11 @@ TEST_CASE("PolicyEngine exclude_roles precedence", "[policy]") {
         auto analysis = make_select_analysis("customers", "public");
 
         // Regular user should be allowed
-        auto result1 = engine.evaluate("alice", {"developer"}, analysis);
+        auto result1 = engine.evaluate("alice", {"developer"}, "testdb", analysis);
         REQUIRE(result1.decision == Decision::ALLOW);
 
         // User with excluded role should be blocked (policy doesn't match them)
-        auto result2 = engine.evaluate("bob", {"intern"}, analysis);
+        auto result2 = engine.evaluate("bob", {"intern"}, "testdb", analysis);
         REQUIRE(result2.decision == Decision::BLOCK);
     }
 
@@ -351,11 +351,11 @@ TEST_CASE("PolicyEngine exclude_roles precedence", "[policy]") {
         auto analysis = make_select_analysis("customers", "public");
 
         // Alice normally allowed
-        auto result1 = engine.evaluate("alice", {}, analysis);
+        auto result1 = engine.evaluate("alice", {}, "testdb", analysis);
         REQUIRE(result1.decision == Decision::ALLOW);
 
         // Alice with suspended role should be blocked
-        auto result2 = engine.evaluate("alice", {"suspended"}, analysis);
+        auto result2 = engine.evaluate("alice", {"suspended"}, "testdb", analysis);
         REQUIRE(result2.decision == Decision::BLOCK);
     }
 }
@@ -371,7 +371,7 @@ TEST_CASE("PolicyEngine utility statements", "[policy]") {
         analysis.statement_type = StatementType::SET;
         // No tables
 
-        auto result = engine.evaluate("alice", {}, analysis);
+        auto result = engine.evaluate("alice", {}, "testdb", analysis);
         REQUIRE(result.decision == Decision::ALLOW);
     }
 }
@@ -386,14 +386,14 @@ TEST_CASE("PolicyEngine reload and clear", "[policy]") {
         engine.load_policies({allow});
 
         auto analysis = make_select_analysis("customers", "public");
-        REQUIRE(engine.evaluate("alice", {}, analysis).decision == Decision::ALLOW);
+        REQUIRE(engine.evaluate("alice", {}, "testdb", analysis).decision == Decision::ALLOW);
 
         // Reload with blocking policy
         Policy block = make_policy("block_customers", Decision::BLOCK,
                                     "customers", "public");
         engine.reload_policies({block});
 
-        REQUIRE(engine.evaluate("alice", {}, analysis).decision == Decision::BLOCK);
+        REQUIRE(engine.evaluate("alice", {}, "testdb", analysis).decision == Decision::BLOCK);
     }
 
     SECTION("Clear removes all policies") {
@@ -405,7 +405,7 @@ TEST_CASE("PolicyEngine reload and clear", "[policy]") {
         REQUIRE(engine.policy_count() == 0);
 
         auto analysis = make_select_analysis("customers", "public");
-        REQUIRE(engine.evaluate("alice", {}, analysis).decision == Decision::BLOCK);
+        REQUIRE(engine.evaluate("alice", {}, "testdb", analysis).decision == Decision::BLOCK);
     }
 }
 

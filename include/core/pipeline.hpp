@@ -3,7 +3,8 @@
 #include "audit/audit_emitter.hpp"
 #include "core/types.hpp"
 #include "core/request_context.hpp"
-#include "parser/sql_parser.hpp"
+#include "db/isql_parser.hpp"
+#include "db/iquery_executor.hpp"
 #include "policy/policy_engine.hpp"
 #include "server/rate_limiter.hpp"
 #include <memory>
@@ -11,7 +12,6 @@
 namespace sqlproxy {
 
 // Forward declarations
-class QueryExecutor;
 class ClassifierRegistry;
 
 /**
@@ -32,10 +32,10 @@ public:
      * @brief Construct pipeline with components
      */
     Pipeline(
-        std::shared_ptr<SQLParser> parser,
+        std::shared_ptr<ISqlParser> parser,
         std::shared_ptr<PolicyEngine> policy_engine,
         std::shared_ptr<HierarchicalRateLimiter> rate_limiter,
-        std::shared_ptr<QueryExecutor> executor,
+        std::shared_ptr<IQueryExecutor> executor,
         std::shared_ptr<ClassifierRegistry> classifier,
         std::shared_ptr<AuditEmitter> audit_emitter
     );
@@ -103,10 +103,10 @@ private:
      */
     ProxyResponse build_response(const RequestContext& ctx);
 
-    const std::shared_ptr<SQLParser> parser_;
+    const std::shared_ptr<ISqlParser> parser_;
     const std::shared_ptr<PolicyEngine> policy_engine_;
     const std::shared_ptr<HierarchicalRateLimiter> rate_limiter_;
-    const std::shared_ptr<QueryExecutor> executor_;
+    const std::shared_ptr<IQueryExecutor> executor_;
     const std::shared_ptr<ClassifierRegistry> classifier_;
     const std::shared_ptr<AuditEmitter> audit_emitter_;
 };

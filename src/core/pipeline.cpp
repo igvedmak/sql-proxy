@@ -1,16 +1,15 @@
 #include "core/pipeline.hpp"
 #include "core/utils.hpp"
-#include "executor/query_executor.hpp"
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
 
 namespace sqlproxy {
 
 Pipeline::Pipeline(
-    std::shared_ptr<SQLParser> parser,
+    std::shared_ptr<ISqlParser> parser,
     std::shared_ptr<PolicyEngine> policy_engine,
     std::shared_ptr<HierarchicalRateLimiter> rate_limiter,
-    std::shared_ptr<QueryExecutor> executor,
+    std::shared_ptr<IQueryExecutor> executor,
     std::shared_ptr<ClassifierRegistry> classifier,
     std::shared_ptr<AuditEmitter> audit_emitter)
     : parser_(std::move(parser)),

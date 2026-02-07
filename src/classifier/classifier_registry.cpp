@@ -263,8 +263,15 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_pattern(
         if (std::regex_search(value, email_regex_)) {
             ++email_matches;
         }
+        // Phone: prevent false positives on long digit strings (credit cards, etc.)
         if (std::regex_search(value, phone_regex_)) {
-            ++phone_matches;
+            size_t digit_count = 0;
+            for (char c : value) {
+                if (std::isdigit(static_cast<unsigned char>(c))) ++digit_count;
+            }
+            if (digit_count <= 11) {  // Phone numbers are max 11 digits (1 + area + number)
+                ++phone_matches;
+            }
         }
         // SSN: regex match + structural validation (no 000/666/9xx area)
         if (std::regex_search(value, ssn_regex_) && validate_ssn(value)) {
@@ -279,17 +286,18 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_pattern(
     // 50% match threshold with ceiling division to handle edge cases
     size_t threshold = (sample_values.size() + 1) / 2;
 
+    // Check most specific (validated) types first to prevent false positives
+    if (static_cast<size_t>(cc_matches) >= threshold) {
+        return ClassificationType::PII_CREDIT_CARD;
+    }
+    if (static_cast<size_t>(ssn_matches) >= threshold) {
+        return ClassificationType::PII_SSN;
+    }
     if (static_cast<size_t>(email_matches) >= threshold) {
         return ClassificationType::PII_EMAIL;
     }
     if (static_cast<size_t>(phone_matches) >= threshold) {
         return ClassificationType::PII_PHONE;
-    }
-    if (static_cast<size_t>(ssn_matches) >= threshold) {
-        return ClassificationType::PII_SSN;
-    }
-    if (static_cast<size_t>(cc_matches) >= threshold) {
-        return ClassificationType::PII_CREDIT_CARD;
     }
 
     return std::nullopt;
