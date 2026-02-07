@@ -1,6 +1,7 @@
 #include "db/generic_query_executor.hpp"
 #include "db/pooled_connection.hpp"
 #include "core/utils.hpp"
+#include <format>
 
 namespace sqlproxy {
 
@@ -18,7 +19,7 @@ QueryResult GenericQueryExecutor::execute(const std::string& sql, StatementType 
         QueryResult result;
         result.success = false;
         result.error_code = ErrorCode::CIRCUIT_OPEN;
-        result.error_message = "Circuit breaker is OPEN for database: " + circuit_breaker_->name();
+        result.error_message = std::format("Circuit breaker is OPEN for database: {}", circuit_breaker_->name());
         return result;
     }
 
@@ -26,30 +27,16 @@ QueryResult GenericQueryExecutor::execute(const std::string& sql, StatementType 
     QueryResult result;
 
     try {
-        switch (stmt_type) {
-            case StatementType::SELECT:
-                result = execute_select(sql);
-                break;
-
-            case StatementType::INSERT:
-            case StatementType::UPDATE:
-            case StatementType::DELETE:
-                result = execute_dml(sql);
-                break;
-
-            case StatementType::CREATE_TABLE:
-            case StatementType::ALTER_TABLE:
-            case StatementType::DROP_TABLE:
-            case StatementType::CREATE_INDEX:
-            case StatementType::DROP_INDEX:
-            case StatementType::TRUNCATE:
-                result = execute_ddl(sql);
-                break;
-
-            default:
-                result.success = false;
-                result.error_code = ErrorCode::INTERNAL_ERROR;
-                result.error_message = "Unsupported statement type";
+        if (stmt_type == StatementType::SELECT) {
+            result = execute_select(sql);
+        } else if (stmt_mask::test(stmt_type, stmt_mask::kDML)) {
+            result = execute_dml(sql);
+        } else if (stmt_mask::test(stmt_type, stmt_mask::kDDL)) {
+            result = execute_ddl(sql);
+        } else {
+            result.success = false;
+            result.error_code = ErrorCode::INTERNAL_ERROR;
+            result.error_message = "Unsupported statement type";
         }
 
         result.execution_time = timer.elapsed_us();
@@ -65,7 +52,7 @@ QueryResult GenericQueryExecutor::execute(const std::string& sql, StatementType 
     } catch (const std::exception& e) {
         result.success = false;
         result.error_code = ErrorCode::DATABASE_ERROR;
-        result.error_message = std::string("Database error: ") + e.what();
+        result.error_message = std::format("Database error: {}", e.what());
         result.execution_time = timer.elapsed_us();
 
         if (circuit_breaker_) {
@@ -109,8 +96,7 @@ QueryResult GenericQueryExecutor::execute_select(const std::string& sql) {
         db_result.rows.size() > config_.max_result_rows) {
         result.success = false;
         result.error_code = ErrorCode::RESULT_TOO_LARGE;
-        result.error_message = "Result set exceeds max_result_rows limit (" +
-                              std::to_string(config_.max_result_rows) + " rows)";
+        result.error_message = std::format("Result set exceeds max_result_rows limit ({} rows)", config_.max_result_rows);
         return result;
     }
 

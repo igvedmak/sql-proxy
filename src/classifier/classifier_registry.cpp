@@ -1,9 +1,12 @@
 #include "classifier/classifier_registry.hpp"
 #include "core/utils.hpp"
+#include <array>
 #include <regex>
 #include <algorithm>
 #include <numeric>
 #include <cctype>
+#include <string_view>
+#include <unordered_set>
 
 namespace sqlproxy {
 
@@ -15,7 +18,7 @@ namespace {
  * @param number String containing only digits
  * @return true if passes Luhn check
  */
-bool luhn_validate(const std::string& number) {
+bool luhn_validate(std::string_view number) {
     // Extract digits only
     std::string digits;
     digits.reserve(number.size());
@@ -54,7 +57,7 @@ bool luhn_validate(const std::string& number) {
  * @brief Validate SSN is not obviously fake
  * SSN cannot start with 000, 666, or 900-999
  */
-bool validate_ssn(const std::string& value) {
+bool validate_ssn(std::string_view value) {
     std::string digits;
     digits.reserve(9);
     for (char c : value) {
@@ -68,22 +71,18 @@ bool validate_ssn(const std::string& value) {
     }
 
     // Area number (first 3) cannot be 000, 666, or 900-999
-    int area = std::stoi(digits.substr(0, 3));
-    if (area == 0 || area == 666 || area >= 900) {
-        return false;
-    }
+    // Use char arithmetic instead of stoi(substr()) to avoid 3 string allocations
+    const int area = (digits[0] - '0') * 100 + (digits[1] - '0') * 10 + (digits[2] - '0');
+    if (area == 0 || area == 666 || area >= 900) return false;
 
     // Group number (middle 2) cannot be 00
-    int group = std::stoi(digits.substr(3, 2));
-    if (group == 0) {
-        return false;
-    }
+    const int group = (digits[3] - '0') * 10 + (digits[4] - '0');
+    if (group == 0) return false;
 
     // Serial number (last 4) cannot be 0000
-    int serial = std::stoi(digits.substr(5, 4));
-    if (serial == 0) {
-        return false;
-    }
+    const int serial = (digits[5] - '0') * 1000 + (digits[6] - '0') * 100
+                     + (digits[7] - '0') * 10 + (digits[8] - '0');
+    if (serial == 0) return false;
 
     return true;
 }
@@ -143,12 +142,20 @@ ClassifierRegistry::ClassifierRegistry() {
 
 ClassificationResult ClassifierRegistry::classify(
     const QueryResult& result,
-    const AnalysisResult& analysis) {
+    const AnalysisResult& analysis) const {
 
     ClassificationResult classification_result;
 
     if (!result.success || result.column_names.empty()) {
         return classification_result;
+    }
+
+    // Pre-compute derived column names for O(1) lookup instead of O(N*M) inner loop
+    std::unordered_set<std::string_view> derived_names;
+    for (const auto& proj : analysis.projections) {
+        if (!proj.derived_from.empty()) {
+            derived_names.insert(proj.name);
+        }
     }
 
     // Phase 1: Classify base columns (non-derived)
@@ -157,15 +164,8 @@ ClassificationResult ClassifierRegistry::classify(
     for (size_t i = 0; i < result.column_names.size(); ++i) {
         const std::string& col_name = result.column_names[i];
 
-        // Skip derived columns (will handle in Phase 2)
-        bool is_derived = false;
-        for (const auto& proj : analysis.projections) {
-            if (proj.name == col_name && !proj.derived_from.empty()) {
-                is_derived = true;
-                break;
-            }
-        }
-        if (is_derived) continue;
+        // Skip derived columns (will handle in Phase 2) - O(1) lookup
+        if (derived_names.count(col_name) > 0) continue;
 
         ColumnClassification classification;
         classification.column_name = col_name;
@@ -226,7 +226,7 @@ ClassificationResult ClassifierRegistry::classify(
     return classification_result;
 }
 
-std::optional<ClassificationType> ClassifierRegistry::classify_by_name(const std::string& col_name) {
+std::optional<ClassificationType> ClassifierRegistry::classify_by_name(const std::string& col_name) const {
     std::string lower = utils::to_lower(col_name);
 
     // Exact match
@@ -246,8 +246,8 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_name(const std
 }
 
 std::optional<ClassificationType> ClassifierRegistry::classify_by_pattern(
-    const std::string& col_name,
-    const std::vector<std::string>& sample_values) {
+    [[maybe_unused]] const std::string& col_name,
+    const std::vector<std::string>& sample_values) const {
 
     if (sample_values.empty()) {
         return std::nullopt;
@@ -306,6 +306,7 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_pattern(
 std::optional<ClassificationType> ClassifierRegistry::classify_by_type_oid(
     const std::string& col_name,
     uint32_t type_oid) {
+    // Note: static method - no member access
 
     std::string lower = utils::to_lower(col_name);
 
@@ -360,36 +361,33 @@ std::optional<ColumnClassification> ClassifierRegistry::classify_derived_column(
 
     // Check ALL source columns for PII (not just first match)
     // Example: CONCAT(first_name, ' ', email) should detect email PII
-    std::vector<ClassificationType> source_types;
+    // Find the most sensitive PII type in a single pass (no intermediate vector)
+    ClassificationType pii_type = ClassificationType::NONE;
     for (const auto& source_col : projection.derived_from) {
         auto it = base_classifications.find(source_col);
-        if (it != base_classifications.end() && it->second != ClassificationType::NONE) {
-            source_types.push_back(it->second);
+        if (it != base_classifications.end() && it->second > pii_type) {
+            pii_type = it->second;
         }
     }
 
-    if (source_types.empty()) {
-        // No PII sources
+    if (pii_type == ClassificationType::NONE) {
         return std::nullopt;
     }
 
-    // Use the most sensitive PII type found (higher enum value = more sensitive)
-    ClassificationType pii_type = *std::max_element(source_types.begin(), source_types.end());
-
     // Analyze expression to determine if PII is preserved or destroyed
-    std::string expr = utils::to_lower(projection.expression);
+    const std::string expr = utils::to_lower(projection.expression);
 
     // PII-destroying functions (aggregation, hashing, length)
-    const std::vector<std::string> destroyers = {
+    // Static to avoid re-creating on every call
+    static const std::array<std::string_view, 14> destroyers = {{
         "length(", "char_length(", "octet_length(",
         "md5(", "sha", "crypt(",
         "count(", "sum(", "avg(", "min(", "max(",
-        "extract(", "date_part("
-    };
+        "extract(", "date_part(", "date_trunc("
+    }};
 
-    for (const auto& func : destroyers) {
+    for (const auto func : destroyers) {
         if (expr.find(func) != std::string::npos) {
-            // PII destroyed by aggregation/hashing
             return std::nullopt;
         }
     }

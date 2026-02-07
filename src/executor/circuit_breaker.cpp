@@ -144,28 +144,23 @@ void CircuitBreaker::reset() {
 }
 
 void CircuitBreaker::trip() {
+    // Try CLOSED → OPEN first
     CircuitState expected = CircuitState::CLOSED;
     if (state_.compare_exchange_strong(expected, CircuitState::OPEN,
                                        std::memory_order_release,
                                        std::memory_order_acquire)) {
-        // Successfully transitioned to OPEN
         auto now = std::chrono::system_clock::now();
-        opened_time_.store(
-            now.time_since_epoch().count(),
-            std::memory_order_release
-        );
+        opened_time_.store(now.time_since_epoch().count(), std::memory_order_release);
+        return;  // Early return - skip HALF_OPEN path
     }
 
-    // Also handle transition from HALF_OPEN to OPEN
+    // Try HALF_OPEN → OPEN (failure during recovery)
     expected = CircuitState::HALF_OPEN;
     if (state_.compare_exchange_strong(expected, CircuitState::OPEN,
                                        std::memory_order_release,
                                        std::memory_order_acquire)) {
         auto now = std::chrono::system_clock::now();
-        opened_time_.store(
-            now.time_since_epoch().count(),
-            std::memory_order_release
-        );
+        opened_time_.store(now.time_since_epoch().count(), std::memory_order_release);
     }
 }
 

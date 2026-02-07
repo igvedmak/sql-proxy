@@ -698,9 +698,7 @@ AnalysisResult SQLAnalyzer::analyze(const ParsedQuery& parsed, void* parse_tree)
     if (!parse_tree) {
         // No parse tree available - classify tables from ParsedQuery
         for (const auto& table : parsed.tables) {
-            if ((parsed.type == StatementType::INSERT ||
-                 parsed.type == StatementType::UPDATE ||
-                 parsed.type == StatementType::DELETE) &&
+            if (stmt_mask::test(parsed.type, stmt_mask::kDML) &&
                 result.target_tables.empty()) {
                 result.target_tables.push_back(table);
                 result.table_usage[table.full_name()] = TableUsage::WRITE;
@@ -721,9 +719,7 @@ AnalysisResult SQLAnalyzer::analyze(const ParsedQuery& parsed, void* parse_tree)
         if (parsed.type == StatementType::SELECT) {
             result.source_tables.push_back(table);
             result.table_usage[table.full_name()] = TableUsage::READ;
-        } else if (parsed.type == StatementType::INSERT ||
-                   parsed.type == StatementType::UPDATE ||
-                   parsed.type == StatementType::DELETE) {
+        } else if (stmt_mask::test(parsed.type, stmt_mask::kDML)) {
             // For DML, first table is target, rest are sources (if INSERT...SELECT)
             if (result.target_tables.empty()) {
                 result.target_tables.push_back(table);

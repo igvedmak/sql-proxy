@@ -11,7 +11,7 @@ namespace sqlproxy {
  * @brief Query fingerprinter - single-pass SQL normalization
  *
  * Transforms SQL queries into canonical form for caching:
- * - Strip comments (block /* * / and line -- \n)
+ * - Strip comments (block and line -- '\n')
  * - Normalize literals: strings → ?, numbers → ?, booleans → ?
  * - Collapse IN-lists: IN (1,2,3,4,5) → IN (?)
  * - Collapse whitespace

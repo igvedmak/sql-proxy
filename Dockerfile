@@ -1,6 +1,6 @@
 # Multi-stage build for SQL Proxy Service with optimized caching
 # Stage 1: Base with system dependencies (cached unless apt packages change)
-FROM ubuntu:22.04 AS base
+FROM ubuntu:24.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     libbrotli-dev \
     uuid-dev \
-    postgresql-server-dev-14 \
+    postgresql-server-dev-16 \
     libpq-dev \
     libjsoncpp-dev \
     curl \
@@ -97,7 +97,7 @@ RUN cd build && \
 RUN cd build && ./sql_proxy_tests --reporter compact
 
 # Stage 6: Runtime (minimal production image)
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 

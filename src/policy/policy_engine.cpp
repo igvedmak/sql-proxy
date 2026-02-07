@@ -180,52 +180,44 @@ PolicyEvaluationResult PolicyEngine::resolve_specificity(
         );
     }
 
-    // Sort by specificity (highest first), then by priority
-    std::vector<const Policy*> sorted_policies = policies;
-    std::sort(sorted_policies.begin(), sorted_policies.end(),
-        [](const Policy* a, const Policy* b) {
-            int spec_a = a->scope.specificity();
-            int spec_b = b->scope.specificity();
-            if (spec_a != spec_b) {
-                return spec_a > spec_b; // Higher specificity first
+    // Cache specificity per policy to avoid recomputation (was called ~2*N*logN + 2*N times)
+    struct RankedPolicy {
+        const Policy* policy;
+        int specificity;
+    };
+
+    std::vector<RankedPolicy> ranked;
+    ranked.reserve(policies.size());
+    for (const auto* p : policies) {
+        ranked.push_back({p, p->scope.specificity()});
+    }
+
+    std::sort(ranked.begin(), ranked.end(),
+        [](const RankedPolicy& a, const RankedPolicy& b) {
+            if (a.specificity != b.specificity) {
+                return a.specificity > b.specificity;
             }
-            return a->priority > b->priority; // Higher priority first
+            return a.policy->priority > b.policy->priority;
         });
 
-    // Get highest specificity
-    int highest_specificity = sorted_policies[0]->scope.specificity();
+    const int highest = ranked[0].specificity;
 
-    // Collect all policies at highest specificity
-    std::vector<const Policy*> highest_spec_policies;
-    for (const auto* policy : sorted_policies) {
-        if (policy->scope.specificity() == highest_specificity) {
-            highest_spec_policies.push_back(policy);
-        }
-    }
-
-    // At same specificity: BLOCK wins over ALLOW
-    for (const auto* policy : highest_spec_policies) {
+    // Single pass: BLOCK wins at highest specificity, track first ALLOW as fallback
+    const Policy* first_allow = nullptr;
+    for (const auto& [policy, spec] : ranked) {
+        if (spec != highest) break;
         if (policy->action == Decision::BLOCK) {
-            return PolicyEvaluationResult(
-                Decision::BLOCK,
-                policy->name,
-                policy->reason
-            );
+            return PolicyEvaluationResult(Decision::BLOCK, policy->name, policy->reason);
+        }
+        if (!first_allow && policy->action == Decision::ALLOW) {
+            first_allow = policy;
         }
     }
 
-    // No BLOCK at highest specificity → first ALLOW wins
-    for (const auto* policy : highest_spec_policies) {
-        if (policy->action == Decision::ALLOW) {
-            return PolicyEvaluationResult(
-                Decision::ALLOW,
-                policy->name,
-                policy->reason
-            );
-        }
+    if (first_allow) {
+        return PolicyEvaluationResult(Decision::ALLOW, first_allow->name, first_allow->reason);
     }
 
-    // Shouldn't reach here, but default deny
     return PolicyEvaluationResult(
         Decision::BLOCK,
         "default_deny",
@@ -235,34 +227,24 @@ PolicyEvaluationResult PolicyEngine::resolve_specificity(
 
 bool PolicyEngine::matches_user(const Policy& policy, const std::string& user,
                                  const std::vector<std::string>& roles) {
-    // Check exclude_roles first (takes precedence)
-    if (!policy.exclude_roles.empty()) {
-        for (const auto& role : roles) {
-            if (policy.exclude_roles.count(role) > 0) {
-                return false; // User has excluded role
-            }
+    // Early exit: Check exclude_roles first (takes precedence)
+    for (const auto& role : roles) {
+        if (policy.exclude_roles.contains(role)) {
+            return false;
         }
     }
 
     // Check user match
-    if (!policy.users.empty() && policy.users.count("*") == 0) {
-        if (policy.users.count(user) == 0) {
-            return false; // User not in policy
-        }
+    if (!policy.users.empty() && !policy.users.contains("*") && !policy.users.contains(user)) {
+        return false;
     }
 
-    // Check role match
+    // Check role match - early return when found
     if (!policy.roles.empty()) {
-        bool role_matched = false;
         for (const auto& role : roles) {
-            if (policy.roles.count(role) > 0) {
-                role_matched = true;
-                break;
-            }
+            if (policy.roles.contains(role)) return true;
         }
-        if (!role_matched) {
-            return false; // No role matched
-        }
+        return false;
     }
 
     return true;
@@ -275,7 +257,7 @@ std::shared_ptr<PolicyEngine::PolicyStore> PolicyEngine::build_store(
 
     for (const auto& policy : policies) {
         // Wildcard user policies
-        if (policy.users.empty() || policy.users.count("*") > 0) {
+        if (policy.users.empty() || policy.users.contains("*")) {
             store->wildcard_trie.insert(policy);
         }
 

@@ -2,8 +2,8 @@
 #include "config/config_loader.hpp"
 #include "core/utils.hpp"
 
+#include <format>
 #include <fstream>
-#include <sstream>
 
 namespace sqlproxy {
 
@@ -15,12 +15,12 @@ PolicyLoader::LoadResult PolicyLoader::load_from_file(const std::string& config_
     // Read file contents
     std::ifstream file(config_path);
     if (!file.is_open()) {
-        return LoadResult::error("Cannot open config file: " + config_path);
+        return LoadResult::error(std::format("Cannot open config file: {}", config_path));
     }
 
-    std::ostringstream buffer;
-    buffer << file.rdbuf();
-    return load_from_string(buffer.str());
+    std::string buffer((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+    return load_from_string(buffer);
 }
 
 // ============================================================================
@@ -151,32 +151,38 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
 // ============================================================================
 
 std::optional<StatementType> PolicyLoader::parse_statement_type(const std::string& type_str) {
-    std::string lower = utils::to_lower(type_str);
+    const std::string lower = utils::to_lower(type_str);
 
-    if (lower == "select") return StatementType::SELECT;
-    if (lower == "insert") return StatementType::INSERT;
-    if (lower == "update") return StatementType::UPDATE;
-    if (lower == "delete") return StatementType::DELETE;
-    if (lower == "create_table") return StatementType::CREATE_TABLE;
-    if (lower == "alter_table") return StatementType::ALTER_TABLE;
-    if (lower == "drop_table") return StatementType::DROP_TABLE;
-    if (lower == "create_index") return StatementType::CREATE_INDEX;
-    if (lower == "drop_index") return StatementType::DROP_INDEX;
-    if (lower == "truncate") return StatementType::TRUNCATE;
-    if (lower == "begin") return StatementType::BEGIN;
-    if (lower == "commit") return StatementType::COMMIT;
-    if (lower == "rollback") return StatementType::ROLLBACK;
+    static const std::unordered_map<std::string, StatementType> lookup = {
+        {"select",       StatementType::SELECT},
+        {"insert",       StatementType::INSERT},
+        {"update",       StatementType::UPDATE},
+        {"delete",       StatementType::DELETE},
+        {"create_table", StatementType::CREATE_TABLE},
+        {"alter_table",  StatementType::ALTER_TABLE},
+        {"drop_table",   StatementType::DROP_TABLE},
+        {"create_index", StatementType::CREATE_INDEX},
+        {"drop_index",   StatementType::DROP_INDEX},
+        {"truncate",     StatementType::TRUNCATE},
+        {"begin",        StatementType::BEGIN},
+        {"commit",       StatementType::COMMIT},
+        {"rollback",     StatementType::ROLLBACK},
+    };
 
-    return std::nullopt;
+    const auto it = lookup.find(lower);
+    return (it != lookup.end()) ? std::make_optional(it->second) : std::nullopt;
 }
 
 std::optional<Decision> PolicyLoader::parse_action(const std::string& action_str) {
-    std::string lower = utils::to_lower(action_str);
+    const std::string lower = utils::to_lower(action_str);
+    
+    static const std::unordered_map<std::string, Decision> lookup = {
+        {"allow", Decision::ALLOW},
+        {"block", Decision::BLOCK},
+    };
 
-    if (lower == "allow") return Decision::ALLOW;
-    if (lower == "block") return Decision::BLOCK;
-
-    return std::nullopt;
+    const auto it = lookup.find(lower);
+    return (it != lookup.end()) ? std::make_optional(it->second) : std::nullopt;
 }
 
 bool PolicyLoader::validate_policy(const Policy& policy, std::string& error_msg) {

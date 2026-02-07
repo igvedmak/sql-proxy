@@ -107,31 +107,9 @@ SQLParser::ParseResult SQLParser::parse_with_libpgquery(
     parsed.type = stmt_type;
     parsed.tables = extract_tables(&parse_result);
 
-    // Determine flags using switch for better branch prediction
-    switch (stmt_type) {
-        case StatementType::INSERT:
-        case StatementType::UPDATE:
-        case StatementType::DELETE:
-        case StatementType::CREATE_TABLE:
-        case StatementType::ALTER_TABLE:
-        case StatementType::DROP_TABLE:
-        case StatementType::TRUNCATE:
-            parsed.is_write = true;
-            parsed.is_transaction = false;
-            break;
-
-        case StatementType::BEGIN:
-        case StatementType::COMMIT:
-        case StatementType::ROLLBACK:
-            parsed.is_write = false;
-            parsed.is_transaction = true;
-            break;
-
-        default:
-            parsed.is_write = false;
-            parsed.is_transaction = false;
-            break;
-    }
+    // Branchless flag classification using bitmask (replaces 15-line switch)
+    parsed.is_write = stmt_mask::test(stmt_type, stmt_mask::kWrite);
+    parsed.is_transaction = stmt_mask::test(stmt_type, stmt_mask::kTransaction);
 
     // Create StatementInfo
     auto statement_info = std::make_shared<StatementInfo>(fingerprint, std::move(parsed));
@@ -243,10 +221,8 @@ static void find_range_vars(const nlohmann::json& node,
         if (node.contains("RangeVar")) {
             const auto& range_var = node["RangeVar"];
 
-            // relname is the required table name field
-            if (!range_var.contains("relname") || !range_var["relname"].is_string()) {
-                // Malformed RangeVar - skip but continue walking
-            } else {
+            // Early continue: skip malformed RangeVar (flattened from nested if-else)
+            if (range_var.contains("relname") && range_var["relname"].is_string()) {
                 std::string table_name = range_var["relname"].get<std::string>();
 
                 // schemaname is optional
@@ -257,18 +233,15 @@ static void find_range_vars(const nlohmann::json& node,
 
                 // alias is optional
                 // libpg_query JSON wraps nodes by type: {"alias": {"Alias": {"aliasname": "..."}}}
-                // Handle both wrapped and unwrapped forms for robustness
                 std::string alias_name;
                 if (range_var.contains("alias") && range_var["alias"].is_object()) {
                     const auto& alias_node = range_var["alias"];
                     if (alias_node.contains("Alias") && alias_node["Alias"].is_object()) {
-                        // Wrapped form: {"alias": {"Alias": {"aliasname": "..."}}}
                         const auto& inner = alias_node["Alias"];
                         if (inner.contains("aliasname") && inner["aliasname"].is_string()) {
                             alias_name = inner["aliasname"].get<std::string>();
                         }
                     } else if (alias_node.contains("aliasname") && alias_node["aliasname"].is_string()) {
-                        // Unwrapped form: {"alias": {"aliasname": "..."}}
                         alias_name = alias_node["aliasname"].get<std::string>();
                     }
                 }

@@ -7,86 +7,81 @@
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "../third_party/cpp-httplib/httplib.h"
 
-#include <sstream>
+#include <format>
 #include <string_view>
 
 namespace sqlproxy {
 
 // Simple JSON parsing/building (would use glaze in production)
 namespace {
-    std::string parse_json_field(std::string_view json, std::string_view field) {
-        // Search for "field" in JSON
-        std::string search;
-        search.reserve(field.size() + 2);
-        search = "\"";
-        search += field;
-        search += "\"";
-
-        size_t pos = json.find(search);
-        if (pos == std::string_view::npos) return "";
-
-        // Find colon after field name
-        pos = json.find(':', pos);
-        if (pos == std::string_view::npos) return "";
-
-        // Find opening quote of value
-        pos = json.find('"', pos);
-        if (pos == std::string_view::npos) return "";
-
-        // Find closing quote of value
-        size_t end = json.find('"', pos + 1);
-        if (end == std::string_view::npos) return "";
-
-        return std::string(json.substr(pos + 1, end - pos - 1));
+    std::string_view parse_json_field(std::string_view json, std::string_view field) {
+        // Optimized: find "field": pattern without creating temporary string
+        char quote_char = '"';
+        
+        // Search for "field" - build search pattern dynamically in stack
+        size_t pos = 0;
+        while ((pos = json.find(quote_char, pos)) != std::string_view::npos) {
+            // Check if this matches our field
+            if (pos + field.size() + 1 < json.size() &&
+                json.substr(pos + 1, field.size()) == field &&
+                json[pos + field.size() + 1] == quote_char) {
+                
+                // Found "field", now find the value
+                pos += field.size() + 2;
+                pos = json.find(quote_char, pos); // Skip colon and whitespace to opening quote
+                if (pos == std::string_view::npos) return "";
+                
+                // Find closing quote
+                size_t end = json.find(quote_char, pos + 1);
+                if (end == std::string_view::npos) return "";
+                
+                return json.substr(pos + 1, end - pos - 1);
+            }
+            ++pos;
+        }
+        return "";
     }
 
     std::string build_json_response(const ProxyResponse& response) {
-        std::ostringstream oss;
-        oss << "{";
-        oss << "\"success\":" << (response.success ? "true" : "false") << ",";
-        oss << "\"audit_id\":\"" << response.audit_id << "\",";
+        std::string result_str;
+        result_str += std::format("{{\"success\":{},\"audit_id\":\"{}\",",
+                                  response.success ? "true" : "false",
+                                  response.audit_id);
 
         if (response.success && response.result.has_value()) {
             const auto& result = *response.result;
-            oss << "\"data\":{";
-            oss << "\"columns\":[";
+            result_str += "\"data\":{\"columns\":[";
             for (size_t i = 0; i < result.column_names.size(); ++i) {
-                if (i > 0) oss << ",";
-                oss << "\"" << result.column_names[i] << "\"";
+                if (i > 0) result_str += ",";
+                result_str += std::format("\"{}\"", result.column_names[i]);
             }
-            oss << "],";
-
-            oss << "\"rows\":[";
+            result_str += "],\"rows\":[";
             for (size_t i = 0; i < result.rows.size(); ++i) {
-                if (i > 0) oss << ",";
-                oss << "[";
+                if (i > 0) result_str += ",";
+                result_str += "[";
                 for (size_t j = 0; j < result.rows[i].size(); ++j) {
-                    if (j > 0) oss << ",";
-                    oss << "\"" << result.rows[i][j] << "\"";
+                    if (j > 0) result_str += ",";
+                    result_str += std::format("\"{}\"", result.rows[i][j]);
                 }
-                oss << "]";
+                result_str += "]";
             }
-            oss << "]";
-            oss << "},";
-
-            // Classifications
-            oss << "\"classifications\":{";
+            result_str += "]},\"classifications\":{";
             bool first = true;
             for (const auto& [col, type] : response.classifications) {
-                if (!first) oss << ",";
+                if (!first) result_str += ",";
                 first = false;
-                oss << "\"" << col << "\":\"" << type << "\"";
+                result_str += std::format("\"{}\": \"{}\"", col, type);
             }
-            oss << "},";
+            result_str += "},";
         } else {
-            oss << "\"error_code\":\"" << error_code_to_string(response.error_code) << "\",";
-            oss << "\"error_message\":\"" << response.error_message << "\",";
+            result_str += std::format("\"error_code\":\"{}\",\"error_message\":\"{}\",",
+                                      error_code_to_string(response.error_code),
+                                      response.error_message);
         }
 
-        oss << "\"execution_time_us\":" << response.execution_time_ms.count();
-        oss << "}";
+        result_str += std::format("\"execution_time_us\":{}}}", response.execution_time_ms.count());
 
-        return oss.str();
+        return result_str;
     }
 }
 
@@ -139,20 +134,20 @@ void HttpServer::start() {
                 return;
             }
 
-            // Parse request fields
-            std::string user = parse_json_field(req.body, "user");
-            std::string sql = parse_json_field(req.body, "sql");
-            std::string database = parse_json_field(req.body, "database");
+            // Parse request fields as string_view (zero-copy until validation passes)
+            auto user_sv = parse_json_field(req.body, "user");
+            auto sql_sv = parse_json_field(req.body, "sql");
+            auto database_sv = parse_json_field(req.body, "database");
 
             // Validate required field: user
-            if (user.empty()) {
+            if (user_sv.empty()) {
                 res.status = 400;
                 res.set_content(R"({"success":false,"error":"Missing required field: user"})", "application/json");
                 return;
             }
 
             // Validate required field: sql
-            if (sql.empty()) {
+            if (sql_sv.empty()) {
                 res.status = 400;
                 res.set_content(R"({"success":false,"error":"Missing required field: sql"})", "application/json");
                 return;
@@ -160,26 +155,28 @@ void HttpServer::start() {
 
             // Validate SQL length (max 100KB)
             constexpr size_t MAX_SQL_LENGTH = 100 * 1024;
-            if (sql.length() > MAX_SQL_LENGTH) {
+            if (sql_sv.length() > MAX_SQL_LENGTH) {
                 res.status = 400;
-                std::ostringstream oss;
-                oss << R"({"success":false,"error":"SQL too long: max )" << MAX_SQL_LENGTH << R"( bytes"})";
-                res.set_content(oss.str(), "application/json");
+                res.set_content(
+                    std::format(R"({{"success":false,"error":"SQL too long: max {} bytes"}})", MAX_SQL_LENGTH),
+                    "application/json");
                 return;
             }
 
-            // Default database if not provided
-            if (database.empty()) {
-                database = "testdb";
-            }
+            // Convert to owning strings only after validation passes
+            std::string user(user_sv);
+            std::string sql(sql_sv);
+            std::string database = database_sv.empty()
+                ? std::string("testdb")
+                : std::string(database_sv);
 
             // Authenticate user and resolve roles
             auto user_info = validate_user(user);
             if (!user_info.has_value()) {
                 res.status = 401;
-                std::ostringstream oss;
-                oss << R"({"success":false,"error":"Unknown user: )" << user << R"("})";
-                res.set_content(oss.str(), "application/json");
+                res.set_content(
+                    std::format(R"({{"success":false,"error":"Unknown user: {}"}})", user_sv),
+                    "application/json");
                 return;
             }
 
@@ -205,33 +202,31 @@ void HttpServer::start() {
             if (response.success) {
                 res.status = 200;
             } else {
-                switch (response.error_code) {
-                    case ErrorCode::PARSE_ERROR:
-                        res.status = 400;
-                        break;
-                    case ErrorCode::ACCESS_DENIED:
-                        res.status = 403;
-                        break;
-                    case ErrorCode::RATE_LIMITED:
-                        res.status = 429;
-                        break;
-                    case ErrorCode::CIRCUIT_OPEN:
-                        res.status = 503;
-                        break;
-                    case ErrorCode::DATABASE_ERROR:
-                        res.status = 502;
-                        break;
-                    default:
-                        res.status = 500;
-                }
+                // O(1) lookup: ErrorCode enum index → HTTP status
+                static constexpr int kErrorToHttp[] = {
+                    200,  // NONE
+                    400,  // PARSE_ERROR
+                    403,  // ACCESS_DENIED
+                    429,  // RATE_LIMITED
+                    503,  // CIRCUIT_OPEN
+                    502,  // DATABASE_ERROR
+                    500,  // INTERNAL_ERROR
+                    400,  // INVALID_REQUEST
+                    413,  // RESULT_TOO_LARGE
+                };
+                auto idx = static_cast<size_t>(response.error_code);
+                res.status = (idx < std::size(kErrorToHttp))
+                    ? kErrorToHttp[idx]
+                    : 500;
             }
 
             res.set_content(json, "application/json");
 
         } catch (const std::exception& e) {
             res.status = 500;
-            std::string error_json = "{\"success\":false,\"error\":\"" + std::string(e.what()) + "\"}";
-            res.set_content(error_json, "application/json");
+            res.set_content(
+                std::format(R"({{"success":false,"error":"{}"}})", e.what()),
+                "application/json");
         }
     });
 
@@ -328,9 +323,9 @@ void HttpServer::start() {
 
             if (!load_result.success) {
                 res.status = 400;
-                std::ostringstream oss;
-                oss << "{\"success\":false,\"error\":\"" << load_result.error_message << "\"}";
-                res.set_content(oss.str(), "application/json");
+                res.set_content(
+                    std::format(R"({{"success":false,"error":"{}"}})", load_result.error_message),
+                    "application/json");
                 return;
             }
 
@@ -339,17 +334,17 @@ void HttpServer::start() {
 
             // Success response
             res.status = 200;
-            std::ostringstream oss;
-            oss << "{\"success\":true,\"policies_loaded\":" << load_result.policies.size() << "}";
-            res.set_content(oss.str(), "application/json");
+            res.set_content(
+                std::format(R"({{"success":true,"policies_loaded":{}}})", load_result.policies.size()),
+                "application/json");
 
-            utils::log::info("Policies reloaded: " + std::to_string(load_result.policies.size()) + " policies loaded");
+            utils::log::info(std::format("Policies reloaded: {} policies loaded", load_result.policies.size()));
 
         } catch (const std::exception& e) {
             res.status = 500;
-            std::ostringstream oss;
-            oss << "{\"success\":false,\"error\":\"" << std::string(e.what()) << "\"}";
-            res.set_content(oss.str(), "application/json");
+            res.set_content(
+                std::format(R"({{"success":false,"error":"{}"}})", e.what()),
+                "application/json");
         }
     });
 

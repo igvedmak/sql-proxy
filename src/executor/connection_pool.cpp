@@ -1,6 +1,7 @@
 #include "executor/connection_pool.hpp"
 #include "core/error.hpp"
 #include "core/utils.hpp"
+#include <format>
 #include <thread>
 
 namespace sqlproxy {
@@ -56,15 +57,12 @@ ConnectionPool::ConnectionPool(
             std::lock_guard<std::mutex> lock(mutex_);
             idle_connections_.push_back(conn);
         } else {
-            utils::log::warn("Failed to create connection " + std::to_string(i+1)
-                + " during pool initialization for database '" + db_name_ + "'");
+            utils::log::warn(std::format("Failed to create connection {} during pool initialization for database '{}'", i + 1, db_name_));
         }
     }
 
-    utils::log::info("ConnectionPool initialized for database '" + db_name_ + "': "
-        + std::to_string(total_connections_.load()) + " connections (min="
-        + std::to_string(config_.min_connections) + ", max="
-        + std::to_string(config_.max_connections) + ")");
+    utils::log::info(std::format("ConnectionPool initialized for database '{}': {} connections (min={}, max={})",
+        db_name_, total_connections_.load(), config_.min_connections, config_.max_connections));
 }
 
 ConnectionPool::~ConnectionPool() {
@@ -166,7 +164,7 @@ void ConnectionPool::drain() {
 
     idle_connections_.clear();
 
-    utils::log::info("ConnectionPool drained for database '" + db_name_ + "'");
+    utils::log::info(std::format("ConnectionPool drained for database '{}'", db_name_));
 }
 
 PGconn* ConnectionPool::create_connection() {
@@ -174,14 +172,13 @@ PGconn* ConnectionPool::create_connection() {
     PGconn* conn = PQconnectdb(config_.connection_string.c_str());
 
     if (!conn) {
-        utils::log::error("Failed to allocate PGconn for database '" + db_name_ + "'");
+        utils::log::error(std::format("Failed to allocate PGconn for database '{}'", db_name_));
         return nullptr;
     }
 
     // Check connection status
     if (PQstatus(conn) != CONNECTION_OK) {
-        utils::log::error("Failed to connect to database '" + db_name_ + "': "
-            + std::string(PQerrorMessage(conn)));
+        utils::log::error(std::format("Failed to connect to database '{}': {}", db_name_, PQerrorMessage(conn)));
         PQfinish(conn);
         return nullptr;
     }

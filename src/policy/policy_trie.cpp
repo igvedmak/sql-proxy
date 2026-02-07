@@ -12,15 +12,12 @@ void PolicyTrieNode::add_policy(const Policy& policy) {
 }
 
 PolicyTrieNode* PolicyTrieNode::get_or_create_child(const std::string& key) {
-    auto it = children_.find(key);
-    if (it != children_.end()) {
-        return it->second.get();
+    // try_emplace: 1 hash op instead of find + operator[] = 2 hash ops
+    auto [it, inserted] = children_.try_emplace(key);
+    if (inserted) {
+        it->second = std::make_unique<PolicyTrieNode>();
     }
-
-    auto new_node = std::make_unique<PolicyTrieNode>();
-    auto* ptr = new_node.get();
-    children_[key] = std::move(new_node);
-    return ptr;
+    return it->second.get();
 }
 
 const PolicyTrieNode* PolicyTrieNode::get_child(const std::string& key) const {
@@ -29,7 +26,7 @@ const PolicyTrieNode* PolicyTrieNode::get_child(const std::string& key) const {
 }
 
 bool PolicyTrieNode::has_child(const std::string& key) const {
-    return children_.find(key) != children_.end();
+    return children_.contains(key);
 }
 
 // ============================================================================
@@ -128,7 +125,7 @@ bool PolicyTrie::matches_statement_type(const Policy& policy, StatementType stmt
         return true;
     }
 
-    return policy.scope.operations.count(stmt_type) > 0;
+    return policy.scope.operations.contains(stmt_type);
 }
 
 } // namespace sqlproxy

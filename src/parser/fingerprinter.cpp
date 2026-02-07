@@ -11,8 +11,22 @@
 
 namespace sqlproxy {
 
+// Transparent hash/equal for heterogeneous lookup (avoids temporary std::string from string_view)
+struct StringViewHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view sv) const noexcept {
+        return std::hash<std::string_view>{}(sv);
+    }
+};
+struct StringViewEqual {
+    using is_transparent = void;
+    bool operator()(std::string_view a, std::string_view b) const noexcept {
+        return a == b;
+    }
+};
+
 // SQL keywords that should be lowercased (not exhaustive, most common ones)
-static const std::unordered_set<std::string> SQL_KEYWORDS = {
+static const std::unordered_set<std::string, StringViewHash, StringViewEqual> SQL_KEYWORDS = {
     "select", "from", "where", "and", "or", "not", "in", "between", "like",
     "is", "null", "true", "false", "insert", "into", "values", "update",
     "set", "delete", "join", "inner", "outer", "left", "right", "full",
@@ -292,7 +306,8 @@ bool QueryFingerprinter::is_digit(char c) {
 }
 
 bool QueryFingerprinter::is_keyword(std::string_view word) {
-    return SQL_KEYWORDS.count(std::string(word)) > 0;
+    // O(1) lookup without creating temporary std::string (transparent hash)
+    return SQL_KEYWORDS.find(word) != SQL_KEYWORDS.end();
 }
 
 } // namespace sqlproxy

@@ -31,18 +31,18 @@ public:
     ClassificationResult classify(
         const QueryResult& result,
         const AnalysisResult& analysis
-    );
+    ) const;
 
 private:
     /**
      * @brief Classify by column name (Strategy 1)
      */
-    std::optional<ClassificationType> classify_by_name(const std::string& col_name);
+    std::optional<ClassificationType> classify_by_name(const std::string& col_name) const;
 
     /**
      * @brief Classify by PostgreSQL type OID (Strategy 2)
      */
-    std::optional<ClassificationType> classify_by_type_oid(
+    static std::optional<ClassificationType> classify_by_type_oid(
         const std::string& col_name,
         uint32_t type_oid
     );
@@ -53,12 +53,12 @@ private:
     std::optional<ClassificationType> classify_by_pattern(
         const std::string& col_name,
         const std::vector<std::string>& sample_values
-    );
+    ) const;
 
     /**
      * @brief Classify derived columns (Strategy 4)
      */
-    std::optional<ColumnClassification> classify_derived_column(
+    static std::optional<ColumnClassification> classify_derived_column(
         const ProjectionColumn& projection,
         const std::unordered_map<std::string, ClassificationType>& base_classifications
     );

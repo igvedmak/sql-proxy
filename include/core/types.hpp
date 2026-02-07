@@ -34,6 +34,30 @@ enum class StatementType {
     SHOW
 };
 
+// Branchless statement type classification using bitmasks.
+// Each StatementType maps to a bit position; checking membership
+// in a category is a single AND instruction (no branches).
+namespace stmt_mask {
+    inline constexpr uint16_t bit(StatementType t) noexcept {
+        return static_cast<uint16_t>(1u << static_cast<int>(t));
+    }
+    inline constexpr uint16_t kWrite =
+        bit(StatementType::INSERT) | bit(StatementType::UPDATE) | bit(StatementType::DELETE) |
+        bit(StatementType::CREATE_TABLE) | bit(StatementType::ALTER_TABLE) |
+        bit(StatementType::DROP_TABLE) | bit(StatementType::TRUNCATE);
+    inline constexpr uint16_t kTransaction =
+        bit(StatementType::BEGIN) | bit(StatementType::COMMIT) | bit(StatementType::ROLLBACK);
+    inline constexpr uint16_t kDML =
+        bit(StatementType::INSERT) | bit(StatementType::UPDATE) | bit(StatementType::DELETE);
+    inline constexpr uint16_t kDDL =
+        bit(StatementType::CREATE_TABLE) | bit(StatementType::ALTER_TABLE) |
+        bit(StatementType::DROP_TABLE) | bit(StatementType::CREATE_INDEX) |
+        bit(StatementType::DROP_INDEX) | bit(StatementType::TRUNCATE);
+    [[nodiscard]] inline constexpr bool test(StatementType t, uint16_t mask) noexcept {
+        return (mask & bit(t)) != 0;
+    }
+}
+
 enum class Decision {
     ALLOW,
     BLOCK,
@@ -191,8 +215,8 @@ struct Policy {
 
     bool matches_user(const std::string& user) const {
         return users.empty() ||
-               users.count("*") > 0 ||
-               users.count(user) > 0;
+               users.contains("*") ||
+               users.contains(user);
     }
 };
 

@@ -1,8 +1,14 @@
 #include "audit/audit_emitter.hpp"
 #include "core/utils.hpp"
-#include <sstream>
-#include <iomanip>
-#include <vector>
+
+#include <format>
+#include <fstream>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <condition_variable>
+#include <chrono>
 
 namespace sqlproxy {
 
@@ -205,102 +211,105 @@ void AuditEmitter::writer_thread_func() {
 // ============================================================================
 
 std::string AuditEmitter::to_json(const AuditRecord& record) {
-    std::ostringstream oss;
-    oss << "{";
+    std::string result;
+    result += "{";
 
     // Event tracking - MUST BE FIRST for gap detection
-    oss << "\"audit_id\":\"" << record.audit_id << "\",";
-    oss << "\"sequence_num\":" << record.sequence_num << ",";
+    result += std::format("\"audit_id\":\"{}\",\"sequence_num\":{},",
+                          record.audit_id, record.sequence_num);
 
     // Timestamps - dual timestamp for queue time measurement
-    oss << "\"timestamp\":\"" << utils::format_timestamp(record.timestamp) << "\",";
-    oss << "\"received_at\":\"" << utils::format_timestamp(record.received_at) << "\",";
+    result += std::format("\"timestamp\":\"{}\",\"received_at\":\"{}\",",
+                          utils::format_timestamp(record.timestamp),
+                          utils::format_timestamp(record.received_at));
 
     // Request context
-    oss << "\"user\":\"" << record.user << "\",";
-    oss << "\"database\":\"" << record.database_name << "\",";
+    result += std::format("\"user\":\"{}\",\"database\":\"{}\",",
+                          record.user, record.database_name);
     if (!record.session_id.empty()) {
-        oss << "\"session_id\":\"" << record.session_id << "\",";
+        result += std::format("\"session_id\":\"{}\",", record.session_id);
     }
     if (!record.source_ip.empty()) {
-        oss << "\"source_ip\":\"" << record.source_ip << "\",";
+        result += std::format("\"source_ip\":\"{}\",", record.source_ip);
     }
 
-    // SQL - escape quotes
-    std::string escaped_sql = record.sql;
-    size_t pos = 0;
-    while ((pos = escaped_sql.find('"', pos)) != std::string::npos) {
-        escaped_sql.replace(pos, 1, "\\\"");
-        pos += 2;
+    // SQL - escape quotes (single-pass O(n) instead of O(n²) replace loop)
+    std::string escaped_sql;
+    escaped_sql.reserve(record.sql.size());
+    for (const char c : record.sql) {
+        if (c == '"') escaped_sql += '\\';
+        escaped_sql += c;
     }
-    oss << "\"sql\":\"" << escaped_sql << "\",";
+    result += std::format("\"sql\":\"{}\",", escaped_sql);
 
     // Fingerprint for query shape grouping
-    oss << "\"fingerprint_hash\":" << record.fingerprint.hash << ",";
+    result += std::format("\"fingerprint_hash\":{},", record.fingerprint.hash);
 
     // Statement type
-    oss << "\"statement_type\":\"" << statement_type_to_string(record.statement_type) << "\",";
+    result += std::format("\"statement_type\":\"{}\",", statement_type_to_string(record.statement_type));
 
     // Tables accessed
-    oss << "\"tables\":[";
+    result += "\"tables\":[";
     for (size_t i = 0; i < record.tables.size(); ++i) {
-        if (i > 0) oss << ",";
-        oss << "\"" << record.tables[i] << "\"";
+        if (i > 0) result += ",";
+        result += std::format("\"{}\"", record.tables[i]);
     }
-    oss << "],";
+    result += "],";
 
     // Columns filtered (WHERE/JOIN) - intent analysis
-    oss << "\"columns_filtered\":[";
+    result += "\"columns_filtered\":[";
     for (size_t i = 0; i < record.columns_filtered.size(); ++i) {
-        if (i > 0) oss << ",";
-        oss << "\"" << record.columns_filtered[i] << "\"";
+        if (i > 0) result += ",";
+        result += std::format("\"{}\"", record.columns_filtered[i]);
     }
-    oss << "],";
+    result += "],";
 
     // Policy decision with specificity
-    oss << "\"decision\":\"" << decision_to_string(record.decision) << "\",";
-    oss << "\"matched_policy\":\"" << record.matched_policy << "\",";
-    oss << "\"rule_specificity\":" << record.rule_specificity << ",";
+    result += std::format("\"decision\":\"{}\",\"matched_policy\":\"{}\",\"rule_specificity\":{},",
+                          decision_to_string(record.decision),
+                          record.matched_policy,
+                          record.rule_specificity);
     if (!record.block_reason.empty()) {
-        oss << "\"block_reason\":\"" << record.block_reason << "\",";
+        result += std::format("\"block_reason\":\"{}\",", record.block_reason);
     }
 
     // Execution results
-    oss << "\"execution_success\":" << (record.execution_success ? "true" : "false") << ",";
-    oss << "\"error_code\":\"" << error_code_to_string(record.error_code) << "\",";
+    result += std::format("\"execution_success\":{},\"error_code\":\"{}\",",
+                          record.execution_success ? "true" : "false",
+                          error_code_to_string(record.error_code));
 
     if (record.execution_success) {
-        oss << "\"rows_returned\":" << record.rows_returned << ",";
+        result += std::format("\"rows_returned\":{},", record.rows_returned);
     }
     if (record.rows_affected > 0) {
-        oss << "\"rows_affected\":" << record.rows_affected << ",";
+        result += std::format("\"rows_affected\":{},", record.rows_affected);
     }
 
     // PII Classifications - compliance queries
-    oss << "\"classifications\":[";
+    result += "\"classifications\":[";
     for (size_t i = 0; i < record.detected_classifications.size(); ++i) {
-        if (i > 0) oss << ",";
-        oss << "\"" << record.detected_classifications[i] << "\"";
+        if (i > 0) result += ",";
+        result += std::format("\"{}\"", record.detected_classifications[i]);
     }
-    oss << "],";
-    oss << "\"has_pii\":" << (!record.detected_classifications.empty() ? "true" : "false") << ",";
+    result += std::format("],\"has_pii\":{},",
+                          !record.detected_classifications.empty() ? "true" : "false");
 
     // Performance breakdown - separate proxy overhead from DB time
-    oss << "\"total_duration_us\":" << record.total_duration.count() << ",";
-    oss << "\"parse_time_us\":" << record.parse_time.count() << ",";
-    oss << "\"policy_time_us\":" << record.policy_time.count() << ",";
-    oss << "\"execution_time_us\":" << record.execution_time.count() << ",";
-    oss << "\"classification_time_us\":" << record.classification_time.count() << ",";
-    oss << "\"proxy_overhead_us\":" << record.proxy_overhead.count() << ",";
+    result += std::format("\"total_duration_us\":{},\"parse_time_us\":{},\"policy_time_us\":{},\"execution_time_us\":{},\"classification_time_us\":{},\"proxy_overhead_us\":{},",
+                          record.total_duration.count(),
+                          record.parse_time.count(),
+                          record.policy_time.count(),
+                          record.execution_time.count(),
+                          record.classification_time.count(),
+                          record.proxy_overhead.count());
 
     // Operational flags
-    oss << "\"rate_limited\":" << (record.rate_limited ? "true" : "false") << ",";
-    oss << "\"cache_hit\":" << (record.cache_hit ? "true" : "false") << ",";
-    oss << "\"circuit_breaker_tripped\":" << (record.circuit_breaker_tripped ? "true" : "false");
+    result += std::format("\"rate_limited\":{},\"cache_hit\":{},\"circuit_breaker_tripped\":{}}}",
+                          record.rate_limited ? "true" : "false",
+                          record.cache_hit ? "true" : "false",
+                          record.circuit_breaker_tripped ? "true" : "false");
 
-    oss << "}";
-
-    return oss.str();
+    return result;
 }
 
 } // namespace sqlproxy

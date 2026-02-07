@@ -365,25 +365,22 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
 // ============================================================================
 
 std::string SchemaCache::normalize_table_name(const std::string& table_name) {
-    std::string normalized;
-    normalized.reserve(table_name.size());
+    // Check for dot before allocating to avoid double-allocation
+    const bool needs_schema = table_name.find('.') == std::string::npos;
+
+    std::string result;
+    result.reserve(needs_schema ? 7 + table_name.size() : table_name.size());
+
+    if (needs_schema) {
+        result = "public.";
+    }
 
     // Lowercase for case-insensitive matching
     for (char c : table_name) {
-        normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        result += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
 
-    // Add default schema if not qualified
-    if (normalized.find('.') == std::string::npos) {
-        // Pre-allocate: "public." (7 chars) + normalized
-        std::string qualified;
-        qualified.reserve(7 + normalized.size());
-        qualified = "public.";
-        qualified += normalized;
-        return qualified;
-    }
-
-    return normalized;
+    return result;
 }
 
 } // namespace sqlproxy

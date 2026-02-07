@@ -1,8 +1,8 @@
 #include "config/config_loader.hpp"
 #include "core/utils.hpp"
 
+#include <format>
 #include <fstream>
-#include <sstream>
 #include <stdexcept>
 #include <algorithm>
 
@@ -382,12 +382,12 @@ nlohmann::json parse_file(const std::string& file_path) {
     std::ifstream file(file_path);
     if (!file.is_open()) {
         throw std::runtime_error(
-            "Cannot open TOML file: " + file_path);
+            std::format("Cannot open TOML file: {}", file_path));
     }
 
-    std::ostringstream buffer;
-    buffer << file.rdbuf();
-    return parse_string(buffer.str());
+    std::string buffer((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+    return parse_string(buffer);
 }
 
 } // namespace toml
@@ -428,9 +428,14 @@ std::optional<StatementType> ConfigLoader::parse_statement_type(const std::strin
 
 std::optional<Decision> ConfigLoader::parse_action(const std::string& action_str) {
     const std::string lower = utils::to_lower(action_str);
-    if (lower == "allow") return Decision::ALLOW;
-    if (lower == "block") return Decision::BLOCK;
-    return std::nullopt;
+    
+    static const std::unordered_map<std::string, Decision> lookup = {
+        {"allow", Decision::ALLOW},
+        {"block", Decision::BLOCK},
+    };
+
+    const auto it = lookup.find(lower);
+    return (it != lookup.end()) ? std::make_optional(it->second) : std::nullopt;
 }
 
 // ---- Extract helpers (safe JSON access) ------------------------------------

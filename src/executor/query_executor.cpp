@@ -2,6 +2,7 @@
 #include "core/utils.hpp"
 #include <libpq-fe.h>
 #include <cstring>
+#include <format>
 
 namespace sqlproxy {
 
@@ -25,7 +26,7 @@ QueryResult QueryExecutor::execute(const std::string& sql, StatementType stmt_ty
         QueryResult result;
         result.success = false;
         result.error_code = ErrorCode::CIRCUIT_OPEN;
-        result.error_message = "Circuit breaker is OPEN for database: " + circuit_breaker_->name();
+        result.error_message = std::format("Circuit breaker is OPEN for database: {}", circuit_breaker_->name());
         return result;
     }
 
@@ -34,30 +35,16 @@ QueryResult QueryExecutor::execute(const std::string& sql, StatementType stmt_ty
 
     try {
         // Branch based on statement type
-        switch (stmt_type) {
-            case StatementType::SELECT:
-                result = execute_select(sql);
-                break;
-
-            case StatementType::INSERT:
-            case StatementType::UPDATE:
-            case StatementType::DELETE:
-                result = execute_dml(sql);
-                break;
-
-            case StatementType::CREATE_TABLE:
-            case StatementType::ALTER_TABLE:
-            case StatementType::DROP_TABLE:
-            case StatementType::CREATE_INDEX:
-            case StatementType::DROP_INDEX:
-            case StatementType::TRUNCATE:
-                result = execute_ddl(sql);
-                break;
-
-            default:
-                result.success = false;
-                result.error_code = ErrorCode::INTERNAL_ERROR;
-                result.error_message = "Unsupported statement type";
+        if (stmt_type == StatementType::SELECT) {
+            result = execute_select(sql);
+        } else if (stmt_mask::test(stmt_type, stmt_mask::kDML)) {
+            result = execute_dml(sql);
+        } else if (stmt_mask::test(stmt_type, stmt_mask::kDDL)) {
+            result = execute_ddl(sql);
+        } else {
+            result.success = false;
+            result.error_code = ErrorCode::INTERNAL_ERROR;
+            result.error_message = "Unsupported statement type";
         }
 
         result.execution_time = timer.elapsed_us();
@@ -74,7 +61,7 @@ QueryResult QueryExecutor::execute(const std::string& sql, StatementType stmt_ty
     } catch (const std::exception& e) {
         result.success = false;
         result.error_code = ErrorCode::DATABASE_ERROR;
-        result.error_message = std::string("Database error: ") + e.what();
+        result.error_message = std::format("Database error: {}", e.what());
         result.execution_time = timer.elapsed_us();
 
         if (circuit_breaker_) {
