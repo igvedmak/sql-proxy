@@ -283,6 +283,7 @@ if(BUILD_TESTS)
         tests/test_classifier.cpp
         tests/test_rate_limiter.cpp
         tests/test_config_reload.cpp
+        tests/test_stress.cpp
     )
 
     add_executable(${PROJECT_NAME}_tests ${TEST_SOURCES})
