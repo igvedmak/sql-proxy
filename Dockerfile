@@ -96,6 +96,17 @@ RUN cd build && \
 # Run tests
 RUN cd build && ./sql_proxy_tests --reporter compact
 
+# Stage 5b: Build benchmarks (optional, used by: docker build --target benchmark-builder)
+FROM proxy-builder AS benchmark-builder
+
+# Copy test/benchmark sources
+COPY tests /build/sql_proxy/tests
+
+# Build with benchmarks enabled (library is already built, only benchmarks compile)
+RUN cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_BENCHMARKS=ON .. && \
+    make -j$(nproc) sql_proxy_benchmarks
+
 # Stage 6: Runtime (minimal production image)
 FROM ubuntu:24.04
 

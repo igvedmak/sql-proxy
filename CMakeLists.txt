@@ -299,6 +299,41 @@ if(BUILD_TESTS)
 endif()
 
 # ============================================================================
+# Benchmarks (Optional - using Google Benchmark)
+# ============================================================================
+
+option(BUILD_BENCHMARKS "Build performance benchmarks" OFF)
+
+if(BUILD_BENCHMARKS)
+    include(FetchContent)
+
+    FetchContent_Declare(
+        benchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG v1.8.0
+        GIT_SHALLOW TRUE
+    )
+
+    # Disable Google Benchmark's internal tests to avoid pulling in Google Test
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+
+    FetchContent_MakeAvailable(benchmark)
+
+    add_executable(${PROJECT_NAME}_benchmarks tests/test_benchmark.cpp)
+
+    target_link_libraries(${PROJECT_NAME}_benchmarks PRIVATE
+        benchmark::benchmark
+        benchmark::benchmark_main
+        ${PROJECT_NAME}_lib
+    )
+
+    # Benchmarks must run with optimizations for meaningful results
+    target_compile_options(${PROJECT_NAME}_benchmarks PRIVATE -O2)
+endif()
+
+# ============================================================================
 # Custom Targets
 # ============================================================================
 
