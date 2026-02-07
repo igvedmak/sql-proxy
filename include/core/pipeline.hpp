@@ -6,7 +6,7 @@
 #include "db/isql_parser.hpp"
 #include "db/iquery_executor.hpp"
 #include "policy/policy_engine.hpp"
-#include "server/rate_limiter.hpp"
+#include "server/irate_limiter.hpp"
 #include <memory>
 
 namespace sqlproxy {
@@ -14,6 +14,8 @@ namespace sqlproxy {
 // Forward declarations
 class ClassifierRegistry;
 class QueryRewriter;
+class DatabaseRouter;
+class PreparedStatementTracker;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -38,11 +40,13 @@ public:
     Pipeline(
         std::shared_ptr<ISqlParser> parser,
         std::shared_ptr<PolicyEngine> policy_engine,
-        std::shared_ptr<HierarchicalRateLimiter> rate_limiter,
+        std::shared_ptr<IRateLimiter> rate_limiter,
         std::shared_ptr<IQueryExecutor> executor,
         std::shared_ptr<ClassifierRegistry> classifier,
         std::shared_ptr<AuditEmitter> audit_emitter,
-        std::shared_ptr<QueryRewriter> rewriter = nullptr
+        std::shared_ptr<QueryRewriter> rewriter = nullptr,
+        std::shared_ptr<DatabaseRouter> router = nullptr,
+        std::shared_ptr<PreparedStatementTracker> prepared = nullptr
     );
 
     /**
@@ -60,7 +64,7 @@ public:
     /**
      * @brief Get rate limiter (for metrics)
      */
-    std::shared_ptr<HierarchicalRateLimiter> get_rate_limiter() const { return rate_limiter_; }
+    std::shared_ptr<IRateLimiter> get_rate_limiter() const { return rate_limiter_; }
 
     /**
      * @brief Get audit emitter (for metrics)
@@ -123,13 +127,30 @@ private:
      */
     ProxyResponse build_response(const RequestContext& ctx);
 
+    /**
+     * @brief Handle PREPARE statement - parse inner SQL, register in tracker
+     */
+    void handle_prepare(RequestContext& ctx);
+
+    /**
+     * @brief Handle EXECUTE statement - look up cached parse info
+     */
+    void handle_execute(RequestContext& ctx);
+
+    /**
+     * @brief Handle DEALLOCATE statement - remove from tracker
+     */
+    void handle_deallocate(RequestContext& ctx);
+
     const std::shared_ptr<ISqlParser> parser_;
     const std::shared_ptr<PolicyEngine> policy_engine_;
-    const std::shared_ptr<HierarchicalRateLimiter> rate_limiter_;
+    const std::shared_ptr<IRateLimiter> rate_limiter_;
     const std::shared_ptr<IQueryExecutor> executor_;
     const std::shared_ptr<ClassifierRegistry> classifier_;
     const std::shared_ptr<AuditEmitter> audit_emitter_;
     const std::shared_ptr<QueryRewriter> rewriter_;
+    const std::shared_ptr<DatabaseRouter> router_;
+    const std::shared_ptr<PreparedStatementTracker> prepared_;
 };
 
 } // namespace sqlproxy

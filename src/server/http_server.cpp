@@ -1,4 +1,5 @@
 #include "server/http_server.hpp"
+#include "server/rate_limiter.hpp"
 #include "audit/audit_emitter.hpp"
 #include "core/utils.hpp"
 #include "policy/policy_loader.hpp"
@@ -253,9 +254,14 @@ void HttpServer::start() {
 
             // Convert to owning strings only after validation passes
             std::string sql(sql_sv);
-            std::string database = database_sv.empty()
-                ? std::string("testdb")
-                : std::string(database_sv);
+            std::string database;
+            if (!database_sv.empty()) {
+                database = std::string(database_sv);
+            } else if (user_info && !user_info->default_database.empty()) {
+                database = user_info->default_database;
+            } else {
+                database = "testdb";
+            }
 
             // Build proxy request
             ProxyRequest proxy_req;
@@ -320,8 +326,9 @@ void HttpServer::start() {
 
         // --- Rate limiter stats ---
         auto rate_limiter = pipeline_->get_rate_limiter();
-        if (rate_limiter) {
-            auto rl_stats = rate_limiter->get_stats();
+        auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter.get());
+        if (hierarchical_rl) {
+            auto rl_stats = hierarchical_rl->get_stats();
 
             // Total requests (allowed = total - all rejects)
             uint64_t total_rejects = rl_stats.global_rejects

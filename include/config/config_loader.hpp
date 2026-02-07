@@ -52,6 +52,11 @@ struct RateLimitingConfig {
 
     // Level 4: Per-User-Per-Database
     std::vector<PerUserPerDatabaseRateLimit> per_user_per_database;
+
+    // Request queuing (backpressure)
+    bool queue_enabled = false;
+    uint32_t queue_timeout_ms = 5000;
+    uint32_t max_queue_depth = 1000;
 };
 
 // ============================================================================

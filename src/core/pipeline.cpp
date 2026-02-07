@@ -4,6 +4,7 @@
 #include "core/utils.hpp"
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
+#include "db/database_router.hpp"
 
 #include <unordered_set>
 
@@ -12,18 +13,22 @@ namespace sqlproxy {
 Pipeline::Pipeline(
     std::shared_ptr<ISqlParser> parser,
     std::shared_ptr<PolicyEngine> policy_engine,
-    std::shared_ptr<HierarchicalRateLimiter> rate_limiter,
+    std::shared_ptr<IRateLimiter> rate_limiter,
     std::shared_ptr<IQueryExecutor> executor,
     std::shared_ptr<ClassifierRegistry> classifier,
     std::shared_ptr<AuditEmitter> audit_emitter,
-    std::shared_ptr<QueryRewriter> rewriter)
+    std::shared_ptr<QueryRewriter> rewriter,
+    std::shared_ptr<DatabaseRouter> router,
+    std::shared_ptr<PreparedStatementTracker> prepared)
     : parser_(std::move(parser)),
       policy_engine_(std::move(policy_engine)),
       rate_limiter_(std::move(rate_limiter)),
       executor_(std::move(executor)),
       classifier_(std::move(classifier)),
       audit_emitter_(std::move(audit_emitter)),
-      rewriter_(std::move(rewriter)) {}
+      rewriter_(std::move(rewriter)),
+      router_(std::move(router)),
+      prepared_(std::move(prepared)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -109,7 +114,14 @@ bool Pipeline::check_rate_limit(RequestContext& ctx) {
 bool Pipeline::parse_query(RequestContext& ctx) {
     utils::Timer timer;
 
-    auto parse_result = parser_->parse(ctx.sql);
+    // Resolve parser via router (per-database), fallback to default
+    ISqlParser* active_parser = parser_.get();
+    if (router_) {
+        auto routed = router_->get_parser(ctx.database);
+        if (routed) active_parser = routed.get();
+    }
+
+    auto parse_result = active_parser->parse(ctx.sql);
     ctx.parse_time = timer.elapsed_us();
 
     if (!parse_result.success) {
@@ -174,7 +186,15 @@ void Pipeline::rewrite_query(RequestContext& ctx) {
 }
 
 bool Pipeline::execute_query(RequestContext& ctx) {
-    if (!executor_) {
+    // Resolve executor via router (per-database), fallback to default
+    IQueryExecutor* exec = nullptr;
+    if (router_) {
+        auto routed = router_->get_executor(ctx.database);
+        if (routed) exec = routed.get();
+    }
+    if (!exec) exec = executor_.get();
+
+    if (!exec) {
         // No executor configured - return mock success
         ctx.query_result.success = true;
         ctx.query_result.column_names = {"result"};
@@ -184,7 +204,7 @@ bool Pipeline::execute_query(RequestContext& ctx) {
 
     utils::Timer timer;
 
-    ctx.query_result = executor_->execute(ctx.sql, ctx.analysis.statement_type);
+    ctx.query_result = exec->execute(ctx.sql, ctx.analysis.statement_type);
     ctx.execution_time = timer.elapsed_us();
 
     return ctx.query_result.success;
@@ -369,5 +389,10 @@ ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
 
     return response;
 }
+
+// Stubs for prepared statement handling — implemented in Phase 5
+void Pipeline::handle_prepare(RequestContext& /*ctx*/) {}
+void Pipeline::handle_execute(RequestContext& /*ctx*/) {}
+void Pipeline::handle_deallocate(RequestContext& /*ctx*/) {}
 
 } // namespace sqlproxy

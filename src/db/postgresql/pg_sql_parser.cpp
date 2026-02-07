@@ -50,6 +50,9 @@ static const std::unordered_map<std::string_view, StatementType> STATEMENT_TYPE_
     {"DropdbStmt", StatementType::UNKNOWN},
     {"VariableSetStmt", StatementType::SET},
     {"VariableShowStmt", StatementType::SHOW},
+    {"PrepareStmt", StatementType::PREPARE},
+    {"ExecuteStmt", StatementType::EXECUTE_STMT},
+    {"DeallocateStmt", StatementType::DEALLOCATE},
 };
 
 PgSqlParser::PgSqlParser(std::shared_ptr<ParseCache> cache)
@@ -141,6 +144,31 @@ ISqlParser::ParseResult PgSqlParser::parse_with_libpgquery(
             parsed.is_write = false;
             parsed.is_transaction = false;
             break;
+    }
+
+    // Extract prepared statement metadata from AST JSON
+    if (stmt_type == StatementType::PREPARE ||
+        stmt_type == StatementType::EXECUTE_STMT ||
+        stmt_type == StatementType::DEALLOCATE) {
+        try {
+            auto ast = JsonValue::parse(parse_result.parse_tree);
+            auto stmts = ast["stmts"];
+            if (stmts.is_array() && stmts.size() > 0) {
+                auto stmt_node = stmts[0]["stmt"];
+                if (stmt_type == StatementType::PREPARE) {
+                    auto prepare = stmt_node["PrepareStmt"];
+                    parsed.prepared_name = prepare.value("name", std::string{});
+                } else if (stmt_type == StatementType::EXECUTE_STMT) {
+                    auto exec = stmt_node["ExecuteStmt"];
+                    parsed.prepared_name = exec.value("name", std::string{});
+                } else if (stmt_type == StatementType::DEALLOCATE) {
+                    auto dealloc = stmt_node["DeallocateStmt"];
+                    parsed.prepared_name = dealloc.value("name", std::string{});
+                }
+            }
+        } catch (const JsonValue::parse_error&) {
+            // Best-effort: if AST JSON parsing fails, proceed without metadata
+        }
     }
 
     // Create StatementInfo

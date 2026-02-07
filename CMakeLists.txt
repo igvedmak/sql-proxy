@@ -232,6 +232,8 @@ if(BUILD_TESTS)
 
     add_executable(${PROJECT_NAME}_tests ${TEST_SOURCES})
 
+    target_include_directories(${PROJECT_NAME}_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+
     target_link_libraries(${PROJECT_NAME}_tests PRIVATE
         Catch2::Catch2WithMain
         ${PROJECT_NAME}_lib

@@ -31,29 +31,35 @@ enum class StatementType {
     COMMIT,
     ROLLBACK,
     SET,
-    SHOW
+    SHOW,
+    PREPARE,        // PREPARE name AS sql
+    EXECUTE_STMT,   // EXECUTE name (params)
+    DEALLOCATE      // DEALLOCATE name
 };
 
 // Branchless statement type classification using bitmasks.
 // Each StatementType maps to a bit position; checking membership
 // in a category is a single AND instruction (no branches).
 namespace stmt_mask {
-    inline constexpr uint16_t bit(StatementType t) noexcept {
-        return static_cast<uint16_t>(1u << static_cast<int>(t));
+    inline constexpr uint32_t bit(StatementType t) noexcept {
+        return static_cast<uint32_t>(1u << static_cast<int>(t));
     }
-    inline constexpr uint16_t kWrite =
+    inline constexpr uint32_t kWrite =
         bit(StatementType::INSERT) | bit(StatementType::UPDATE) | bit(StatementType::DELETE) |
         bit(StatementType::CREATE_TABLE) | bit(StatementType::ALTER_TABLE) |
         bit(StatementType::DROP_TABLE) | bit(StatementType::TRUNCATE);
-    inline constexpr uint16_t kTransaction =
+    inline constexpr uint32_t kTransaction =
         bit(StatementType::BEGIN) | bit(StatementType::COMMIT) | bit(StatementType::ROLLBACK);
-    inline constexpr uint16_t kDML =
+    inline constexpr uint32_t kDML =
         bit(StatementType::INSERT) | bit(StatementType::UPDATE) | bit(StatementType::DELETE);
-    inline constexpr uint16_t kDDL =
+    inline constexpr uint32_t kDDL =
         bit(StatementType::CREATE_TABLE) | bit(StatementType::ALTER_TABLE) |
         bit(StatementType::DROP_TABLE) | bit(StatementType::CREATE_INDEX) |
         bit(StatementType::DROP_INDEX) | bit(StatementType::TRUNCATE);
-    [[nodiscard]] inline constexpr bool test(StatementType t, uint16_t mask) noexcept {
+    inline constexpr uint32_t kPreparedStmt =
+        bit(StatementType::PREPARE) | bit(StatementType::EXECUTE_STMT) |
+        bit(StatementType::DEALLOCATE);
+    [[nodiscard]] inline constexpr bool test(StatementType t, uint32_t mask) noexcept {
         return (mask & bit(t)) != 0;
     }
 }
@@ -164,6 +170,11 @@ struct ParsedQuery {
     // DML specific
     bool is_write;              // INSERT/UPDATE/DELETE
     bool is_transaction;        // BEGIN/COMMIT/ROLLBACK
+
+    // Prepared statement specific
+    std::string prepared_name;                      // For PREPARE/EXECUTE/DEALLOCATE
+    std::vector<std::string> prepared_params;        // Bind values for EXECUTE
+    std::string prepared_inner_sql;                  // SQL inside PREPARE ... AS ...
 
     ParsedQuery() : type(StatementType::UNKNOWN), is_write(false), is_transaction(false) {}
 };
@@ -553,6 +564,15 @@ struct ServerConfig {
           max_sql_length(102400) {}  // 100KB
 };
 
+struct ReplicaConfig {
+    std::string connection_string;
+    size_t min_connections = 2;
+    size_t max_connections = 5;
+    std::chrono::milliseconds connection_timeout{5000};
+    std::string health_check_query{"SELECT 1"};
+    int weight = 1;
+};
+
 struct DatabaseConfig {
     std::string name;
     std::string type_str = "postgresql";  // Database type string (parsed at use site)
@@ -566,6 +586,7 @@ struct DatabaseConfig {
     int idle_timeout_seconds;
     int pool_acquire_timeout_ms;
     size_t max_result_rows;
+    std::vector<ReplicaConfig> replicas;  // Read replicas for read/write splitting
 
     DatabaseConfig()
         : name("default"),
@@ -650,6 +671,9 @@ inline const char* statement_type_to_string(StatementType type) {
         case StatementType::ROLLBACK: return "ROLLBACK";
         case StatementType::SET: return "SET";
         case StatementType::SHOW: return "SHOW";
+        case StatementType::PREPARE: return "PREPARE";
+        case StatementType::EXECUTE_STMT: return "EXECUTE";
+        case StatementType::DEALLOCATE: return "DEALLOCATE";
         default: return "UNKNOWN";
     }
 }

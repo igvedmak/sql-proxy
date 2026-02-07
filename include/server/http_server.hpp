@@ -18,6 +18,7 @@ struct UserInfo {
     std::vector<std::string> roles;
     std::string api_key;                                            // Bearer token (empty = no API key)
     std::unordered_map<std::string, std::string> attributes;        // User attributes for RLS
+    std::string default_database;                                   // Default database for routing
 
     UserInfo() = default;
     UserInfo(std::string n, std::vector<std::string> r)

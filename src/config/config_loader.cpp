@@ -669,6 +669,26 @@ std::vector<DatabaseConfig> ConfigLoader::extract_databases(const JsonValue& roo
         cfg.idle_timeout_seconds = json_int(db, "idle_timeout_seconds", 300);
         cfg.pool_acquire_timeout_ms = json_int(db, "pool_acquire_timeout_ms", 5000);
         cfg.max_result_rows = json_size(db, "max_result_rows", 10000);
+
+        // Parse replicas for read/write splitting
+        if (db.contains("replicas") && db["replicas"].is_array()) {
+            const auto replicas_arr = db["replicas"];
+            cfg.replicas.reserve(replicas_arr.size());
+            for (const auto& r : replicas_arr) {
+                ReplicaConfig replica;
+                replica.connection_string = json_string(r, "connection_string", "");
+                replica.min_connections = json_size(r, "min_connections", 2);
+                replica.max_connections = json_size(r, "max_connections", 5);
+                replica.connection_timeout = std::chrono::milliseconds(
+                    json_int(r, "connection_timeout_ms", 5000));
+                replica.health_check_query = json_string(r, "health_check_query", "SELECT 1");
+                replica.weight = json_int(r, "weight", 1);
+                if (!replica.connection_string.empty()) {
+                    cfg.replicas.push_back(std::move(replica));
+                }
+            }
+        }
+
         result.push_back(std::move(cfg));
     }
     return result;
@@ -689,6 +709,12 @@ std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const Json
         std::string api_key = json_string(u, "api_key", "");
 
         UserInfo info(std::move(name), std::move(roles), std::move(api_key));
+
+        // Parse default_database
+        std::string default_db = json_string(u, "default_database", "");
+        if (!default_db.empty()) {
+            info.default_database = std::move(default_db);
+        }
 
         // Parse attributes (inline table → key/value pairs for RLS)
         auto attrs = u["attributes"];
@@ -859,6 +885,14 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const JsonValue& root) {
                 cfg.per_user_per_database.push_back(std::move(limit));
             }
         }
+    }
+
+    // Request queuing (backpressure)
+    if (rl.contains("queue") && rl["queue"].is_object()) {
+        const auto q = rl["queue"];
+        cfg.queue_enabled = json_bool(q, kEnabled, false);
+        cfg.queue_timeout_ms = json_uint32(q, "timeout_ms", 5000);
+        cfg.max_queue_depth = json_uint32(q, "max_depth", 1000);
     }
 
     return cfg;

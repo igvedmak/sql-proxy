@@ -49,6 +49,9 @@ static const std::unordered_map<std::string_view, StatementType> STATEMENT_TYPE_
     {"DropdbStmt", StatementType::UNKNOWN},
     {"VariableSetStmt", StatementType::SET},
     {"VariableShowStmt", StatementType::SHOW},
+    {"PrepareStmt", StatementType::PREPARE},
+    {"ExecuteStmt", StatementType::EXECUTE_STMT},
+    {"DeallocateStmt", StatementType::DEALLOCATE},
 };
 
 SQLParser::SQLParser(std::shared_ptr<ParseCache> cache)

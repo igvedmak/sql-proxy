@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/types.hpp"
+#include "server/irate_limiter.hpp"
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -75,7 +76,7 @@ private:
  *
  * Thread-safety: Fully thread-safe via atomic operations
  */
-class HierarchicalRateLimiter {
+class HierarchicalRateLimiter : public IRateLimiter {
 public:
     /**
      * @brief Configuration for rate limits
@@ -109,34 +110,23 @@ public:
      * @param database Database name
      * @return Rate limit result
      */
-    [[nodiscard]] RateLimitResult check(const std::string& user, const std::string& database);
+    [[nodiscard]] RateLimitResult check(
+        const std::string& user, const std::string& database) override;
 
-    /**
-     * @brief Set custom rate limit for user
-     */
     void set_user_limit(const std::string& user,
                        uint32_t tokens_per_second,
-                       uint32_t burst_capacity);
+                       uint32_t burst_capacity) override;
 
-    /**
-     * @brief Set custom rate limit for database
-     */
     void set_database_limit(const std::string& database,
                            uint32_t tokens_per_second,
-                           uint32_t burst_capacity);
+                           uint32_t burst_capacity) override;
 
-    /**
-     * @brief Set custom rate limit for user-database pair
-     */
     void set_user_database_limit(const std::string& user,
                                 const std::string& database,
                                 uint32_t tokens_per_second,
-                                uint32_t burst_capacity);
+                                uint32_t burst_capacity) override;
 
-    /**
-     * @brief Reset all rate limiters
-     */
-    void reset_all();
+    void reset_all() override;
 
     /**
      * @brief Get statistics
