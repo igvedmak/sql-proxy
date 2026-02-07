@@ -13,6 +13,7 @@ namespace sqlproxy {
 
 // Forward declarations
 class ClassifierRegistry;
+class QueryRewriter;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -21,9 +22,12 @@ class ClassifierRegistry;
  * 1. Ingress (rate limit, validate)
  * 2. Parse + Cache
  * 3. Analyze
- * 4. Policy
+ * 4. Policy (table-level)
+ * 4.5. Rewrite query (RLS + enforce_limit)
  * 5. Execute
- * 6. Classify
+ * 5.5. Column-level ACL (remove blocked columns)
+ * 5.6. Data masking (mask values in-place)
+ * 6. Classify (on masked data)
  * 7. Audit
  */
 class Pipeline {
@@ -37,7 +41,8 @@ public:
         std::shared_ptr<HierarchicalRateLimiter> rate_limiter,
         std::shared_ptr<IQueryExecutor> executor,
         std::shared_ptr<ClassifierRegistry> classifier,
-        std::shared_ptr<AuditEmitter> audit_emitter
+        std::shared_ptr<AuditEmitter> audit_emitter,
+        std::shared_ptr<QueryRewriter> rewriter = nullptr
     );
 
     /**
@@ -99,6 +104,21 @@ private:
     void emit_audit(const RequestContext& ctx);
 
     /**
+     * @brief Layer 4.5: Rewrite query (RLS + enforce_limit)
+     */
+    void rewrite_query(RequestContext& ctx);
+
+    /**
+     * @brief Layer 5.5: Apply column-level access control
+     */
+    void apply_column_policies(RequestContext& ctx);
+
+    /**
+     * @brief Layer 5.6: Apply data masking to allowed columns
+     */
+    void apply_masking(RequestContext& ctx);
+
+    /**
      * @brief Build response from context
      */
     ProxyResponse build_response(const RequestContext& ctx);
@@ -109,6 +129,7 @@ private:
     const std::shared_ptr<IQueryExecutor> executor_;
     const std::shared_ptr<ClassifierRegistry> classifier_;
     const std::shared_ptr<AuditEmitter> audit_emitter_;
+    const std::shared_ptr<QueryRewriter> rewriter_;
 };
 
 } // namespace sqlproxy

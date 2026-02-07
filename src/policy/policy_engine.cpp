@@ -68,6 +68,111 @@ PolicyEvaluationResult PolicyEngine::evaluate(
     );
 }
 
+std::vector<ColumnPolicyDecision> PolicyEngine::evaluate_columns(
+    const std::string& user,
+    const std::vector<std::string>& roles,
+    const std::string& database,
+    const AnalysisResult& analysis,
+    const std::vector<std::string>& column_names) const {
+
+    auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
+    std::vector<ColumnPolicyDecision> decisions;
+    decisions.reserve(column_names.size());
+
+    if (!store) {
+        for (const auto& col : column_names) {
+            decisions.push_back({col, Decision::ALLOW, MaskingAction::NONE, {}});
+        }
+        return decisions;
+    }
+
+    // Collect column-level policies (scope.columns non-empty) from matching tables
+    auto collect_column_policies = [&](const PolicyTrie& trie) -> std::vector<const Policy*> {
+        std::vector<const Policy*> result;
+        for (const auto& table : analysis.source_tables) {
+            const std::string eff_schema = table.schema.empty() ? "public" : table.schema;
+            auto matches = trie.find_matching(database, eff_schema, table.table,
+                                               analysis.statement_type);
+            for (const auto* p : matches) {
+                if (!p->scope.columns.empty() && matches_user(*p, user, roles)) {
+                    result.push_back(p);
+                }
+            }
+        }
+        return result;
+    };
+
+    std::vector<const Policy*> column_policies;
+    auto user_it = store->user_tries.find(user);
+    if (user_it != store->user_tries.end()) {
+        auto p = collect_column_policies(user_it->second);
+        column_policies.insert(column_policies.end(), p.begin(), p.end());
+    }
+    for (const auto& role : roles) {
+        auto role_it = store->role_tries.find(role);
+        if (role_it != store->role_tries.end()) {
+            auto p = collect_column_policies(role_it->second);
+            column_policies.insert(column_policies.end(), p.begin(), p.end());
+        }
+    }
+    {
+        auto p = collect_column_policies(store->wildcard_trie);
+        column_policies.insert(column_policies.end(), p.begin(), p.end());
+    }
+
+    // No column policies at all → default ALLOW everything
+    if (column_policies.empty()) {
+        for (const auto& col : column_names) {
+            decisions.push_back({col, Decision::ALLOW, MaskingAction::NONE, {}});
+        }
+        return decisions;
+    }
+
+    // For each result column, resolve best matching column policy
+    for (const auto& col : column_names) {
+        ColumnPolicyDecision decision;
+        decision.column_name = col;
+        decision.decision = Decision::ALLOW;
+
+        const Policy* best_match = nullptr;
+        int best_specificity = -1;
+        int best_priority = -1;
+
+        for (const auto* policy : column_policies) {
+            bool targets_column = false;
+            for (const auto& pc : policy->scope.columns) {
+                if (pc == col || pc == "*") {
+                    targets_column = true;
+                    break;
+                }
+            }
+            if (!targets_column) continue;
+
+            const int spec = policy->scope.specificity();
+            if (spec > best_specificity ||
+                (spec == best_specificity && policy->priority > best_priority)) {
+                best_specificity = spec;
+                best_priority = policy->priority;
+                best_match = policy;
+            }
+        }
+
+        if (best_match) {
+            decision.decision = best_match->action;
+            decision.matched_policy = best_match->name;
+            if (best_match->action == Decision::ALLOW) {
+                decision.masking = best_match->masking_action;
+                decision.prefix_len = best_match->masking_prefix_len;
+                decision.suffix_len = best_match->masking_suffix_len;
+            }
+        }
+
+        decisions.push_back(std::move(decision));
+    }
+
+    return decisions;
+}
+
 void PolicyEngine::reload_policies(const std::vector<Policy>& policies) {
     std::lock_guard<std::mutex> lock(reload_mutex_);
 

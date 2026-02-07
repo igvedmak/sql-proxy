@@ -66,6 +66,22 @@ public:
         const AnalysisResult& analysis) const;
 
     /**
+     * @brief Evaluate column-level access for query results
+     * @param user User identifier
+     * @param roles User roles
+     * @param database Database name
+     * @param analysis Analysis result from SQL analyzer
+     * @param column_names Result column names
+     * @return Per-column decisions (ALLOW/BLOCK + masking)
+     */
+    std::vector<ColumnPolicyDecision> evaluate_columns(
+        const std::string& user,
+        const std::vector<std::string>& roles,
+        const std::string& database,
+        const AnalysisResult& analysis,
+        const std::vector<std::string>& column_names) const;
+
+    /**
      * @brief Hot reload policies (RCU update)
      * @param policies New policy set
      */

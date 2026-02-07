@@ -15,6 +15,7 @@
 #include "executor/circuit_breaker.hpp"
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
+#include "core/query_rewriter.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -256,6 +257,18 @@ int main(int argc, char* argv[]) {
         auto audit_emitter = std::make_shared<AuditEmitter>(audit_file);
         utils::log::info(std::format("Audit: writing to {}", audit_file));
 
+        // Create query rewriter (RLS + enforce_limit)
+        std::shared_ptr<QueryRewriter> query_rewriter;
+        if (config_result.success &&
+            (!config_result.config.rls_rules.empty() || !config_result.config.rewrite_rules.empty())) {
+            query_rewriter = std::make_shared<QueryRewriter>();
+            query_rewriter->load_rules(config_result.config.rls_rules,
+                                        config_result.config.rewrite_rules);
+            utils::log::info(std::format("Query rewriter: {} RLS rules, {} rewrite rules",
+                config_result.config.rls_rules.size(),
+                config_result.config.rewrite_rules.size()));
+        }
+
         // Create pipeline
         auto pipeline = std::make_shared<Pipeline>(
             parser,
@@ -263,7 +276,8 @@ int main(int argc, char* argv[]) {
             rate_limiter,
             executor,
             classifier,
-            audit_emitter
+            audit_emitter,
+            query_rewriter
         );
 
         // Determine server bind address and port
@@ -298,7 +312,7 @@ int main(int argc, char* argv[]) {
             // Register reload callback — dispatches to each component
             // Captures shared_ptrs to keep components alive
             g_config_watcher->set_callback(
-                [policy_engine, rate_limiter, server = g_server]
+                [policy_engine, rate_limiter, query_rewriter, server = g_server]
                 (const ProxyConfig& new_cfg) {
 
                 // 1. Hot-reload policies (RCU — zero-downtime atomic swap)
@@ -324,6 +338,13 @@ int main(int argc, char* argv[]) {
                 for (const auto& limit : new_cfg.rate_limiting.per_user_per_database) {
                     rate_limiter->set_user_database_limit(
                         limit.user, limit.database, limit.tokens_per_second, limit.burst_capacity);
+                }
+
+                // 5. Hot-reload query rewriter rules
+                if (query_rewriter) {
+                    query_rewriter->reload_rules(new_cfg.rls_rules, new_cfg.rewrite_rules);
+                    utils::log::info(std::format("Query rewriter reloaded: {} RLS, {} rewrite",
+                        new_cfg.rls_rules.size(), new_cfg.rewrite_rules.size()));
                 }
             });
 

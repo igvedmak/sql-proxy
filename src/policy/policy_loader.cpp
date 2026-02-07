@@ -137,6 +137,36 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
                 policy.scope.table = node[kTable].get<std::string>();
             }
 
+            // Optional: columns array (column-level ACL)
+            if (node.contains("columns") && node["columns"].is_array()) {
+                for (const auto& col : node["columns"]) {
+                    if (col.is_string()) {
+                        std::string col_str = col.get<std::string>();
+                        if (!col_str.empty()) {
+                            policy.scope.columns.push_back(std::move(col_str));
+                        }
+                    }
+                }
+            }
+
+            // Optional: masking fields (for column-level ALLOW policies)
+            if (node.contains("masking_action") && node["masking_action"].is_string()) {
+                static const std::unordered_map<std::string, MaskingAction> masking_lookup = {
+                    {"none", MaskingAction::NONE},
+                    {"redact", MaskingAction::REDACT},
+                    {"partial", MaskingAction::PARTIAL},
+                    {"hash", MaskingAction::HASH},
+                    {"nullify", MaskingAction::NULLIFY},
+                };
+                const std::string masking_str = utils::to_lower(node["masking_action"].get<std::string>());
+                const auto mit = masking_lookup.find(masking_str);
+                if (mit != masking_lookup.end()) {
+                    policy.masking_action = mit->second;
+                }
+            }
+            policy.masking_prefix_len = node.value("masking_prefix_len", 3);
+            policy.masking_suffix_len = node.value("masking_suffix_len", 3);
+
             // Optional: reason (for audit logs)
             policy.reason = node.value("reason", std::string(""));
 

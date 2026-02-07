@@ -16,10 +16,14 @@ namespace sqlproxy {
 struct UserInfo {
     std::string name;
     std::vector<std::string> roles;
+    std::string api_key;                                            // Bearer token (empty = no API key)
+    std::unordered_map<std::string, std::string> attributes;        // User attributes for RLS
 
     UserInfo() = default;
     UserInfo(std::string n, std::vector<std::string> r)
         : name(std::move(n)), roles(std::move(r)) {}
+    UserInfo(std::string n, std::vector<std::string> r, std::string key)
+        : name(std::move(n)), roles(std::move(r)), api_key(std::move(key)) {}
 };
 
 /**
@@ -83,6 +87,17 @@ private:
      */
     std::optional<UserInfo> validate_user(const std::string& username) const;
 
+    /**
+     * @brief Authenticate via Bearer token
+     * @return UserInfo if valid API key, nullopt if invalid
+     */
+    std::optional<UserInfo> authenticate_api_key(const std::string& api_key) const;
+
+    /**
+     * @brief Rebuild API key reverse index (caller must hold unique_lock)
+     */
+    void rebuild_api_key_index();
+
     std::shared_ptr<Pipeline> pipeline_;
     const std::string host_;
     const int port_;
@@ -90,6 +105,7 @@ private:
 
     // Hot-reloadable state
     std::unordered_map<std::string, UserInfo> users_;
+    std::unordered_map<std::string, std::string> api_key_index_; // api_key → username
     mutable std::shared_mutex users_mutex_;
     std::atomic<size_t> max_sql_length_;
 };

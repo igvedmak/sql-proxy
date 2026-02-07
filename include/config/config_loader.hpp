@@ -136,6 +136,8 @@ struct ProxyConfig {
     AllocatorConfig allocator;
     MetricsConfig metrics;
     ConfigWatcherConfig config_watcher;
+    std::vector<RlsRule> rls_rules;
+    std::vector<RewriteRule> rewrite_rules;
 };
 
 // ============================================================================

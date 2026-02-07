@@ -78,6 +78,26 @@ namespace {
                 result_str += std::format("\"{}\": \"{}\"", col, type);
             }
             result_str += "},";
+
+            // Masked columns
+            if (!response.masked_columns.empty()) {
+                result_str += "\"masked_columns\":[";
+                for (size_t i = 0; i < response.masked_columns.size(); ++i) {
+                    if (i > 0) result_str += ",";
+                    result_str += std::format("\"{}\"", response.masked_columns[i]);
+                }
+                result_str += "],";
+            }
+
+            // Blocked columns
+            if (!response.blocked_columns.empty()) {
+                result_str += "\"blocked_columns\":[";
+                for (size_t i = 0; i < response.blocked_columns.size(); ++i) {
+                    if (i > 0) result_str += ",";
+                    result_str += std::format("\"{}\"", response.blocked_columns[i]);
+                }
+                result_str += "],";
+            }
         } else {
             result_str += std::format("\"error_code\":\"{}\",\"error_message\":\"{}\",",
                                       error_code_to_string(response.error_code),
@@ -102,7 +122,9 @@ HttpServer::HttpServer(
       port_(port),
       admin_token_(std::move(admin_token)),
       users_(std::move(users)),
-      max_sql_length_(max_sql_length) {}
+      max_sql_length_(max_sql_length) {
+    rebuild_api_key_index();
+}
 
 std::optional<UserInfo> HttpServer::validate_user(const std::string& username) const {
     std::shared_lock lock(users_mutex_);
@@ -120,9 +142,34 @@ std::optional<UserInfo> HttpServer::validate_user(const std::string& username) c
     return std::nullopt;  // User not found
 }
 
+std::optional<UserInfo> HttpServer::authenticate_api_key(const std::string& api_key) const {
+    std::shared_lock lock(users_mutex_);
+    const auto it = api_key_index_.find(api_key);
+    if (it == api_key_index_.end()) {
+        return std::nullopt;
+    }
+    const auto user_it = users_.find(it->second);
+    if (user_it == users_.end()) {
+        return std::nullopt;
+    }
+    return user_it->second;
+}
+
+void HttpServer::rebuild_api_key_index() {
+    // Caller must hold unique_lock on users_mutex_
+    api_key_index_.clear();
+    api_key_index_.reserve(users_.size());
+    for (const auto& [username, info] : users_) {
+        if (!info.api_key.empty()) {
+            api_key_index_[info.api_key] = username;
+        }
+    }
+}
+
 void HttpServer::update_users(std::unordered_map<std::string, UserInfo> new_users) {
     std::unique_lock lock(users_mutex_);
     users_ = std::move(new_users);
+    rebuild_api_key_index();
     utils::log::info(std::format("Users reloaded: {} users", users_.size()));
 }
 
@@ -149,16 +196,8 @@ void HttpServer::start() {
             }
 
             // Parse request fields as string_view (zero-copy until validation passes)
-            auto user_sv = parse_json_field(req.body, "user");
             auto sql_sv = parse_json_field(req.body, "sql");
             auto database_sv = parse_json_field(req.body, "database");
-
-            // Validate required field: user
-            if (user_sv.empty()) {
-                res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Missing required field: user"})", kJsonContentType);
-                return;
-            }
 
             // Validate required field: sql
             if (sql_sv.empty()) {
@@ -177,30 +216,55 @@ void HttpServer::start() {
                 return;
             }
 
+            // Authentication: Bearer token first, fallback to JSON body "user" field
+            std::optional<UserInfo> user_info;
+            std::string user;
+
+            std::string auth_header = req.get_header_value("Authorization");
+            constexpr std::string_view kBearerPrefix = "Bearer ";
+            if (auth_header.size() > kBearerPrefix.size() &&
+                std::string_view(auth_header).substr(0, kBearerPrefix.size()) == kBearerPrefix) {
+                std::string api_key(std::string_view(auth_header).substr(kBearerPrefix.size()));
+                user_info = authenticate_api_key(api_key);
+                if (!user_info) {
+                    res.status = httplib::StatusCode::Unauthorized_401;
+                    res.set_content(R"({"success":false,"error":"Invalid API key"})", kJsonContentType);
+                    return;
+                }
+                user = user_info->name;
+            } else {
+                // Fallback: user from JSON body
+                auto user_sv = parse_json_field(req.body, "user");
+                if (user_sv.empty()) {
+                    res.status = httplib::StatusCode::BadRequest_400;
+                    res.set_content(R"j({"success":false,"error":"Missing required field: user (or Authorization header)"})j", kJsonContentType);
+                    return;
+                }
+                user = std::string(user_sv);
+                user_info = validate_user(user);
+                if (!user_info) {
+                    res.status = httplib::StatusCode::Unauthorized_401;
+                    res.set_content(
+                        std::format(R"({{"success":false,"error":"Unknown user: {}"}})", user),
+                        "application/json");
+                    return;
+                }
+            }
+
             // Convert to owning strings only after validation passes
-            std::string user(user_sv);
             std::string sql(sql_sv);
             std::string database = database_sv.empty()
                 ? std::string("testdb")
                 : std::string(database_sv);
 
-            // Authenticate user and resolve roles
-            auto user_info = validate_user(user);
-            if (!user_info.has_value()) {
-                res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(
-                    std::format(R"({{"success":false,"error":"Unknown user: {}"}})", user_sv),
-                    "application/json");
-                return;
-            }
-
             // Build proxy request
             ProxyRequest proxy_req;
             proxy_req.request_id = utils::generate_uuid();
             proxy_req.user = user;
-            proxy_req.roles = user_info->roles;  // Add resolved roles
+            proxy_req.roles = user_info->roles;
             proxy_req.sql = sql;
             proxy_req.database = database;
+            proxy_req.user_attributes = user_info->attributes;
             proxy_req.source_ip = req.get_header_value("X-Forwarded-For");
             if (proxy_req.source_ip.empty()) {
                 proxy_req.source_ip = req.remote_addr;

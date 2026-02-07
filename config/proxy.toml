@@ -6,6 +6,7 @@ port = 8080
 threads = 4
 request_timeout_ms = 30000
 max_sql_length = 102400
+admin_token = "admin-secret-token"
 
 [logging]
 level = "info"
@@ -37,21 +38,26 @@ max_result_rows = 10000
 [[users]]
 name = "admin"
 roles = ["admin"]
+api_key = "sk-admin-key-12345"
 description = "Administrator with full access"
 
 [[users]]
 name = "analyst"
 roles = ["analyst", "readonly"]
+api_key = "sk-analyst-key-67890"
+attributes = {department = "analytics", region = "us-west"}
 description = "Data analyst with read-only access"
 
 [[users]]
 name = "developer"
 roles = ["developer"]
+api_key = "sk-developer-key-abcde"
 description = "Developer with DML access"
 
 [[users]]
 name = "auditor"
 roles = ["auditor", "readonly"]
+api_key = "sk-auditor-key-fghij"
 description = "Auditor with limited read access"
 
 # ============================================================================
@@ -205,6 +211,45 @@ roles = ["admin"]
 database = "testdb"
 statement_types = ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE_TABLE", "ALTER_TABLE", "DROP_TABLE", "CREATE_INDEX", "DROP_INDEX", "TRUNCATE"]
 reason = "Admins have full access"
+
+# Column-level: block SSN column for analysts
+[[policies]]
+name = "block_ssn_analysts"
+priority = 95
+action = "BLOCK"
+roles = ["analyst"]
+database = "testdb"
+table = "sensitive_data"
+columns = ["ssn"]
+reason = "SSN requires auditor role"
+
+# Column-level: mask email for developers
+[[policies]]
+name = "mask_email_devs"
+priority = 90
+action = "ALLOW"
+roles = ["developer"]
+database = "testdb"
+schema = "public"
+table = "customers"
+columns = ["email"]
+masking_action = "partial"
+masking_prefix_len = 3
+masking_suffix_len = 4
+reason = "Developers see masked email"
+
+# Column-level: hash phone for analysts
+[[policies]]
+name = "hash_phone_analysts"
+priority = 90
+action = "ALLOW"
+roles = ["analyst"]
+database = "testdb"
+schema = "public"
+table = "customers"
+columns = ["phone"]
+masking_action = "hash"
+reason = "Analysts see hashed phone numbers"
 
 # Default deny - catch all (lowest priority)
 [[policies]]
@@ -392,3 +437,25 @@ export_interval_ms = 5000
 [config_watcher]
 enabled = true
 poll_interval_seconds = 5
+
+# ============================================================================
+# Row-Level Security (RLS)
+# ============================================================================
+
+# Analysts see only their region's customers
+[[row_level_security]]
+name = "region_filter"
+database = "testdb"
+table = "customers"
+condition = "region = '$ATTR.region'"
+roles = ["analyst"]
+
+# ============================================================================
+# Query Rewriting Rules
+# ============================================================================
+
+# Enforce max 1000 rows on all SELECT queries
+[[rewrite_rules]]
+name = "enforce_limit"
+type = "enforce_limit"
+limit_value = 1000

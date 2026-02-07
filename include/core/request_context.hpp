@@ -51,6 +51,19 @@ struct RequestContext {
     bool rate_limited = false;
     bool circuit_breaker_open = false;
 
+    // Column policy + masking
+    std::vector<ColumnPolicyDecision> column_decisions;
+    std::vector<MaskingRecord> masking_applied;
+    std::chrono::microseconds masking_time{0};
+    std::chrono::microseconds column_policy_time{0};
+
+    // Query rewriting
+    std::string original_sql;
+    bool sql_rewritten = false;
+
+    // User attributes (for RLS template expansion)
+    std::unordered_map<std::string, std::string> user_attributes;
+
     RequestContext()
         : received_at(std::chrono::system_clock::now()),
           started_at(std::chrono::steady_clock::now()),

@@ -1,7 +1,11 @@
 #include "core/pipeline.hpp"
+#include "core/masking.hpp"
+#include "core/query_rewriter.hpp"
 #include "core/utils.hpp"
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
+
+#include <unordered_set>
 
 namespace sqlproxy {
 
@@ -11,22 +15,25 @@ Pipeline::Pipeline(
     std::shared_ptr<HierarchicalRateLimiter> rate_limiter,
     std::shared_ptr<IQueryExecutor> executor,
     std::shared_ptr<ClassifierRegistry> classifier,
-    std::shared_ptr<AuditEmitter> audit_emitter)
+    std::shared_ptr<AuditEmitter> audit_emitter,
+    std::shared_ptr<QueryRewriter> rewriter)
     : parser_(std::move(parser)),
       policy_engine_(std::move(policy_engine)),
       rate_limiter_(std::move(rate_limiter)),
       executor_(std::move(executor)),
       classifier_(std::move(classifier)),
-      audit_emitter_(std::move(audit_emitter)) {}
+      audit_emitter_(std::move(audit_emitter)),
+      rewriter_(std::move(rewriter)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
     ctx.request_id = request.request_id;
     ctx.user = request.user;
-    ctx.roles = request.roles;  // Pass roles from request
+    ctx.roles = request.roles;
     ctx.database = request.database;
     ctx.sql = request.sql;
     ctx.source_ip = request.source_ip;
+    ctx.user_attributes = request.user_attributes;
 
     // Layer 1: Rate limiting
     if (!check_rate_limit(ctx)) {
@@ -46,11 +53,14 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         return build_response(ctx);
     }
 
-    // Layer 4: Policy evaluation
+    // Layer 4: Policy evaluation (table-level)
     if (!evaluate_policy(ctx)) {
         emit_audit(ctx);
         return build_response(ctx);
     }
+
+    // Layer 4.5: Query rewriting (RLS + enforce_limit)
+    rewrite_query(ctx);
 
     // Layer 5: Execute
     if (!execute_query(ctx)) {
@@ -58,7 +68,13 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         return build_response(ctx);
     }
 
-    // Layer 6: Classify
+    // Layer 5.5: Column-level ACL (remove blocked columns)
+    apply_column_policies(ctx);
+
+    // Layer 5.6: Data masking (mask values in-place)
+    apply_masking(ctx);
+
+    // Layer 6: Classify (runs on masked data — won't double-report PII)
     classify_results(ctx);
 
     // Build response first (response should not wait on audit I/O)
@@ -105,7 +121,6 @@ bool Pipeline::parse_query(RequestContext& ctx) {
 
     ctx.statement_info = parse_result.statement_info;
     ctx.fingerprint = ctx.statement_info->fingerprint;
-    // Cache hit tracking would be in parser
     return true;
 }
 
@@ -114,11 +129,9 @@ bool Pipeline::analyze_query(RequestContext& ctx) {
         return false;
     }
 
-    // Analysis is embedded in statement_info from parse cache
-    // Or analyze fresh if cache miss
     ctx.analysis = SQLAnalyzer::analyze(
         ctx.statement_info->parsed,
-        nullptr  // parse_tree not needed for basic analysis
+        nullptr
     );
 
     return true;
@@ -146,6 +159,20 @@ bool Pipeline::evaluate_policy(RequestContext& ctx) {
     return true;
 }
 
+void Pipeline::rewrite_query(RequestContext& ctx) {
+    if (!rewriter_) return;
+
+    std::string rewritten = rewriter_->rewrite(
+        ctx.sql, ctx.user, ctx.roles, ctx.database,
+        ctx.analysis, ctx.user_attributes);
+
+    if (!rewritten.empty()) {
+        ctx.original_sql = ctx.sql;
+        ctx.sql = std::move(rewritten);
+        ctx.sql_rewritten = true;
+    }
+}
+
 bool Pipeline::execute_query(RequestContext& ctx) {
     if (!executor_) {
         // No executor configured - return mock success
@@ -161,6 +188,79 @@ bool Pipeline::execute_query(RequestContext& ctx) {
     ctx.execution_time = timer.elapsed_us();
 
     return ctx.query_result.success;
+}
+
+void Pipeline::apply_column_policies(RequestContext& ctx) {
+    if (!ctx.query_result.success || ctx.query_result.column_names.empty()) return;
+
+    utils::Timer timer;
+
+    ctx.column_decisions = policy_engine_->evaluate_columns(
+        ctx.user, ctx.roles, ctx.database, ctx.analysis,
+        ctx.query_result.column_names);
+
+    ctx.column_policy_time = timer.elapsed_us();
+
+    // Find blocked column indices
+    std::unordered_set<size_t> blocked_indices;
+    for (size_t i = 0; i < ctx.column_decisions.size(); ++i) {
+        if (ctx.column_decisions[i].decision == Decision::BLOCK) {
+            blocked_indices.insert(i);
+        }
+    }
+
+    if (blocked_indices.empty()) return;
+
+    // Rebuild column_names, column_type_oids, and rows without blocked columns
+    std::vector<std::string> new_columns;
+    std::vector<uint32_t> new_type_oids;
+    new_columns.reserve(ctx.query_result.column_names.size() - blocked_indices.size());
+    new_type_oids.reserve(new_columns.capacity());
+
+    for (size_t i = 0; i < ctx.query_result.column_names.size(); ++i) {
+        if (!blocked_indices.contains(i)) {
+            new_columns.push_back(std::move(ctx.query_result.column_names[i]));
+            if (i < ctx.query_result.column_type_oids.size()) {
+                new_type_oids.push_back(ctx.query_result.column_type_oids[i]);
+            }
+        }
+    }
+
+    // Rebuild each row
+    for (auto& row : ctx.query_result.rows) {
+        std::vector<std::string> new_row;
+        new_row.reserve(new_columns.size());
+        for (size_t i = 0; i < row.size(); ++i) {
+            if (!blocked_indices.contains(i)) {
+                new_row.push_back(std::move(row[i]));
+            }
+        }
+        row = std::move(new_row);
+    }
+
+    ctx.query_result.column_names = std::move(new_columns);
+    ctx.query_result.column_type_oids = std::move(new_type_oids);
+
+    // Also rebuild column_decisions to remove blocked entries
+    // (masking layer only sees the surviving columns)
+    std::vector<ColumnPolicyDecision> surviving;
+    surviving.reserve(ctx.column_decisions.size() - blocked_indices.size());
+    for (size_t i = 0; i < ctx.column_decisions.size(); ++i) {
+        if (!blocked_indices.contains(i)) {
+            surviving.push_back(std::move(ctx.column_decisions[i]));
+        }
+    }
+    ctx.column_decisions = std::move(surviving);
+}
+
+void Pipeline::apply_masking(RequestContext& ctx) {
+    if (!ctx.query_result.success || ctx.column_decisions.empty()) return;
+
+    utils::Timer timer;
+
+    ctx.masking_applied = MaskingEngine::apply(ctx.query_result, ctx.column_decisions);
+
+    ctx.masking_time = timer.elapsed_us();
 }
 
 void Pipeline::classify_results(RequestContext& ctx) {
@@ -222,13 +322,22 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
     record.rate_limited = ctx.rate_limited;
     record.cache_hit = ctx.cache_hit;
 
+    // Masking / query rewriting audit fields
+    for (const auto& m : ctx.masking_applied) {
+        record.masked_columns.push_back(m.column_name);
+    }
+    record.sql_rewritten = ctx.sql_rewritten;
+    if (ctx.sql_rewritten) {
+        record.original_sql = ctx.original_sql;
+    }
+
     audit_emitter_->emit(std::move(record));
 }
 
 ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
     ProxyResponse response;
     response.request_id = ctx.request_id;
-    response.audit_id = utils::generate_uuid();  // Would come from audit record
+    response.audit_id = utils::generate_uuid();
     response.success = ctx.query_result.success;
     response.error_code = ctx.query_result.error_code;
     response.error_message = ctx.query_result.error_message;
@@ -247,6 +356,16 @@ ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
 
     response.policy_decision = ctx.policy_result.decision;
     response.matched_policy = ctx.policy_result.matched_policy;
+
+    // Column-level metadata
+    for (const auto& m : ctx.masking_applied) {
+        response.masked_columns.push_back(m.column_name);
+    }
+    for (const auto& d : ctx.column_decisions) {
+        if (d.decision == Decision::BLOCK) {
+            response.blocked_columns.push_back(d.column_name);
+        }
+    }
 
     return response;
 }

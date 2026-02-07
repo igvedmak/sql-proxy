@@ -104,6 +104,42 @@ jt parse_value(const std::string& raw) {
         jt j; j = std::move(result); return j;
     }
 
+    // Inline table  {key = "value", key2 = "value2"}
+    if (val.front() == '{' && val.back() == '}') {
+        jt obj = make_object();
+        const std::string inner = val.substr(1, val.size() - 2);
+        std::string token;
+        bool in_str = false;
+        bool esc = false;
+        for (size_t i = 0; i < inner.size(); ++i) {
+            const char c = inner[i];
+            if (esc) { token += c; esc = false; continue; }
+            if (c == '\\') { token += c; esc = true; continue; }
+            if (c == '"') { token += c; in_str = !in_str; continue; }
+            if (c == ',' && !in_str) {
+                const auto eq = token.find('=');
+                if (eq != std::string::npos) {
+                    std::string k = utils::trim(token.substr(0, eq));
+                    std::string v_str = utils::trim(token.substr(eq + 1));
+                    obj[k] = parse_value(v_str);
+                }
+                token.clear();
+                continue;
+            }
+            token += c;
+        }
+        const std::string last = utils::trim(token);
+        if (!last.empty()) {
+            const auto eq = last.find('=');
+            if (eq != std::string::npos) {
+                std::string k = utils::trim(last.substr(0, eq));
+                std::string v_str = utils::trim(last.substr(eq + 1));
+                obj[k] = parse_value(v_str);
+            }
+        }
+        return obj;
+    }
+
     // Inline array  ["a", "b", ...]
     if (val.front() == '[' && val.back() == ']') {
         jt arr = make_array();
@@ -650,7 +686,20 @@ std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const Json
             continue; // Skip unnamed users
         }
         auto roles = json_string_array(u, kRoles);
-        UserInfo info(std::move(name), std::move(roles));
+        std::string api_key = json_string(u, "api_key", "");
+
+        UserInfo info(std::move(name), std::move(roles), std::move(api_key));
+
+        // Parse attributes (inline table → key/value pairs for RLS)
+        auto attrs = u["attributes"];
+        if (attrs.is_object()) {
+            for (const auto& [k, v] : attrs.items()) {
+                if (v.is_string()) {
+                    info.attributes[k] = v.get<std::string>();
+                }
+            }
+        }
+
         result.emplace(info.name, std::move(info));
     }
     return result;
@@ -712,6 +761,27 @@ std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
         policy.scope.database = json_optional_string(p, kDatabase);
         policy.scope.schema = json_optional_string(p, "schema");
         policy.scope.table = json_optional_string(p, "table");
+
+        // Optional: columns array (column-level ACL)
+        policy.scope.columns = json_string_array(p, "columns");
+
+        // Optional: masking fields
+        if (p.contains("masking_action")) {
+            static const std::unordered_map<std::string, MaskingAction> masking_lookup = {
+                {"none", MaskingAction::NONE},
+                {"redact", MaskingAction::REDACT},
+                {"partial", MaskingAction::PARTIAL},
+                {"hash", MaskingAction::HASH},
+                {"nullify", MaskingAction::NULLIFY},
+            };
+            const std::string masking_str = utils::to_lower(json_string(p, "masking_action", "none"));
+            const auto mit = masking_lookup.find(masking_str);
+            if (mit != masking_lookup.end()) {
+                policy.masking_action = mit->second;
+            }
+        }
+        policy.masking_prefix_len = json_int(p, "masking_prefix_len", 3);
+        policy.masking_suffix_len = json_int(p, "masking_suffix_len", 3);
 
         // Optional: reason
         policy.reason = json_string(p, "reason", "");
@@ -915,6 +985,57 @@ ConfigWatcherConfig ConfigLoader::extract_config_watcher(const JsonValue& root) 
     return cfg;
 }
 
+// ---- RLS & Rewrite Rule extractors -----------------------------------------
+
+namespace {
+
+std::vector<RlsRule> extract_rls_rules(const JsonValue& root) {
+    std::vector<RlsRule> result;
+    if (!root.contains("row_level_security") || !root["row_level_security"].is_array()) {
+        return result;
+    }
+    const auto arr = root["row_level_security"];
+    result.reserve(arr.size());
+    for (const auto& r : arr) {
+        RlsRule rule;
+        rule.name = json_string(r, "name", "");
+        if (rule.name.empty()) continue;
+        rule.database = json_optional_string(r, "database");
+        rule.table = json_optional_string(r, "table");
+        rule.condition = json_string(r, "condition", "");
+        rule.users = json_string_array(r, "users");
+        rule.roles = json_string_array(r, "roles");
+        if (!rule.condition.empty()) {
+            result.push_back(std::move(rule));
+        }
+    }
+    return result;
+}
+
+std::vector<RewriteRule> extract_rewrite_rules(const JsonValue& root) {
+    std::vector<RewriteRule> result;
+    if (!root.contains("rewrite_rules") || !root["rewrite_rules"].is_array()) {
+        return result;
+    }
+    const auto arr = root["rewrite_rules"];
+    result.reserve(arr.size());
+    for (const auto& r : arr) {
+        RewriteRule rule;
+        rule.name = json_string(r, "name", "");
+        if (rule.name.empty()) continue;
+        rule.type = json_string(r, "type", "");
+        rule.limit_value = json_int(r, "limit_value", 1000);
+        rule.users = json_string_array(r, "users");
+        rule.roles = json_string_array(r, "roles");
+        if (!rule.type.empty()) {
+            result.push_back(std::move(rule));
+        }
+    }
+    return result;
+}
+
+} // anonymous namespace
+
 // ---- Public API ------------------------------------------------------------
 
 ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_path) {
@@ -934,6 +1055,8 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.allocator = extract_allocator(json);
         config.metrics = extract_metrics(json);
         config.config_watcher = extract_config_watcher(json);
+        config.rls_rules = extract_rls_rules(json);
+        config.rewrite_rules = extract_rewrite_rules(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));
@@ -957,6 +1080,8 @@ ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_
         config.allocator = extract_allocator(json);
         config.metrics = extract_metrics(json);
         config.config_watcher = extract_config_watcher(json);
+        config.rls_rules = extract_rls_rules(json);
+        config.rewrite_rules = extract_rewrite_rules(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to parse config: {}", e.what()));

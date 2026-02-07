@@ -87,6 +87,25 @@ enum class ClassificationType {
     CUSTOM
 };
 
+enum class MaskingAction {
+    NONE,       // No masking
+    REDACT,     // Replace entire value: "***REDACTED***"
+    PARTIAL,    // Show prefix + "***" + suffix
+    HASH,       // SHA256 first 16 hex chars
+    NULLIFY     // Replace with "NULL"
+};
+
+inline const char* masking_action_to_string(MaskingAction action) {
+    switch (action) {
+        case MaskingAction::NONE: return "NONE";
+        case MaskingAction::REDACT: return "REDACTED";
+        case MaskingAction::PARTIAL: return "PARTIAL";
+        case MaskingAction::HASH: return "HASH";
+        case MaskingAction::NULLIFY: return "NULLIFY";
+        default: return "UNKNOWN";
+    }
+}
+
 // ============================================================================
 // Query Fingerprint & Cache Key
 // ============================================================================
@@ -195,11 +214,13 @@ struct PolicyScope {
     std::optional<std::string> database;
     std::optional<std::string> schema;
     std::optional<std::string> table;
+    std::vector<std::string> columns;               // Column-level ACL (empty = all columns)
     std::unordered_set<StatementType> operations;
 
-    // Calculate specificity: table(100) > schema(10) > database(1)
+    // Calculate specificity: columns(1000) > table(100) > schema(10) > database(1)
     int specificity() const {
         int score = 0;
+        if (!columns.empty()) score += 1000;
         if (table.has_value()) score += 100;
         if (schema.has_value()) score += 10;
         if (database.has_value()) score += 1;
@@ -216,6 +237,11 @@ struct Policy {
     std::unordered_set<std::string> roles;  // Role-based matching
     std::unordered_set<std::string> exclude_roles;  // Roles to exclude (e.g., users=["*"] exclude_roles=["admin"])
     std::string reason;                     // Human-readable explanation for audit logs
+
+    // Masking (for column-level ALLOW policies)
+    MaskingAction masking_action = MaskingAction::NONE;
+    int masking_prefix_len = 3;             // For PARTIAL: chars to show at start
+    int masking_suffix_len = 3;             // For PARTIAL: chars to show at end
 
     Policy() : priority(0), action(Decision::BLOCK) {}
 
@@ -234,6 +260,21 @@ struct PolicyEvaluationResult {
     PolicyEvaluationResult() : decision(Decision::BLOCK) {}
     PolicyEvaluationResult(Decision d, std::string p, std::string r)
         : decision(d), matched_policy(std::move(p)), reason(std::move(r)) {}
+};
+
+struct ColumnPolicyDecision {
+    std::string column_name;
+    Decision decision = Decision::ALLOW;
+    MaskingAction masking = MaskingAction::NONE;
+    std::string matched_policy;
+    int prefix_len = 3;
+    int suffix_len = 3;
+};
+
+struct MaskingRecord {
+    std::string column_name;
+    MaskingAction action;
+    std::string matched_policy;
 };
 
 // ============================================================================
@@ -417,6 +458,11 @@ struct AuditRecord {
     // Cache
     bool cache_hit;                     // Parse cache hit for operational monitoring
 
+    // Masking / query rewriting
+    std::vector<std::string> masked_columns;
+    bool sql_rewritten = false;
+    std::string original_sql;
+
     AuditRecord()
         : sequence_num(0),
           statement_type(StatementType::UNKNOWN),
@@ -450,6 +496,7 @@ struct ProxyRequest {
     std::string source_ip;
     std::string session_id;
     std::string database;           // Target database
+    std::unordered_map<std::string, std::string> user_attributes; // For RLS template expansion
     std::chrono::system_clock::time_point received_at;
 
     ProxyRequest() : received_at(std::chrono::system_clock::now()) {}
@@ -474,6 +521,10 @@ struct ProxyResponse {
     // Metadata
     Decision policy_decision;
     std::string matched_policy;
+
+    // Column-level masking metadata
+    std::vector<std::string> masked_columns;
+    std::vector<std::string> blocked_columns;
 
     ProxyResponse()
         : success(false),
@@ -555,6 +606,27 @@ struct AuditConfig {
           async_mode(true),
           max_batch_size(1000),
           fsync_interval_batches(10) {}
+};
+
+// ============================================================================
+// Row-Level Security & Query Rewriting Config
+// ============================================================================
+
+struct RlsRule {
+    std::string name;
+    std::optional<std::string> database;
+    std::optional<std::string> table;
+    std::string condition;                  // SQL with $USER, $ROLES, $ATTR.key
+    std::vector<std::string> users;
+    std::vector<std::string> roles;
+};
+
+struct RewriteRule {
+    std::string name;
+    std::string type;                       // "enforce_limit"
+    int limit_value = 1000;
+    std::vector<std::string> users;
+    std::vector<std::string> roles;
 };
 
 // ============================================================================
