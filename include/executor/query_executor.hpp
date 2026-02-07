@@ -5,6 +5,7 @@
 #include "executor/connection_pool.hpp"
 #include <string>
 #include <memory>
+#include <functional>
 
 namespace sqlproxy {
 
@@ -82,6 +83,17 @@ private:
     std::shared_ptr<ConnectionPool> pool_;
     std::shared_ptr<CircuitBreaker> circuit_breaker_;
     Config config_;
+
+public:
+    /**
+     * @brief Set callback to fire after successful DDL (e.g., schema cache invalidation)
+     */
+    void set_on_ddl_success(std::function<void()> callback) {
+        on_ddl_success_ = std::move(callback);
+    }
+
+private:
+    std::function<void()> on_ddl_success_;
 };
 
 } // namespace sqlproxy

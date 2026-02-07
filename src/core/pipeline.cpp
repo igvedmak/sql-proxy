@@ -61,10 +61,13 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     // Layer 6: Classify
     classify_results(ctx);
 
-    // Layer 7: Audit
+    // Build response first (response should not wait on audit I/O)
+    auto response = build_response(ctx);
+
+    // Layer 7: Audit (after response is ready — emit is non-blocking ring buffer push)
     emit_audit(ctx);
 
-    return build_response(ctx);
+    return response;
 }
 
 bool Pipeline::check_rate_limit(RequestContext& ctx) {

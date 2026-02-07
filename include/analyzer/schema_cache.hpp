@@ -6,6 +6,7 @@
 #include <atomic>
 #include <mutex>
 #include <functional>
+#include <thread>
 
 namespace sqlproxy {
 
@@ -134,9 +135,10 @@ public:
         : cache_(cache), conn_string_(std::move(conn_string)) {}
 
     ~SchemaInvalidator() {
-        // Trigger async reload
-        // TODO: In production, spawn background thread or use task queue
-        cache_.reload(conn_string_);
+        // Fire-and-forget background reload (RCU makes this safe for readers)
+        std::thread([&cache = cache_, cs = std::move(conn_string_)]() {
+            cache.reload(cs);
+        }).detach();
     }
 
 private:

@@ -33,12 +33,14 @@ public:
      * @param host Bind host (default: 0.0.0.0)
      * @param port Bind port (default: 8080)
      * @param users User registry for authentication (optional)
+     * @param admin_token Bearer token for admin endpoints (empty = no auth required)
      */
     explicit HttpServer(
         std::shared_ptr<Pipeline> pipeline,
         std::string host = "0.0.0.0",
         int port = 8080,
-        std::unordered_map<std::string, UserInfo> users = {}
+        std::unordered_map<std::string, UserInfo> users = {},
+        std::string admin_token = ""
     );
 
     /**
@@ -62,6 +64,7 @@ private:
     const std::string host_;
     const int port_;
     const std::unordered_map<std::string, UserInfo> users_;
+    const std::string admin_token_;
 };
 
 } // namespace sqlproxy

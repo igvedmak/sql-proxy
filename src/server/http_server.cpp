@@ -3,9 +3,12 @@
 #include "core/utils.hpp"
 #include "policy/policy_loader.hpp"
 
-// cpp-httplib is header-only
+// cpp-httplib is header-only — suppress its internal deprecation warnings
 #define CPPHTTPLIB_OPENSSL_SUPPORT
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include "../third_party/cpp-httplib/httplib.h"
+#pragma GCC diagnostic pop
 
 #include <format>
 #include <string_view>
@@ -89,11 +92,13 @@ HttpServer::HttpServer(
     std::shared_ptr<Pipeline> pipeline,
     std::string host,
     int port,
-    std::unordered_map<std::string, UserInfo> users)
+    std::unordered_map<std::string, UserInfo> users,
+    std::string admin_token)
     : pipeline_(std::move(pipeline)),
       host_(std::move(host)),
       port_(port),
-      users_(std::move(users)) {}
+      users_(std::move(users)),
+      admin_token_(std::move(admin_token)) {}
 
 std::optional<UserInfo> HttpServer::validate_user(const std::string& username) const {
     auto it = users_.find(username);
@@ -238,7 +243,7 @@ void HttpServer::start() {
 
     // GET /metrics - Prometheus metrics endpoint
     svr.Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
-        std::ostringstream oss;
+        std::string output;
 
         // --- Rate limiter stats ---
         auto rate_limiter = pipeline_->get_rate_limiter();
@@ -254,26 +259,24 @@ void HttpServer::start() {
                                    ? (rl_stats.total_checks - total_rejects)
                                    : 0;
 
-            oss << "# HELP sql_proxy_requests_total Total number of requests processed\n";
-            oss << "# TYPE sql_proxy_requests_total counter\n";
-            oss << "sql_proxy_requests_total{status=\"allowed\"} " << total_allowed << "\n";
-            oss << "sql_proxy_requests_total{status=\"blocked\"} " << total_rejects << "\n";
-            oss << "\n";
-
-            // Per-level rate limit rejects
-            oss << "# HELP sql_proxy_rate_limit_total Rate limit rejections by level\n";
-            oss << "# TYPE sql_proxy_rate_limit_total counter\n";
-            oss << "sql_proxy_rate_limit_total{level=\"global\"} " << rl_stats.global_rejects << "\n";
-            oss << "sql_proxy_rate_limit_total{level=\"user\"} " << rl_stats.user_rejects << "\n";
-            oss << "sql_proxy_rate_limit_total{level=\"database\"} " << rl_stats.database_rejects << "\n";
-            oss << "sql_proxy_rate_limit_total{level=\"user_database\"} " << rl_stats.user_database_rejects << "\n";
-            oss << "\n";
-
-            // Total rate limit checks
-            oss << "# HELP sql_proxy_rate_limit_checks_total Total rate limit checks performed\n";
-            oss << "# TYPE sql_proxy_rate_limit_checks_total counter\n";
-            oss << "sql_proxy_rate_limit_checks_total " << rl_stats.total_checks << "\n";
-            oss << "\n";
+            output += std::format(
+                "# HELP sql_proxy_requests_total Total number of requests processed\n"
+                "# TYPE sql_proxy_requests_total counter\n"
+                "sql_proxy_requests_total{{status=\"allowed\"}} {}\n"
+                "sql_proxy_requests_total{{status=\"blocked\"}} {}\n\n"
+                "# HELP sql_proxy_rate_limit_total Rate limit rejections by level\n"
+                "# TYPE sql_proxy_rate_limit_total counter\n"
+                "sql_proxy_rate_limit_total{{level=\"global\"}} {}\n"
+                "sql_proxy_rate_limit_total{{level=\"user\"}} {}\n"
+                "sql_proxy_rate_limit_total{{level=\"database\"}} {}\n"
+                "sql_proxy_rate_limit_total{{level=\"user_database\"}} {}\n\n"
+                "# HELP sql_proxy_rate_limit_checks_total Total rate limit checks performed\n"
+                "# TYPE sql_proxy_rate_limit_checks_total counter\n"
+                "sql_proxy_rate_limit_checks_total {}\n\n",
+                total_allowed, total_rejects,
+                rl_stats.global_rejects, rl_stats.user_rejects,
+                rl_stats.database_rejects, rl_stats.user_database_rejects,
+                rl_stats.total_checks);
         }
 
         // --- Audit emitter stats ---
@@ -281,41 +284,46 @@ void HttpServer::start() {
         if (audit_emitter) {
             auto audit_stats = audit_emitter->get_stats();
 
-            oss << "# HELP sql_proxy_audit_emitted_total Audit records pushed to ring buffer\n";
-            oss << "# TYPE sql_proxy_audit_emitted_total counter\n";
-            oss << "sql_proxy_audit_emitted_total " << audit_stats.total_emitted << "\n";
-            oss << "\n";
-
-            oss << "# HELP sql_proxy_audit_written_total Audit records written to file\n";
-            oss << "# TYPE sql_proxy_audit_written_total counter\n";
-            oss << "sql_proxy_audit_written_total " << audit_stats.total_written << "\n";
-            oss << "\n";
-
-            oss << "# HELP sql_proxy_audit_dropped_total Audit records dropped due to buffer overflow\n";
-            oss << "# TYPE sql_proxy_audit_dropped_total counter\n";
-            oss << "sql_proxy_audit_dropped_total " << audit_stats.overflow_dropped << "\n";
-            oss << "\n";
-
-            oss << "# HELP sql_proxy_audit_flushes_total Number of batch flushes performed\n";
-            oss << "# TYPE sql_proxy_audit_flushes_total counter\n";
-            oss << "sql_proxy_audit_flushes_total " << audit_stats.flush_count << "\n";
-            oss << "\n";
+            output += std::format(
+                "# HELP sql_proxy_audit_emitted_total Audit records pushed to ring buffer\n"
+                "# TYPE sql_proxy_audit_emitted_total counter\n"
+                "sql_proxy_audit_emitted_total {}\n\n"
+                "# HELP sql_proxy_audit_written_total Audit records written to file\n"
+                "# TYPE sql_proxy_audit_written_total counter\n"
+                "sql_proxy_audit_written_total {}\n\n"
+                "# HELP sql_proxy_audit_dropped_total Audit records dropped due to buffer overflow\n"
+                "# TYPE sql_proxy_audit_dropped_total counter\n"
+                "sql_proxy_audit_dropped_total {}\n\n"
+                "# HELP sql_proxy_audit_flushes_total Number of batch flushes performed\n"
+                "# TYPE sql_proxy_audit_flushes_total counter\n"
+                "sql_proxy_audit_flushes_total {}\n\n",
+                audit_stats.total_emitted, audit_stats.total_written,
+                audit_stats.overflow_dropped, audit_stats.flush_count);
         }
 
         // --- Build info ---
-        oss << "# HELP sql_proxy_info Build information\n";
-        oss << "# TYPE sql_proxy_info gauge\n";
-        oss << "sql_proxy_info{version=\"1.0.0\"} 1\n";
+        output += "# HELP sql_proxy_info Build information\n"
+                  "# TYPE sql_proxy_info gauge\n"
+                  "sql_proxy_info{version=\"1.0.0\"} 1\n";
 
-        res.set_content(oss.str(), "text/plain; version=0.0.4; charset=utf-8");
+        res.set_content(output, "text/plain; version=0.0.4; charset=utf-8");
     });
 
     // POST /policies/reload - Hot reload policies from config file
     svr.Post("/policies/reload", [this](const httplib::Request& req, httplib::Response& res) {
         try {
-            // Optional: Check authorization
-            std::string auth = req.get_header_value("Authorization");
-            // TODO: Validate auth token if needed
+            // Validate admin token if configured
+            if (!admin_token_.empty()) {
+                auto auth = req.get_header_value("Authorization");
+                constexpr std::string_view kBearerPrefix = "Bearer ";
+                if (auth.size() <= kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
+                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                    res.status = 401;
+                    res.set_content(R"({"success":false,"error":"Unauthorized: invalid or missing admin token"})", "application/json");
+                    return;
+                }
+            }
 
             // Load policies from config file
             std::string config_path = "config/proxy.toml";
@@ -348,7 +356,7 @@ void HttpServer::start() {
         }
     });
 
-    utils::log::info("Starting SQL Proxy Server on " + host_ + ":" + std::to_string(port_));
+    utils::log::info(std::format("Starting SQL Proxy Server on {}:{}", host_, port_));
     utils::log::info("Endpoints: POST /api/v1/query, GET /health, GET /metrics, POST /policies/reload");
 
     if (!svr.listen(host_.c_str(), port_)) {

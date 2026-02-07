@@ -10,6 +10,8 @@
 #include <functional>
 #include <atomic>
 #include <string>
+#include <thread>
+#include <condition_variable>
 
 namespace sqlproxy {
 
@@ -69,7 +71,7 @@ private:
  * Design:
  * - Bounded pool: max_connections limit enforced via counting_semaphore (C++20)
  * - Lazy initialization: connections created on-demand up to max_connections
- * - Health checking: validate connections before returning from pool
+ * - Health checking: background thread validates idle connections periodically
  * - Thread-safe: mutex protects deque, semaphore prevents oversubscription
  * - RAII: PooledConnection auto-returns on destruction
  * - Circuit breaker integration: pool respects breaker state
@@ -126,8 +128,10 @@ public:
      * Process:
      * 1. Acquire semaphore slot (blocks if pool full)
      * 2. Pop from idle queue or create new connection
-     * 3. Validate connection health
+     * 3. Fast status check (PQstatus, no network round-trip)
      * 4. Return RAII handle that auto-returns on destruction
+     *
+     * Health checking is done by a background thread, not on acquire.
      *
      * @param timeout Max wait time for acquisition
      * @return RAII connection handle or nullptr on timeout/error
@@ -171,6 +175,11 @@ private:
      */
     void return_connection(PGconn* conn);
 
+    /**
+     * @brief Background thread function: periodically health-check idle connections
+     */
+    void health_check_loop();
+
     std::string db_name_;
     Config config_;
     std::shared_ptr<CircuitBreaker> circuit_breaker_;
@@ -188,6 +197,11 @@ private:
     std::atomic<size_t> total_releases_{0};
     std::atomic<size_t> failed_acquires_{0};
     std::atomic<size_t> health_check_failures_{0};
+
+    // Background health checker
+    std::jthread health_thread_;
+    std::condition_variable shutdown_cv_;
+    std::mutex shutdown_mutex_;
 
     // Shutdown flag
     std::atomic<bool> shutdown_{false};

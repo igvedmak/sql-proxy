@@ -79,7 +79,7 @@ COPY src /build/sql_proxy/src
 # Build the proxy service
 RUN mkdir -p build && \
     cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" .. && \
     make -j$(nproc)
 
 # Stage 5: Build and run unit tests (optional, used by docker compose run tests)

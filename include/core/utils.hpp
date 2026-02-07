@@ -3,8 +3,9 @@
 #include <string>
 #include <chrono>
 #include <random>
+#include <format>
 #include <sstream>
-#include <iomanip>
+#include <cstdio>
 #include <iostream>
 #include <mutex>
 
@@ -22,19 +23,12 @@ inline std::string generate_uuid() {
     uint64_t high = dis(gen);
     uint64_t low = dis(gen);
 
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0')
-        << std::setw(8) << (high >> 32)
-        << '-'
-        << std::setw(4) << ((high >> 16) & 0xFFFF)
-        << '-'
-        << std::setw(4) << (high & 0xFFFF)
-        << '-'
-        << std::setw(4) << (low >> 48)
-        << '-'
-        << std::setw(12) << (low & 0xFFFFFFFFFFFF);
-
-    return oss.str();
+    return std::format("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        static_cast<uint32_t>(high >> 32),
+        static_cast<uint16_t>((high >> 16) & 0xFFFF),
+        static_cast<uint16_t>(high & 0xFFFF),
+        static_cast<uint16_t>(low >> 48),
+        low & 0xFFFFFFFFFFFF);
 }
 
 // ============================================================================
@@ -49,12 +43,13 @@ inline std::string format_timestamp(const std::chrono::system_clock::time_point&
     std::tm tm_buf;
     ::localtime_r(&time, &tm_buf);
 
-    std::ostringstream oss;
-    oss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S")
-        << '.' << std::setfill('0') << std::setw(3) << ms.count()
-        << std::put_time(&tm_buf, "%z");
+    char time_buf[32];
+    std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%S", &tm_buf);
 
-    return oss.str();
+    char tz_buf[8];
+    std::strftime(tz_buf, sizeof(tz_buf), "%z", &tm_buf);
+
+    return std::format("{}.{:03d}{}", time_buf, static_cast<int>(ms.count()), tz_buf);
 }
 
 inline std::chrono::system_clock::time_point now() {
@@ -170,13 +165,14 @@ namespace detail {
         std::tm tm_buf;
         ::localtime_r(&time, &tm_buf);
 
-        std::ostringstream oss;
-        oss << std::put_time(&tm_buf, "%H:%M:%S")
-            << '.' << std::setfill('0') << std::setw(3) << ms.count()
-            << " [" << tag << "] " << msg << '\n';
+        char time_buf[16];
+        std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm_buf);
+
+        auto formatted = std::format("{}.{:03d} [{}] {}\n",
+            time_buf, static_cast<int>(ms.count()), tag, msg);
 
         std::lock_guard<std::mutex> lock(log_mutex());
-        std::cerr << oss.str();
+        std::cerr << formatted;
     }
 } // namespace detail
 

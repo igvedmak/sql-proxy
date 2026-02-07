@@ -26,6 +26,7 @@
 #include <memory>
 #include <csignal>
 #include <cstdlib>
+#include <format>
 
 using namespace sqlproxy;
 
@@ -51,7 +52,7 @@ static void register_backends() {
 }
 
 void signal_handler(int signal) {
-    utils::log::info("Received signal " + std::to_string(signal) + ", shutting down...");
+    utils::log::info(std::format("Received signal {}, shutting down...", signal));
     if (g_server) {
         g_server->stop();
     }
@@ -102,8 +103,7 @@ int main(int argc, char* argv[]) {
 
         if (config_result.success) {
             const auto& cfg = config_result.config;
-            utils::log::info("Config loaded: " + std::to_string(cfg.policies.size())
-                + " policies, " + std::to_string(cfg.users.size()) + " users");
+            utils::log::info(std::format("Config loaded: {} policies, {} users", cfg.policies.size(), cfg.users.size()));
 
             // Policies
             policies = cfg.policies;
@@ -136,7 +136,7 @@ int main(int argc, char* argv[]) {
             audit_file = audit_config.output_file;
 
         } else {
-            utils::log::warn(config_result.error_message + " - using hardcoded defaults");
+            utils::log::warn(std::format("{} - using hardcoded defaults", config_result.error_message));
 
             // Hardcoded policies for demo
             Policy allow_select;
@@ -168,23 +168,22 @@ int main(int argc, char* argv[]) {
 
         // Resolve database type
         DatabaseType db_type = parse_database_type(db_type_str);
-        utils::log::info("[2/8] Database backend: " + std::string(database_type_to_string(db_type)));
+        utils::log::info(std::format("[2/8] Database backend: {}", database_type_to_string(db_type)));
 
         // Create backend via registry
         auto backend = BackendRegistry::instance().create(db_type);
 
-        utils::log::info("[3/8] Parse cache: " + std::to_string(cache_config.max_entries)
-            + " entries, " + std::to_string(cache_config.num_shards) + " shards");
+        utils::log::info(std::format("[3/8] Parse cache: {} entries, {} shards", cache_config.max_entries, cache_config.num_shards));
         auto parse_cache = std::make_shared<ParseCache>(
             cache_config.max_entries, cache_config.num_shards);
 
-        utils::log::info("[4/8] SQL parser: " + std::string(database_type_to_string(db_type)) + " ready");
+        utils::log::info(std::format("[4/8] SQL parser: {} ready", database_type_to_string(db_type)));
         auto parser = backend->create_parser(parse_cache);
 
         utils::log::info("[5/8] Policy engine initializing...");
         auto policy_engine = std::make_shared<PolicyEngine>();
         policy_engine->load_policies(policies);
-        utils::log::info("Policies: " + std::to_string(policy_engine->policy_count()) + " loaded");
+        utils::log::info(std::format("Policies: {} loaded", policy_engine->policy_count()));
 
         utils::log::info("[6/8] Rate limiter: 4 levels (Global -> User -> DB -> User+DB)");
         auto rate_limiter = std::make_shared<HierarchicalRateLimiter>(rate_config);
@@ -211,7 +210,7 @@ int main(int argc, char* argv[]) {
             db_name = config_result.config.databases[0].name;
         }
 
-        utils::log::info("Creating circuit breaker for database: " + db_name);
+        utils::log::info(std::format("Creating circuit breaker for database: {}", db_name));
         auto circuit_breaker = std::make_shared<CircuitBreaker>(db_name);
 
         utils::log::info("Creating connection pool...");
@@ -220,7 +219,7 @@ int main(int argc, char* argv[]) {
             pool = backend->create_pool(db_name, pool_config, circuit_breaker);
             utils::log::info("Connection pool created successfully");
         } catch (const std::exception& pool_err) {
-            utils::log::error("Pool creation error: " + std::string(pool_err.what()));
+            utils::log::error(std::format("Pool creation error: {}", pool_err.what()));
             throw;
         }
 
@@ -228,7 +227,7 @@ int main(int argc, char* argv[]) {
         auto executor = std::make_shared<GenericQueryExecutor>(pool, circuit_breaker);
         utils::log::info("Query executor created successfully");
         
-        utils::log::info("Executor: " + std::string(database_type_to_string(db_type)) + " with circuit breaker");
+        utils::log::info(std::format("Executor: {} with circuit breaker", database_type_to_string(db_type)));
 
         utils::log::info("[8/8] Classifier & audit initializing...");
         auto classifier = std::make_shared<ClassifierRegistry>();
@@ -256,15 +255,15 @@ int main(int argc, char* argv[]) {
         }
 
         // Create and start HTTP server
-        g_server = std::make_shared<HttpServer>(pipeline, host, port, users);
+        g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
+            config_result.config.server.admin_token);
 
-        utils::log::info("Server ready on http://" + host + ":" + std::to_string(port)
-            + " (" + std::to_string(users.size()) + " users)");
+        utils::log::info(std::format("Server ready on http://{}:{} ({} users)", host, port, users.size()));
 
         g_server->start();
 
     } catch (const std::exception& e) {
-        utils::log::error(std::string("Fatal: ") + e.what());
+        utils::log::error(std::format("Fatal: {}", e.what()));
         return 1;
     }
 

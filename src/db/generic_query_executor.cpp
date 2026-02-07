@@ -159,6 +159,11 @@ QueryResult GenericQueryExecutor::execute_ddl(const std::string& sql) {
         return result;
     }
 
+    // Notify schema cache (async) after successful DDL
+    if (on_ddl_success_) {
+        on_ddl_success_();
+    }
+
     result.success = true;
     result.affected_rows = 0;
     return result;

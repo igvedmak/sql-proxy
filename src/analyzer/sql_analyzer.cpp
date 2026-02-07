@@ -9,6 +9,7 @@ extern "C" {
 
 #include <algorithm>
 #include <cctype>
+#include <future>
 #include <unordered_set>
 
 using json = nlohmann::json;
@@ -752,11 +753,15 @@ AnalysisResult SQLAnalyzer::analyze(const ParsedQuery& parsed, void* parse_tree)
     // Extract filter columns (WHERE clause)
     result.filter_columns = extract_filter_columns(parse_tree);
 
-    // Detect query characteristics
-    result.has_join = has_join(parse_tree);
-    result.has_subquery = has_subquery(parse_tree);
-    result.has_aggregation = has_aggregation(parse_tree);
-    result.limit_value = extract_limit(parse_tree);
+    // Detect query characteristics (parallel — all are independent read-only AST walks)
+    auto f_subquery = std::async(std::launch::async, has_subquery, parse_tree);
+    auto f_aggregation = std::async(std::launch::async, has_aggregation, parse_tree);
+    auto f_limit = std::async(std::launch::async, extract_limit, parse_tree);
+
+    result.has_join = has_join(parse_tree);  // Run one on current thread
+    result.has_subquery = f_subquery.get();
+    result.has_aggregation = f_aggregation.get();
+    result.limit_value = f_limit.get();
 
     return result;
 }

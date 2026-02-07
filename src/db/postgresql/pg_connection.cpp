@@ -1,6 +1,7 @@
 #include "db/postgresql/pg_connection.hpp"
 #include "core/utils.hpp"
 #include <cstring>
+#include <format>
 
 namespace sqlproxy {
 
@@ -75,7 +76,7 @@ bool PgConnection::set_query_timeout(uint32_t timeout_ms) {
         return false;
     }
 
-    std::string timeout_sql = "SET statement_timeout = " + std::to_string(timeout_ms);
+    std::string timeout_sql = std::format("SET statement_timeout = {}", timeout_ms);
 
     PGresult* res = PQexec(conn_, timeout_sql.c_str());
     if (!res) {
@@ -154,7 +155,7 @@ std::unique_ptr<IDbConnection> PgConnectionFactory::create(
     }
 
     if (PQstatus(conn) != CONNECTION_OK) {
-        utils::log::error(std::string("Failed to connect: ") + PQerrorMessage(conn));
+        utils::log::error(std::format("Failed to connect: {}", PQerrorMessage(conn)));
         PQfinish(conn);
         return nullptr;
     }

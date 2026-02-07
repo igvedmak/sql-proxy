@@ -118,8 +118,7 @@ QueryResult QueryExecutor::execute_select(const std::string& sql) {
     if (config_.max_result_rows > 0 && static_cast<uint32_t>(nrows) > config_.max_result_rows) {
         result.success = false;
         result.error_code = ErrorCode::RESULT_TOO_LARGE;
-        result.error_message = "Result set exceeds max_result_rows limit (" +
-                              std::to_string(config_.max_result_rows) + " rows)";
+        result.error_message = std::format("Result set exceeds max_result_rows limit ({} rows)", config_.max_result_rows);
         PQclear(res);
         return result;
     }
@@ -205,11 +204,10 @@ QueryResult QueryExecutor::execute_ddl(const std::string& sql) {
 
     PQclear(res);
 
-    // TODO: Trigger schema cache invalidation after successful DDL
-    // When schema cache is implemented, hook here:
-    // if (schema_cache_) {
-    //     schema_cache_->invalidate_async();
-    // }
+    // Notify schema cache (async) after successful DDL
+    if (on_ddl_success_) {
+        on_ddl_success_();
+    }
 
     result.success = true;
     result.affected_rows = 0;
@@ -220,8 +218,7 @@ bool QueryExecutor::set_query_timeout(void* conn_ptr) {
     PGconn* conn = static_cast<PGconn*>(conn_ptr);
 
     // Set statement_timeout in milliseconds
-    std::string timeout_sql = "SET statement_timeout = " +
-                             std::to_string(config_.query_timeout_ms);
+    std::string timeout_sql = std::format("SET statement_timeout = {}", config_.query_timeout_ms);
 
     PGresult* res = PQexec(conn, timeout_sql.c_str());
     if (!res) {

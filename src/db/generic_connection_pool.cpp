@@ -1,5 +1,6 @@
 #include "db/generic_connection_pool.hpp"
 #include "core/utils.hpp"
+#include <format>
 
 namespace sqlproxy {
 
@@ -21,15 +22,12 @@ GenericConnectionPool::GenericConnectionPool(
             std::lock_guard<std::mutex> lock(mutex_);
             idle_connections_.push_back(std::move(conn));
         } else {
-            utils::log::warn("Failed to create connection " + std::to_string(i+1)
-                + " during pool initialization for database '" + db_name_ + "'");
+            utils::log::warn(std::format("Failed to create connection {} during pool initialization for database '{}'", i + 1, db_name_));
         }
     }
 
-    utils::log::info("ConnectionPool initialized for database '" + db_name_ + "': "
-        + std::to_string(total_connections_.load()) + " connections (min="
-        + std::to_string(config_.min_connections) + ", max="
-        + std::to_string(config_.max_connections) + ")");
+    utils::log::info(std::format("ConnectionPool initialized for database '{}': {} connections (min={}, max={})",
+        db_name_, total_connections_.load(), config_.min_connections, config_.max_connections));
 }
 
 GenericConnectionPool::~GenericConnectionPool() {
@@ -129,7 +127,7 @@ void GenericConnectionPool::drain() {
 
     idle_connections_.clear();
 
-    utils::log::info("ConnectionPool drained for database '" + db_name_ + "'");
+    utils::log::info(std::format("ConnectionPool drained for database '{}'", db_name_));
 }
 
 std::unique_ptr<IDbConnection> GenericConnectionPool::create_connection() {

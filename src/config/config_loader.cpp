@@ -261,8 +261,7 @@ nlohmann::json parse_string(const std::string& content) {
             const size_t close = trimmed.rfind("]]");
             if (close == std::string::npos) {
                 throw std::runtime_error(
-                    "TOML parse error at line " + std::to_string(line_num) +
-                    ": unclosed [[array]] header");
+                    std::format("TOML parse error at line {}: unclosed [[array]] header", line_num));
             }
             const std::string section_name = utils::trim(
                 trimmed.substr(2, close - 2));
@@ -548,6 +547,7 @@ ServerConfig ConfigLoader::extract_server(const nlohmann::json& root) {
     cfg.thread_pool_size = json_size(s, "threads", 4);
     cfg.request_timeout = std::chrono::milliseconds(
         json_int(s, "request_timeout_ms", 30000));
+    cfg.admin_token = json_string(s, "admin_token", "");
     return cfg;
 }
 
@@ -870,7 +870,7 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.metrics = extract_metrics(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
-        return LoadResult::error(std::string("Failed to load config: ") + e.what());
+        return LoadResult::error(std::format("Failed to load config: {}", e.what()));
     }
 }
 
@@ -892,7 +892,7 @@ ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_
         config.metrics = extract_metrics(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
-        return LoadResult::error(std::string("Failed to parse config: ") + e.what());
+        return LoadResult::error(std::format("Failed to parse config: {}", e.what()));
     }
 }
 

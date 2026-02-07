@@ -2,6 +2,7 @@
 #include "db/mysql/mysql_type_map.hpp"
 #include "core/utils.hpp"
 #include <cstring>
+#include <format>
 
 namespace sqlproxy {
 
@@ -130,7 +131,7 @@ bool MysqlConnection::set_query_timeout(uint32_t timeout_ms) {
     }
 
     // MySQL uses SET max_execution_time (MySQL 5.7.8+)
-    std::string sql = "SET SESSION max_execution_time = " + std::to_string(timeout_ms);
+    std::string sql = std::format("SET SESSION max_execution_time = {}", timeout_ms);
     return mysql_query(conn_, sql.c_str()) == 0;
 }
 
@@ -179,7 +180,7 @@ std::unique_ptr<IDbConnection> MysqlConnectionFactory::create(
     );
 
     if (!result) {
-        utils::log::error("MySQL connection failed: " + std::string(mysql_error(conn)));
+        utils::log::error(std::format("MySQL connection failed: {}", mysql_error(conn)));
         mysql_close(conn);
         return nullptr;
     }

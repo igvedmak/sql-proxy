@@ -481,6 +481,7 @@ struct ServerConfig {
     uint16_t port;
     size_t thread_pool_size;
     std::chrono::milliseconds request_timeout;
+    std::string admin_token;  // Bearer token for admin endpoints (empty = no auth)
 
     ServerConfig()
         : host("0.0.0.0"),
