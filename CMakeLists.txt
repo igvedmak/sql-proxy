@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Compiler flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Thread support
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -80,82 +80,27 @@ set(LIBPGQUERY_INCLUDE_DIR ${LIBPGQUERY_DIR})
 set(LIBPGQUERY_LIBRARY ${LIBPGQUERY_DIR}/libpg_query.a)
 
 # ============================================================================
-# Source Files Organization
+# Source Files (auto-discovered via GLOB_RECURSE)
 # ============================================================================
 
-set(CORE_SOURCES
-    src/core/arena.cpp
-    src/core/pipeline.cpp
-)
+file(GLOB_RECURSE CORE_SOURCES       src/core/*.cpp)
+file(GLOB_RECURSE SERVER_SOURCES     src/server/*.cpp)
+file(GLOB_RECURSE PARSER_SOURCES     src/parser/*.cpp)
+file(GLOB_RECURSE ANALYZER_SOURCES   src/analyzer/*.cpp)
+file(GLOB_RECURSE POLICY_SOURCES     src/policy/*.cpp)
+file(GLOB_RECURSE EXECUTOR_SOURCES   src/executor/*.cpp)
+file(GLOB_RECURSE DB_SOURCES         src/db/*.cpp)
+file(GLOB_RECURSE CLASSIFIER_SOURCES src/classifier/*.cpp)
+file(GLOB_RECURSE AUDIT_SOURCES      src/audit/*.cpp)
+file(GLOB_RECURSE CONFIG_SOURCES     src/config/*.cpp)
 
-set(SERVER_SOURCES
-    src/server/http_server.cpp
-    src/server/rate_limiter.cpp
-)
-
-set(PARSER_SOURCES
-    src/parser/fingerprinter.cpp
-    src/parser/parse_cache.cpp
-)
-
-set(ANALYZER_SOURCES
-    src/analyzer/sql_analyzer.cpp
-    src/analyzer/schema_cache.cpp
-)
-
-set(POLICY_SOURCES
-    src/policy/policy_engine.cpp
-    src/policy/policy_trie.cpp
-    src/policy/policy_loader.cpp
-)
-
-set(EXECUTOR_SOURCES
-    src/executor/circuit_breaker.cpp
-)
-
-# Database abstraction layer (always built)
-set(DB_SOURCES
-    src/db/pooled_connection.cpp
-    src/db/generic_connection_pool.cpp
-    src/db/generic_query_executor.cpp
-)
-
-# PostgreSQL backend (conditional)
-set(DB_POSTGRESQL_SOURCES "")
-if(ENABLE_POSTGRESQL)
-    set(DB_POSTGRESQL_SOURCES
-        src/db/postgresql/pg_connection.cpp
-        src/db/postgresql/pg_backend.cpp
-        src/db/postgresql/pg_sql_parser.cpp
-        src/db/postgresql/pg_schema_loader.cpp
-        src/db/postgresql/pg_type_map.cpp
-    )
+# Exclude disabled database backends
+if(NOT ENABLE_POSTGRESQL)
+    list(FILTER DB_SOURCES EXCLUDE REGEX "src/db/postgresql/")
 endif()
-
-# MySQL backend (conditional)
-set(DB_MYSQL_SOURCES "")
-if(ENABLE_MYSQL)
-    set(DB_MYSQL_SOURCES
-        src/db/mysql/mysql_connection.cpp
-        src/db/mysql/mysql_backend.cpp
-        src/db/mysql/mysql_sql_parser.cpp
-        src/db/mysql/mysql_schema_loader.cpp
-        src/db/mysql/mysql_type_map.cpp
-    )
+if(NOT ENABLE_MYSQL)
+    list(FILTER DB_SOURCES EXCLUDE REGEX "src/db/mysql/")
 endif()
-
-set(CLASSIFIER_SOURCES
-    src/classifier/classifier_registry.cpp
-)
-
-set(AUDIT_SOURCES
-    src/audit/audit_emitter.cpp
-)
-
-set(CONFIG_SOURCES
-    src/config/config_loader.cpp
-    src/config/config_watcher.cpp
-)
 
 set(LIB_SOURCES
     ${CORE_SOURCES}
@@ -165,8 +110,6 @@ set(LIB_SOURCES
     ${POLICY_SOURCES}
     ${EXECUTOR_SOURCES}
     ${DB_SOURCES}
-    ${DB_POSTGRESQL_SOURCES}
-    ${DB_MYSQL_SOURCES}
     ${CLASSIFIER_SOURCES}
     ${AUDIT_SOURCES}
     ${CONFIG_SOURCES}
@@ -284,16 +227,8 @@ if(BUILD_TESTS)
     )
     FetchContent_MakeAvailable(Catch2)
 
-    set(TEST_SOURCES
-        tests/test_fingerprinter.cpp
-        tests/test_parser.cpp
-        tests/test_analyzer.cpp
-        tests/test_policy_engine.cpp
-        tests/test_classifier.cpp
-        tests/test_rate_limiter.cpp
-        tests/test_config_reload.cpp
-        tests/test_stress.cpp
-    )
+    file(GLOB TEST_SOURCES tests/test_*.cpp)
+    list(FILTER TEST_SOURCES EXCLUDE REGEX "test_benchmark")
 
     add_executable(${PROJECT_NAME}_tests ${TEST_SOURCES})
 
@@ -330,7 +265,8 @@ if(BUILD_BENCHMARKS)
 
     FetchContent_MakeAvailable(benchmark)
 
-    add_executable(${PROJECT_NAME}_benchmarks tests/test_benchmark.cpp)
+    file(GLOB BENCHMARK_SOURCES tests/test_benchmark*.cpp)
+    add_executable(${PROJECT_NAME}_benchmarks ${BENCHMARK_SOURCES})
 
     target_link_libraries(${PROJECT_NAME}_benchmarks PRIVATE
         benchmark::benchmark

@@ -89,12 +89,8 @@ RUN mkdir -p build && \
 # Stage 5: Build Catch2 (cached until CMakeLists.txt changes, survives src/ edits)
 FROM proxy-builder AS test-deps
 
-# Create stub test files so cmake configure succeeds without real test sources
-RUN mkdir -p tests && \
-    for f in test_fingerprinter test_parser test_analyzer test_policy_engine \
-             test_classifier test_rate_limiter test_config_reload test_stress; do \
-        echo "// stub" > tests/${f}.cpp; \
-    done
+# Create a stub test file so cmake configure succeeds without real test sources
+RUN mkdir -p tests && echo "// stub" > tests/test_stub.cpp
 
 # Configure with tests enabled and build only Catch2
 RUN cd build && \
@@ -106,8 +102,9 @@ FROM test-deps AS test-builder
 # Copy real test sources (overwrites stubs, only this layer invalidates on test changes)
 COPY tests /build/sql_proxy/tests
 
-# Build test executable (Catch2 is already built and cached)
+# Reconfigure to re-glob real test files, then build (Catch2 is already cached)
 RUN cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON .. && \
     make -j$(nproc) sql_proxy_tests
 
 # Run tests
