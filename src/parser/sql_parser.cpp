@@ -15,6 +15,14 @@ extern "C" {
 
 namespace sqlproxy {
 
+// Constexpr AST field keys (used 2+ times in RangeVar extraction)
+static constexpr std::string_view kRangeVar   = "RangeVar";
+static constexpr std::string_view kRelname    = "relname";
+static constexpr std::string_view kSchemaname = "schemaname";
+static constexpr std::string_view kAliasFld   = "alias";
+static constexpr std::string_view kAlias      = "Alias";
+static constexpr std::string_view kAliasname  = "aliasname";
+
 // Static hash map for O(1) statement type lookup
 static const std::unordered_map<std::string_view, StatementType> STATEMENT_TYPE_MAP = {
     {"SelectStmt", StatementType::SELECT},
@@ -218,31 +226,31 @@ static void find_range_vars(const JsonValue& node,
                             std::vector<TableRef>& tables,
                             std::unordered_set<std::string>& seen_tables) {
     if (node.is_object()) {
-        if (node.contains("RangeVar")) {
-            const auto& range_var = node["RangeVar"];
+        if (node.contains(kRangeVar)) {
+            const auto& range_var = node[kRangeVar];
 
             // Early continue: skip malformed RangeVar (flattened from nested if-else)
-            if (range_var.contains("relname") && range_var["relname"].is_string()) {
-                std::string table_name = range_var["relname"].get<std::string>();
+            if (range_var.contains(kRelname) && range_var[kRelname].is_string()) {
+                std::string table_name = range_var[kRelname].get<std::string>();
 
                 // schemaname is optional
                 std::string schema_name;
-                if (range_var.contains("schemaname") && range_var["schemaname"].is_string()) {
-                    schema_name = range_var["schemaname"].get<std::string>();
+                if (range_var.contains(kSchemaname) && range_var[kSchemaname].is_string()) {
+                    schema_name = range_var[kSchemaname].get<std::string>();
                 }
 
                 // alias is optional
                 // libpg_query JSON wraps nodes by type: {"alias": {"Alias": {"aliasname": "..."}}}
                 std::string alias_name;
-                if (range_var.contains("alias") && range_var["alias"].is_object()) {
-                    const auto& alias_node = range_var["alias"];
-                    if (alias_node.contains("Alias") && alias_node["Alias"].is_object()) {
-                        const auto& inner = alias_node["Alias"];
-                        if (inner.contains("aliasname") && inner["aliasname"].is_string()) {
-                            alias_name = inner["aliasname"].get<std::string>();
+                if (range_var.contains(kAliasFld) && range_var[kAliasFld].is_object()) {
+                    const auto& alias_node = range_var[kAliasFld];
+                    if (alias_node.contains(kAlias) && alias_node[kAlias].is_object()) {
+                        const auto& inner = alias_node[kAlias];
+                        if (inner.contains(kAliasname) && inner[kAliasname].is_string()) {
+                            alias_name = inner[kAliasname].get<std::string>();
                         }
-                    } else if (alias_node.contains("aliasname") && alias_node["aliasname"].is_string()) {
-                        alias_name = alias_node["aliasname"].get<std::string>();
+                    } else if (alias_node.contains(kAliasname) && alias_node[kAliasname].is_string()) {
+                        alias_name = alias_node[kAliasname].get<std::string>();
                     }
                 }
 

@@ -7,6 +7,16 @@
 
 namespace sqlproxy {
 
+// Constexpr config keys (used 2+ times in policy parsing)
+static constexpr std::string_view kPolicies       = "policies";
+static constexpr std::string_view kUsers          = "users";
+static constexpr std::string_view kRoles          = "roles";
+static constexpr std::string_view kExcludeRoles   = "exclude_roles";
+static constexpr std::string_view kStatementTypes = "statement_types";
+static constexpr std::string_view kDatabase       = "database";
+static constexpr std::string_view kSchema         = "schema";
+static constexpr std::string_view kTable          = "table";
+
 // ============================================================================
 // Public API - Load from file
 // ============================================================================
@@ -35,11 +45,11 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
         const auto config = toml::parse_string(toml_content);
 
         // Extract [[policies]] array
-        if (!config.contains("policies") || !config["policies"].is_array()) {
+        if (!config.contains(kPolicies) || !config[kPolicies].is_array()) {
             return LoadResult::error("No [[policies]] array found in configuration");
         }
 
-        const auto& policies_array = config["policies"];
+        const auto& policies_array = config[kPolicies];
 
         // Parse each policy
         for (const auto& node : policies_array) {
@@ -64,8 +74,8 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             policy.action = *action;
 
             // Optional: users array
-            if (node.contains("users") && node["users"].is_array()) {
-                for (const auto& user : node["users"]) {
+            if (node.contains(kUsers) && node[kUsers].is_array()) {
+                for (const auto& user : node[kUsers]) {
                     if (user.is_string()) {
                         const std::string user_str = user.get<std::string>();
                         if (!user_str.empty()) {
@@ -76,8 +86,8 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             }
 
             // Optional: roles array
-            if (node.contains("roles") && node["roles"].is_array()) {
-                for (const auto& role : node["roles"]) {
+            if (node.contains(kRoles) && node[kRoles].is_array()) {
+                for (const auto& role : node[kRoles]) {
                     if (role.is_string()) {
                         const std::string role_str = role.get<std::string>();
                         if (!role_str.empty()) {
@@ -88,8 +98,8 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             }
 
             // Optional: exclude_roles array
-            if (node.contains("exclude_roles") && node["exclude_roles"].is_array()) {
-                for (const auto& role : node["exclude_roles"]) {
+            if (node.contains(kExcludeRoles) && node[kExcludeRoles].is_array()) {
+                for (const auto& role : node[kExcludeRoles]) {
                     if (role.is_string()) {
                         const std::string role_str = role.get<std::string>();
                         if (!role_str.empty()) {
@@ -100,8 +110,8 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             }
 
             // Optional: statement_types array
-            if (node.contains("statement_types") && node["statement_types"].is_array()) {
-                for (const auto& stmt : node["statement_types"]) {
+            if (node.contains(kStatementTypes) && node[kStatementTypes].is_array()) {
+                for (const auto& stmt : node[kStatementTypes]) {
                     if (stmt.is_string()) {
                         const std::string stmt_str = stmt.get<std::string>();
                         const auto stmt_type = parse_statement_type(stmt_str);
@@ -117,14 +127,14 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             }
 
             // Optional: Scope fields (database, schema, table)
-            if (node.contains("database") && node["database"].is_string()) {
-                policy.scope.database = node["database"].get<std::string>();
+            if (node.contains(kDatabase) && node[kDatabase].is_string()) {
+                policy.scope.database = node[kDatabase].get<std::string>();
             }
-            if (node.contains("schema") && node["schema"].is_string()) {
-                policy.scope.schema = node["schema"].get<std::string>();
+            if (node.contains(kSchema) && node[kSchema].is_string()) {
+                policy.scope.schema = node[kSchema].get<std::string>();
             }
-            if (node.contains("table") && node["table"].is_string()) {
-                policy.scope.table = node["table"].get<std::string>();
+            if (node.contains(kTable) && node[kTable].is_string()) {
+                policy.scope.table = node[kTable].get<std::string>();
             }
 
             // Optional: reason (for audit logs)

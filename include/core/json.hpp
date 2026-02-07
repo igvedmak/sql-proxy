@@ -66,14 +66,18 @@ public:
 
     [[nodiscard]] bool empty() const { return data_.empty(); }
     [[nodiscard]] size_t size() const { return data_.size(); }
-    [[nodiscard]] bool contains(const std::string& key) const { return data_.contains(key); }
+    [[nodiscard]] bool contains(std::string_view key) const {
+        if (!data_.is_object()) return false;
+        const auto& obj = data_.get_object();
+        return obj.find(std::string(key)) != obj.end();
+    }
 
     // ===== Const Element Access (returns copy) =====
 
-    [[nodiscard]] JsonValue operator[](const std::string& key) const {
+    [[nodiscard]] JsonValue operator[](std::string_view key) const {
         if (!data_.is_object()) return {};
         const auto& obj = data_.get_object();
-        auto it = obj.find(key);
+        auto it = obj.find(std::string(key));
         if (it != obj.end()) return JsonValue(it->second);
         return {};
     }
@@ -112,10 +116,10 @@ public:
 
     // value() with default (nlohmann-compatible: node.value("key", default))
     template <typename T>
-    [[nodiscard]] T value(const std::string& key, T default_value) const {
-        if (!data_.is_object() || !data_.contains(key)) return default_value;
+    [[nodiscard]] T value(std::string_view key, T default_value) const {
+        if (!data_.is_object()) return default_value;
         const auto& obj = data_.get_object();
-        auto it = obj.find(key);
+        auto it = obj.find(std::string(key));
         if (it == obj.end()) return default_value;
         return JsonValue(it->second).get<T>();
     }
@@ -255,10 +259,10 @@ public:
     }
 
     // Helper: create {"key": value} object (replaces mutable operator[] pattern)
-    [[nodiscard]] static JsonValue wrap(const std::string& key, JsonValue val) {
+    [[nodiscard]] static JsonValue wrap(std::string_view key, JsonValue val) {
         glz::json_t j;
         object_t obj;
-        obj[key] = std::move(val.data_);
+        obj[std::string(key)] = std::move(val.data_);
         j = std::move(obj);
         return JsonValue(std::move(j));
     }

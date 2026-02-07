@@ -460,7 +460,7 @@ std::optional<Decision> ConfigLoader::parse_action(const std::string& action_str
 namespace {
 
 template<typename T>
-T json_value(const JsonValue& obj, const std::string& key, const T& default_val) {
+T json_value(const JsonValue& obj, std::string_view key, const T& default_val) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
             return obj[key].get<T>();
@@ -472,12 +472,12 @@ T json_value(const JsonValue& obj, const std::string& key, const T& default_val)
 }
 
 // Specialization-like overloads for common types
-std::string json_string(const JsonValue& obj, const std::string& key,
+std::string json_string(const JsonValue& obj, std::string_view key,
                         const std::string& default_val = "") {
     return json_value<std::string>(obj, key, default_val);
 }
 
-int json_int(const JsonValue& obj, const std::string& key, int default_val = 0) {
+int json_int(const JsonValue& obj, std::string_view key, int default_val = 0) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
             auto val = obj[key];
@@ -495,7 +495,7 @@ int json_int(const JsonValue& obj, const std::string& key, int default_val = 0) 
     return default_val;
 }
 
-uint32_t json_uint32(const JsonValue& obj, const std::string& key, uint32_t default_val = 0) {
+uint32_t json_uint32(const JsonValue& obj, std::string_view key, uint32_t default_val = 0) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
             auto val = obj[key];
@@ -507,7 +507,7 @@ uint32_t json_uint32(const JsonValue& obj, const std::string& key, uint32_t defa
     return default_val;
 }
 
-size_t json_size(const JsonValue& obj, const std::string& key, size_t default_val = 0) {
+size_t json_size(const JsonValue& obj, std::string_view key, size_t default_val = 0) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
             auto val = obj[key];
@@ -519,11 +519,11 @@ size_t json_size(const JsonValue& obj, const std::string& key, size_t default_va
     return default_val;
 }
 
-bool json_bool(const JsonValue& obj, const std::string& key, bool default_val = false) {
+bool json_bool(const JsonValue& obj, std::string_view key, bool default_val = false) {
     return json_value<bool>(obj, key, default_val);
 }
 
-double json_double(const JsonValue& obj, const std::string& key, double default_val = 0.0) {
+double json_double(const JsonValue& obj, std::string_view key, double default_val = 0.0) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
             auto val = obj[key];
@@ -535,7 +535,7 @@ double json_double(const JsonValue& obj, const std::string& key, double default_
     return default_val;
 }
 
-std::vector<std::string> json_string_array(const JsonValue& obj, const std::string& key) {
+std::vector<std::string> json_string_array(const JsonValue& obj, std::string_view key) {
     std::vector<std::string> result;
     if (!obj.contains(key) || !obj[key].is_array()) {
         return result;
@@ -550,7 +550,7 @@ std::vector<std::string> json_string_array(const JsonValue& obj, const std::stri
     return result;
 }
 
-std::optional<std::string> json_optional_string(const JsonValue& obj, const std::string& key) {
+std::optional<std::string> json_optional_string(const JsonValue& obj, std::string_view key) {
     if (obj.contains(key) && obj[key].is_string()) {
         return obj[key].get<std::string>();
     }
@@ -558,6 +558,27 @@ std::optional<std::string> json_optional_string(const JsonValue& obj, const std:
 }
 
 } // anonymous namespace
+
+// Constexpr config keys (used 2+ times across section extractors)
+static constexpr std::string_view kDatabases         = "databases";
+static constexpr std::string_view kUsers             = "users";
+static constexpr std::string_view kPolicies          = "policies";
+static constexpr std::string_view kClassifiers       = "classifiers";
+static constexpr std::string_view kGlobal            = "global";
+static constexpr std::string_view kPerUser           = "per_user";
+static constexpr std::string_view kPerUserDefault    = "per_user_default";
+static constexpr std::string_view kPerDatabase       = "per_database";
+static constexpr std::string_view kPerUserPerDatabase = "per_user_per_database";
+static constexpr std::string_view kTokensPerSecond   = "tokens_per_second";
+static constexpr std::string_view kBurstCapacity     = "burst_capacity";
+static constexpr std::string_view kEnabled           = "enabled";
+static constexpr std::string_view kDatabase          = "database";
+static constexpr std::string_view kFile              = "file";
+static constexpr std::string_view kFlushIntervalMs   = "flush_interval_ms";
+static constexpr std::string_view kName              = "name";
+static constexpr std::string_view kUser              = "user";
+static constexpr std::string_view kRoles             = "roles";
+static constexpr std::string_view kType              = "type";
 
 // ---- Section extractors ----------------------------------------------------
 
@@ -591,15 +612,15 @@ LoggingConfig ConfigLoader::extract_logging(const JsonValue& root) {
 
 std::vector<DatabaseConfig> ConfigLoader::extract_databases(const JsonValue& root) {
     std::vector<DatabaseConfig> result;
-    if (!root.contains("databases") || !root["databases"].is_array()) {
+    if (!root.contains(kDatabases) || !root[kDatabases].is_array()) {
         return result;
     }
-    const auto arr = root["databases"];
+    const auto arr = root[kDatabases];
     result.reserve(arr.size());
     for (const auto& db : arr) {
         DatabaseConfig cfg;
-        cfg.name = json_string(db, "name", "default");
-        cfg.type_str = json_string(db, "type", "postgresql");
+        cfg.name = json_string(db, kName, "default");
+        cfg.type_str = json_string(db, kType, "postgresql");
         cfg.connection_string = json_string(db, "connection_string", "");
         cfg.min_connections = json_size(db, "min_connections", 2);
         cfg.max_connections = json_size(db, "max_connections", 10);
@@ -619,17 +640,17 @@ std::vector<DatabaseConfig> ConfigLoader::extract_databases(const JsonValue& roo
 
 std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const JsonValue& root) {
     std::unordered_map<std::string, UserInfo> result;
-    if (!root.contains("users") || !root["users"].is_array()) {
+    if (!root.contains(kUsers) || !root[kUsers].is_array()) {
         return result;
     }
-    const auto arr = root["users"];
+    const auto arr = root[kUsers];
     for (const auto& u : arr) {
         UserInfo info;
-        info.name = json_string(u, "name", "");
+        info.name = json_string(u, kName, "");
         if (info.name.empty()) {
             continue; // Skip unnamed users
         }
-        info.roles = json_string_array(u, "roles");
+        info.roles = json_string_array(u, kRoles);
         result.emplace(info.name, std::move(info));
     }
     return result;
@@ -637,17 +658,17 @@ std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const Json
 
 std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
     std::vector<Policy> result;
-    if (!root.contains("policies") || !root["policies"].is_array()) {
+    if (!root.contains(kPolicies) || !root[kPolicies].is_array()) {
         return result;
     }
-    const auto arr = root["policies"];
+    const auto arr = root[kPolicies];
     result.reserve(arr.size());
 
     for (const auto& p : arr) {
         Policy policy;
 
         // Required: name
-        policy.name = json_string(p, "name", "");
+        policy.name = json_string(p, kName, "");
         if (policy.name.empty()) {
             continue; // Skip unnamed policies
         }
@@ -661,13 +682,13 @@ std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
         policy.action = action.value_or(Decision::BLOCK);
 
         // Optional: users array
-        const auto users = json_string_array(p, "users");
+        const auto users = json_string_array(p, kUsers);
         for (const auto& user : users) {
             policy.users.insert(user);
         }
 
         // Optional: roles array
-        const auto roles = json_string_array(p, "roles");
+        const auto roles = json_string_array(p, kRoles);
         for (const auto& role : roles) {
             policy.roles.insert(role);
         }
@@ -688,7 +709,7 @@ std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
         }
 
         // Optional: scope fields
-        policy.scope.database = json_optional_string(p, "database");
+        policy.scope.database = json_optional_string(p, kDatabase);
         policy.scope.schema = json_optional_string(p, "schema");
         policy.scope.table = json_optional_string(p, "table");
 
@@ -708,24 +729,24 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const JsonValue& root) {
     }
     const auto rl = root["rate_limiting"];
 
-    cfg.enabled = json_bool(rl, "enabled", true);
+    cfg.enabled = json_bool(rl, kEnabled, true);
 
     // Level 1: Global
-    if (rl.contains("global") && rl["global"].is_object()) {
-        const auto g = rl["global"];
-        cfg.global_tokens_per_second = json_uint32(g, "tokens_per_second", 50000);
-        cfg.global_burst_capacity = json_uint32(g, "burst_capacity", 10000);
+    if (rl.contains(kGlobal) && rl[kGlobal].is_object()) {
+        const auto g = rl[kGlobal];
+        cfg.global_tokens_per_second = json_uint32(g, kTokensPerSecond, 50000);
+        cfg.global_burst_capacity = json_uint32(g, kBurstCapacity, 10000);
     }
 
     // Level 2: Per-User overrides
-    if (rl.contains("per_user") && rl["per_user"].is_array()) {
-        const auto arr = rl["per_user"];
+    if (rl.contains(kPerUser) && rl[kPerUser].is_array()) {
+        const auto arr = rl[kPerUser];
         cfg.per_user.reserve(arr.size());
         for (const auto& u : arr) {
             PerUserRateLimit limit;
-            limit.user = json_string(u, "user", "");
-            limit.tokens_per_second = json_uint32(u, "tokens_per_second", 100);
-            limit.burst_capacity = json_uint32(u, "burst_capacity", 20);
+            limit.user = json_string(u, kUser, "");
+            limit.tokens_per_second = json_uint32(u, kTokensPerSecond, 100);
+            limit.burst_capacity = json_uint32(u, kBurstCapacity, 20);
             if (!limit.user.empty()) {
                 cfg.per_user.push_back(std::move(limit));
             }
@@ -733,21 +754,21 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const JsonValue& root) {
     }
 
     // Per-User defaults
-    if (rl.contains("per_user_default") && rl["per_user_default"].is_object()) {
-        const auto d = rl["per_user_default"];
-        cfg.per_user_default_tokens_per_second = json_uint32(d, "tokens_per_second", 100);
-        cfg.per_user_default_burst_capacity = json_uint32(d, "burst_capacity", 20);
+    if (rl.contains(kPerUserDefault) && rl[kPerUserDefault].is_object()) {
+        const auto d = rl[kPerUserDefault];
+        cfg.per_user_default_tokens_per_second = json_uint32(d, kTokensPerSecond, 100);
+        cfg.per_user_default_burst_capacity = json_uint32(d, kBurstCapacity, 20);
     }
 
     // Level 3: Per-Database
-    if (rl.contains("per_database") && rl["per_database"].is_array()) {
-        const auto arr = rl["per_database"];
+    if (rl.contains(kPerDatabase) && rl[kPerDatabase].is_array()) {
+        const auto arr = rl[kPerDatabase];
         cfg.per_database.reserve(arr.size());
         for (const auto& db : arr) {
             PerDatabaseRateLimit limit;
-            limit.database = json_string(db, "database", "");
-            limit.tokens_per_second = json_uint32(db, "tokens_per_second", 30000);
-            limit.burst_capacity = json_uint32(db, "burst_capacity", 5000);
+            limit.database = json_string(db, kDatabase, "");
+            limit.tokens_per_second = json_uint32(db, kTokensPerSecond, 30000);
+            limit.burst_capacity = json_uint32(db, kBurstCapacity, 5000);
             if (!limit.database.empty()) {
                 cfg.per_database.push_back(std::move(limit));
             }
@@ -755,15 +776,15 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const JsonValue& root) {
     }
 
     // Level 4: Per-User-Per-Database
-    if (rl.contains("per_user_per_database") && rl["per_user_per_database"].is_array()) {
-        const auto arr = rl["per_user_per_database"];
+    if (rl.contains(kPerUserPerDatabase) && rl[kPerUserPerDatabase].is_array()) {
+        const auto arr = rl[kPerUserPerDatabase];
         cfg.per_user_per_database.reserve(arr.size());
         for (const auto& upd : arr) {
             PerUserPerDatabaseRateLimit limit;
-            limit.user = json_string(upd, "user", "");
-            limit.database = json_string(upd, "database", "");
-            limit.tokens_per_second = json_uint32(upd, "tokens_per_second", 100);
-            limit.burst_capacity = json_uint32(upd, "burst_capacity", 20);
+            limit.user = json_string(upd, kUser, "");
+            limit.database = json_string(upd, kDatabase, "");
+            limit.tokens_per_second = json_uint32(upd, kTokensPerSecond, 100);
+            limit.burst_capacity = json_uint32(upd, kBurstCapacity, 20);
             if (!limit.user.empty() && !limit.database.empty()) {
                 cfg.per_user_per_database.push_back(std::move(limit));
             }
@@ -795,23 +816,23 @@ AuditConfig ConfigLoader::extract_audit(const JsonValue& root) {
     cfg.async_mode = json_bool(a, "async_mode", true);
     cfg.ring_buffer_size = json_size(a, "ring_buffer_size", 65536);
     cfg.batch_flush_interval = std::chrono::milliseconds(
-        json_int(a, "flush_interval_ms", 1000));
+        json_int(a, kFlushIntervalMs, 1000));
     cfg.max_batch_size = json_size(a, "max_batch_size", 1000);
     cfg.fsync_interval_batches = json_int(a, "fsync_interval_batches", 10);
 
     // File sink settings
-    if (a.contains("file") && a["file"].is_object()) {
-        const auto f = a["file"];
+    if (a.contains(kFile) && a[kFile].is_object()) {
+        const auto f = a[kFile];
         cfg.output_file = json_string(f, "output_file", "audit.jsonl");
     }
 
     // Database sink settings (batch_size and flush_interval_ms can also
     // come from the database sub-section; the top-level AuditConfig
     // captures only what the struct supports)
-    if (a.contains("database") && a["database"].is_object()) {
-        const auto db = a["database"];
+    if (a.contains(kDatabase) && a[kDatabase].is_object()) {
+        const auto db = a[kDatabase];
         // If there's a db-specific flush_interval_ms, prefer it
-        const int db_flush = json_int(db, "flush_interval_ms", 0);
+        const int db_flush = json_int(db, kFlushIntervalMs, 0);
         if (db_flush > 0) {
             cfg.batch_flush_interval = std::chrono::milliseconds(db_flush);
         }
@@ -822,15 +843,15 @@ AuditConfig ConfigLoader::extract_audit(const JsonValue& root) {
 
 std::vector<ClassifierConfig> ConfigLoader::extract_classifiers(const JsonValue& root) {
     std::vector<ClassifierConfig> result;
-    if (!root.contains("classifiers") || !root["classifiers"].is_array()) {
+    if (!root.contains(kClassifiers) || !root[kClassifiers].is_array()) {
         return result;
     }
-    const auto arr = root["classifiers"];
+    const auto arr = root[kClassifiers];
     result.reserve(arr.size());
 
     for (const auto& c : arr) {
         ClassifierConfig cfg;
-        cfg.type = json_string(c, "type", "");
+        cfg.type = json_string(c, kType, "");
         cfg.strategy = json_string(c, "strategy", "");
         cfg.patterns = json_string_array(c, "patterns");
         cfg.data_validation_regex = json_string(c, "data_validation_regex", "");
@@ -851,7 +872,7 @@ CircuitBreakerConfig ConfigLoader::extract_circuit_breaker(const JsonValue& root
         return cfg;
     }
     const auto cb = root["circuit_breaker"];
-    cfg.enabled = json_bool(cb, "enabled", true);
+    cfg.enabled = json_bool(cb, kEnabled, true);
     cfg.failure_threshold = json_int(cb, "failure_threshold", 10);
     cfg.success_threshold = json_int(cb, "success_threshold", 5);
     cfg.timeout_ms = json_int(cb, "timeout_ms", 60000);
@@ -865,7 +886,7 @@ AllocatorConfig ConfigLoader::extract_allocator(const JsonValue& root) {
         return cfg;
     }
     const auto a = root["allocator"];
-    cfg.enabled = json_bool(a, "enabled", true);
+    cfg.enabled = json_bool(a, kEnabled, true);
     cfg.initial_size_bytes = json_size(a, "initial_size_bytes", 1024);
     cfg.max_size_bytes = json_size(a, "max_size_bytes", 65536);
     return cfg;
@@ -877,7 +898,7 @@ MetricsConfig ConfigLoader::extract_metrics(const JsonValue& root) {
         return cfg;
     }
     const auto m = root["metrics"];
-    cfg.enabled = json_bool(m, "enabled", true);
+    cfg.enabled = json_bool(m, kEnabled, true);
     cfg.endpoint = json_string(m, "endpoint", "/metrics");
     cfg.export_interval_ms = json_int(m, "export_interval_ms", 5000);
     return cfg;
@@ -889,7 +910,7 @@ ConfigWatcherConfig ConfigLoader::extract_config_watcher(const JsonValue& root) 
         return cfg;
     }
     const auto cw = root["config_watcher"];
-    cfg.enabled = json_bool(cw, "enabled", true);
+    cfg.enabled = json_bool(cw, kEnabled, true);
     cfg.poll_interval_seconds = json_int(cw, "poll_interval_seconds", 5);
     return cfg;
 }

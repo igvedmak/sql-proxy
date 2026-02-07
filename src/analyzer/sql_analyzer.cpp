@@ -17,6 +17,83 @@ using json = sqlproxy::JsonValue;
 namespace sqlproxy {
 
 // ============================================================================
+// Constexpr AST node keys (libpg_query JSON field names used 2+ times)
+// ============================================================================
+
+// Statement types
+static constexpr std::string_view kSelectStmt    = "SelectStmt";
+static constexpr std::string_view kInsertStmt    = "InsertStmt";
+static constexpr std::string_view kUpdateStmt    = "UpdateStmt";
+static constexpr std::string_view kDeleteStmt    = "DeleteStmt";
+
+// Node types
+static constexpr std::string_view kRangeVar      = "RangeVar";
+static constexpr std::string_view kJoinExpr      = "JoinExpr";
+static constexpr std::string_view kSubLink       = "SubLink";
+static constexpr std::string_view kFuncCall      = "FuncCall";
+static constexpr std::string_view kResTarget     = "ResTarget";
+static constexpr std::string_view kColumnRef     = "ColumnRef";
+static constexpr std::string_view kStringNode    = "String";
+static constexpr std::string_view kIntegerNode   = "Integer";
+static constexpr std::string_view kAlias         = "Alias";
+static constexpr std::string_view kCaseExpr      = "CaseExpr";
+static constexpr std::string_view kCaseWhen      = "CaseWhen";
+static constexpr std::string_view kCoalesceExpr  = "CoalesceExpr";
+static constexpr std::string_view kTypeCast      = "TypeCast";
+static constexpr std::string_view kBoolExpr      = "BoolExpr";
+static constexpr std::string_view kNullTest      = "NullTest";
+static constexpr std::string_view kAExpr         = "A_Expr";
+static constexpr std::string_view kAConst        = "A_Const";
+static constexpr std::string_view kAArrayExpr    = "A_ArrayExpr";
+static constexpr std::string_view kAStar         = "A_Star";
+static constexpr std::string_view kRangeSubselect = "RangeSubselect";
+static constexpr std::string_view kWithClause    = "WithClause";
+static constexpr std::string_view kCommonTableExpr = "CommonTableExpr";
+
+// Field names
+static constexpr std::string_view kArgs          = "args";
+static constexpr std::string_view kArg           = "arg";
+static constexpr std::string_view kFields        = "fields";
+static constexpr std::string_view kRelname       = "relname";
+static constexpr std::string_view kSchemaname    = "schemaname";
+static constexpr std::string_view kAliasname     = "aliasname";
+static constexpr std::string_view kAliasFld      = "alias";
+static constexpr std::string_view kFromClause    = "fromClause";
+static constexpr std::string_view kWhereClause   = "whereClause";
+static constexpr std::string_view kTargetList    = "targetList";
+static constexpr std::string_view kRelation      = "relation";
+static constexpr std::string_view kSelectStmtFld = "selectStmt";
+static constexpr std::string_view kSubselect     = "subselect";
+static constexpr std::string_view kSubquery      = "subquery";
+static constexpr std::string_view kTestexpr      = "testexpr";
+static constexpr std::string_view kLarg          = "larg";
+static constexpr std::string_view kRarg          = "rarg";
+static constexpr std::string_view kLexpr         = "lexpr";
+static constexpr std::string_view kRexpr         = "rexpr";
+static constexpr std::string_view kFuncname      = "funcname";
+static constexpr std::string_view kAggStar       = "agg_star";
+static constexpr std::string_view kCols          = "cols";
+static constexpr std::string_view kVal           = "val";
+static constexpr std::string_view kSval          = "sval";
+static constexpr std::string_view kIval          = "ival";
+static constexpr std::string_view kFval          = "fval";
+static constexpr std::string_view kStmts         = "stmts";
+static constexpr std::string_view kStmt          = "stmt";
+static constexpr std::string_view kQuals         = "quals";
+static constexpr std::string_view kCtes          = "ctes";
+static constexpr std::string_view kCtequery      = "ctequery";
+static constexpr std::string_view kWithClauseFld = "withClause";
+static constexpr std::string_view kGroupClause   = "groupClause";
+static constexpr std::string_view kHavingClause  = "havingClause";
+static constexpr std::string_view kLimitCount    = "limitCount";
+static constexpr std::string_view kElements      = "elements";
+static constexpr std::string_view kDefresult     = "defresult";
+static constexpr std::string_view kExpr          = "expr";
+static constexpr std::string_view kResult        = "result";
+static constexpr std::string_view kName          = "name";
+static constexpr std::string_view kStr           = "str";
+
+// ============================================================================
 // Static lookup tables
 // ============================================================================
 
@@ -42,12 +119,12 @@ static const std::unordered_set<std::string> AGGREGATE_FUNCTIONS = {
 // ============================================================================
 
 // Safely check if a JSON object contains a key and it is not null
-[[nodiscard]] static inline bool has_key(const json& node, const std::string& key) {
+[[nodiscard]] static inline bool has_key(const json& node, std::string_view key) {
     return node.is_object() && node.contains(key) && !node[key].is_null();
 }
 
 // Safely get a string value from a JSON node, returning empty string on failure
-[[nodiscard]] static inline std::string get_string(const json& node, const std::string& key) {
+[[nodiscard]] static inline std::string get_string(const json& node, std::string_view key) {
     if (node.is_object() && node.contains(key) && node[key].is_string()) {
         return node[key].get<std::string>();
     }
@@ -55,7 +132,7 @@ static const std::unordered_set<std::string> AGGREGATE_FUNCTIONS = {
 }
 
 // Safely get an integer value from a JSON node
-[[nodiscard]] static inline std::optional<int64_t> get_int(const json& node, const std::string& key) {
+[[nodiscard]] static inline std::optional<int64_t> get_int(const json& node, std::string_view key) {
     if (node.is_object() && node.contains(key) && node[key].is_number_integer()) {
         return node[key].get<int64_t>();
     }
@@ -86,16 +163,16 @@ static const std::unordered_set<std::string> AGGREGATE_FUNCTIONS = {
 // Get the first statement node from the top-level parse tree
 // Structure: {"version": N, "stmts": [{"stmt": {"SelectStmt": {...}}}]}
 [[nodiscard]] static json get_first_stmt(const json& root) {
-    if (!has_key(root, "stmts") || !root["stmts"].is_array() || root["stmts"].empty()) {
+    if (!has_key(root, kStmts) || !root[kStmts].is_array() || root[kStmts].empty()) {
         return json();
     }
 
-    const auto& first = root["stmts"][0];
-    if (!has_key(first, "stmt")) {
+    const auto& first = root[kStmts][0];
+    if (!has_key(first, kStmt)) {
         return json();
     }
 
-    return first["stmt"];
+    return first[kStmt];
 }
 
 // Get the inner statement object (e.g., the SelectStmt, InsertStmt, etc.)
@@ -141,28 +218,28 @@ static void walk_expr_for_columns(const json& node,
     }
 
     // Object: check for known expression node types
-    if (has_key(node, "ColumnRef")) {
-        extract_column_refs_from_node(node["ColumnRef"], columns, table_qualified_columns);
+    if (has_key(node, kColumnRef)) {
+        extract_column_refs_from_node(node[kColumnRef], columns, table_qualified_columns);
         return;
     }
 
     // A_Expr: arithmetic/comparison expression
-    if (has_key(node, "A_Expr")) {
-        const auto& expr = node["A_Expr"];
-        if (has_key(expr, "lexpr")) {
-            walk_expr_for_columns(expr["lexpr"], columns, table_qualified_columns);
+    if (has_key(node, kAExpr)) {
+        const auto& expr = node[kAExpr];
+        if (has_key(expr, kLexpr)) {
+            walk_expr_for_columns(expr[kLexpr], columns, table_qualified_columns);
         }
-        if (has_key(expr, "rexpr")) {
-            walk_expr_for_columns(expr["rexpr"], columns, table_qualified_columns);
+        if (has_key(expr, kRexpr)) {
+            walk_expr_for_columns(expr[kRexpr], columns, table_qualified_columns);
         }
         return;
     }
 
     // BoolExpr: AND/OR/NOT
-    if (has_key(node, "BoolExpr")) {
-        const auto& expr = node["BoolExpr"];
-        if (has_key(expr, "args") && expr["args"].is_array()) {
-            for (const auto& arg : expr["args"]) {
+    if (has_key(node, kBoolExpr)) {
+        const auto& expr = node[kBoolExpr];
+        if (has_key(expr, kArgs) && expr[kArgs].is_array()) {
+            for (const auto& arg : expr[kArgs]) {
                 walk_expr_for_columns(arg, columns, table_qualified_columns);
             }
         }
@@ -170,10 +247,10 @@ static void walk_expr_for_columns(const json& node,
     }
 
     // FuncCall
-    if (has_key(node, "FuncCall")) {
-        const auto& func = node["FuncCall"];
-        if (has_key(func, "args") && func["args"].is_array()) {
-            for (const auto& arg : func["args"]) {
+    if (has_key(node, kFuncCall)) {
+        const auto& func = node[kFuncCall];
+        if (has_key(func, kArgs) && func[kArgs].is_array()) {
+            for (const auto& arg : func[kArgs]) {
                 walk_expr_for_columns(arg, columns, table_qualified_columns);
             }
         }
@@ -181,63 +258,63 @@ static void walk_expr_for_columns(const json& node,
     }
 
     // NullTest (e.g., col IS NULL)
-    if (has_key(node, "NullTest")) {
-        const auto& nt = node["NullTest"];
-        if (has_key(nt, "arg")) {
-            walk_expr_for_columns(nt["arg"], columns, table_qualified_columns);
+    if (has_key(node, kNullTest)) {
+        const auto& nt = node[kNullTest];
+        if (has_key(nt, kArg)) {
+            walk_expr_for_columns(nt[kArg], columns, table_qualified_columns);
         }
         return;
     }
 
     // SubLink (subquery expression)
-    if (has_key(node, "SubLink")) {
-        const auto& sub = node["SubLink"];
-        if (has_key(sub, "testexpr")) {
-            walk_expr_for_columns(sub["testexpr"], columns, table_qualified_columns);
+    if (has_key(node, kSubLink)) {
+        const auto& sub = node[kSubLink];
+        if (has_key(sub, kTestexpr)) {
+            walk_expr_for_columns(sub[kTestexpr], columns, table_qualified_columns);
         }
         // Don't recurse into the subselect - those are separate scopes
         return;
     }
 
     // TypeCast (e.g., col::text)
-    if (has_key(node, "TypeCast")) {
-        const auto& tc = node["TypeCast"];
-        if (has_key(tc, "arg")) {
-            walk_expr_for_columns(tc["arg"], columns, table_qualified_columns);
+    if (has_key(node, kTypeCast)) {
+        const auto& tc = node[kTypeCast];
+        if (has_key(tc, kArg)) {
+            walk_expr_for_columns(tc[kArg], columns, table_qualified_columns);
         }
         return;
     }
 
     // CaseExpr
-    if (has_key(node, "CaseExpr")) {
-        const auto& ce = node["CaseExpr"];
-        if (has_key(ce, "arg")) {
-            walk_expr_for_columns(ce["arg"], columns, table_qualified_columns);
+    if (has_key(node, kCaseExpr)) {
+        const auto& ce = node[kCaseExpr];
+        if (has_key(ce, kArg)) {
+            walk_expr_for_columns(ce[kArg], columns, table_qualified_columns);
         }
-        if (has_key(ce, "args") && ce["args"].is_array()) {
-            for (const auto& when_clause : ce["args"]) {
-                if (has_key(when_clause, "CaseWhen")) {
-                    const auto& cw = when_clause["CaseWhen"];
-                    if (has_key(cw, "expr")) {
-                        walk_expr_for_columns(cw["expr"], columns, table_qualified_columns);
+        if (has_key(ce, kArgs) && ce[kArgs].is_array()) {
+            for (const auto& when_clause : ce[kArgs]) {
+                if (has_key(when_clause, kCaseWhen)) {
+                    const auto& cw = when_clause[kCaseWhen];
+                    if (has_key(cw, kExpr)) {
+                        walk_expr_for_columns(cw[kExpr], columns, table_qualified_columns);
                     }
-                    if (has_key(cw, "result")) {
-                        walk_expr_for_columns(cw["result"], columns, table_qualified_columns);
+                    if (has_key(cw, kResult)) {
+                        walk_expr_for_columns(cw[kResult], columns, table_qualified_columns);
                     }
                 }
             }
         }
-        if (has_key(ce, "defresult")) {
-            walk_expr_for_columns(ce["defresult"], columns, table_qualified_columns);
+        if (has_key(ce, kDefresult)) {
+            walk_expr_for_columns(ce[kDefresult], columns, table_qualified_columns);
         }
         return;
     }
 
     // CoalesceExpr
-    if (has_key(node, "CoalesceExpr")) {
-        const auto& ce = node["CoalesceExpr"];
-        if (has_key(ce, "args") && ce["args"].is_array()) {
-            for (const auto& arg : ce["args"]) {
+    if (has_key(node, kCoalesceExpr)) {
+        const auto& ce = node[kCoalesceExpr];
+        if (has_key(ce, kArgs) && ce[kArgs].is_array()) {
+            for (const auto& arg : ce[kArgs]) {
                 walk_expr_for_columns(arg, columns, table_qualified_columns);
             }
         }
@@ -245,10 +322,10 @@ static void walk_expr_for_columns(const json& node,
     }
 
     // A_ArrayExpr (array constructor)
-    if (has_key(node, "A_ArrayExpr")) {
-        const auto& arr = node["A_ArrayExpr"];
-        if (has_key(arr, "elements") && arr["elements"].is_array()) {
-            for (const auto& elem : arr["elements"]) {
+    if (has_key(node, kAArrayExpr)) {
+        const auto& arr = node[kAArrayExpr];
+        if (has_key(arr, kElements) && arr[kElements].is_array()) {
+            for (const auto& elem : arr[kElements]) {
                 walk_expr_for_columns(elem, columns, table_qualified_columns);
             }
         }
@@ -266,20 +343,20 @@ static void walk_expr_for_columns(const json& node,
 static void extract_column_refs_from_node(const json& col_ref,
                                           std::vector<std::string>& columns,
                                           std::vector<std::string>& table_qualified_columns) {
-    if (!has_key(col_ref, "fields") || !col_ref["fields"].is_array()) {
+    if (!has_key(col_ref, kFields) || !col_ref[kFields].is_array()) {
         return;
     }
 
-    const auto& fields = col_ref["fields"];
+    const auto& fields = col_ref[kFields];
     std::vector<std::string> parts;
 
     for (const auto& field : fields) {
-        if (has_key(field, "String")) {
+        if (has_key(field, kStringNode)) {
             // libpg_query v17 uses "sval" inside String node
-            std::string val = get_string(field["String"], "sval");
+            std::string val = get_string(field[kStringNode], kSval);
             if (val.empty()) {
                 // Fallback: some versions use "str"
-                val = get_string(field["String"], "str");
+                val = get_string(field[kStringNode], kStr);
             }
             if (!val.empty()) {
                 parts.push_back(std::move(val));
@@ -314,12 +391,12 @@ static void collect_column_names(const json& node, std::vector<std::string>& col
 // ============================================================================
 
 [[nodiscard]] static bool is_star_ref(const json& col_ref) {
-    if (!has_key(col_ref, "fields") || !col_ref["fields"].is_array()) {
+    if (!has_key(col_ref, kFields) || !col_ref[kFields].is_array()) {
         return false;
     }
 
-    for (const auto& field : col_ref["fields"]) {
-        if (has_key(field, "A_Star")) {
+    for (const auto& field : col_ref[kFields]) {
+        if (has_key(field, kAStar)) {
             return true;
         }
     }
@@ -331,23 +408,23 @@ static void collect_column_names(const json& node, std::vector<std::string>& col
 // ============================================================================
 
 [[nodiscard]] static std::string extract_func_name(const json& func_call) {
-    if (!has_key(func_call, "funcname") || !func_call["funcname"].is_array()) {
+    if (!has_key(func_call, kFuncname) || !func_call[kFuncname].is_array()) {
         return {};
     }
 
     // funcname is an array of String nodes (e.g., [{"String": {"sval": "upper"}}])
     // For schema-qualified: [{"String": {"sval": "pg_catalog"}}, {"String": {"sval": "count"}}]
     // We want the last element (actual function name)
-    const auto& funcname = func_call["funcname"];
+    const auto& funcname = func_call[kFuncname];
     if (funcname.empty()) {
         return {};
     }
 
     const auto& last = funcname.back();
-    if (has_key(last, "String")) {
-        std::string name = get_string(last["String"], "sval");
+    if (has_key(last, kStringNode)) {
+        std::string name = get_string(last[kStringNode], kSval);
         if (name.empty()) {
-            name = get_string(last["String"], "str");
+            name = get_string(last[kStringNode], kStr);
         }
         return name;
     }
@@ -399,18 +476,18 @@ static void walk_for_tables(const json& node,
     }
 
     // RangeVar: direct table reference
-    if (has_key(node, "RangeVar")) {
-        const auto& rv = node["RangeVar"];
-        std::string relname = get_string(rv, "relname");
+    if (has_key(node, kRangeVar)) {
+        const auto& rv = node[kRangeVar];
+        std::string relname = get_string(rv, kRelname);
         if (!relname.empty()) {
-            std::string schemaname = get_string(rv, "schemaname");
+            std::string schemaname = get_string(rv, kSchemaname);
             std::string alias_name;
 
             // Extract alias from Alias node
-            if (has_key(rv, "alias") && has_key(rv["alias"], "Alias")) {
-                alias_name = get_string(rv["alias"]["Alias"], "aliasname");
-            } else if (has_key(rv, "alias") && rv["alias"].is_object()) {
-                alias_name = get_string(rv["alias"], "aliasname");
+            if (has_key(rv, kAliasFld) && has_key(rv[kAliasFld], kAlias)) {
+                alias_name = get_string(rv[kAliasFld][kAlias], kAliasname);
+            } else if (has_key(rv, kAliasFld) && rv[kAliasFld].is_object()) {
+                alias_name = get_string(rv[kAliasFld], kAliasname);
             }
 
             std::string key;
@@ -432,95 +509,95 @@ static void walk_for_tables(const json& node,
     }
 
     // JoinExpr: walk left and right args, plus quals
-    if (has_key(node, "JoinExpr")) {
-        const auto& je = node["JoinExpr"];
-        if (has_key(je, "larg")) {
-            walk_for_tables(je["larg"], tables, seen);
+    if (has_key(node, kJoinExpr)) {
+        const auto& je = node[kJoinExpr];
+        if (has_key(je, kLarg)) {
+            walk_for_tables(je[kLarg], tables, seen);
         }
-        if (has_key(je, "rarg")) {
-            walk_for_tables(je["rarg"], tables, seen);
+        if (has_key(je, kRarg)) {
+            walk_for_tables(je[kRarg], tables, seen);
         }
         // Don't recurse into quals - those contain column refs, not table refs
         return;
     }
 
     // RangeSubselect: subquery in FROM clause - recurse into subselect
-    if (has_key(node, "RangeSubselect")) {
-        const auto& rs = node["RangeSubselect"];
-        if (has_key(rs, "subquery")) {
-            walk_for_tables(rs["subquery"], tables, seen);
+    if (has_key(node, kRangeSubselect)) {
+        const auto& rs = node[kRangeSubselect];
+        if (has_key(rs, kSubquery)) {
+            walk_for_tables(rs[kSubquery], tables, seen);
         }
         return;
     }
 
     // For any SelectStmt (including CTEs), walk fromClause
-    if (has_key(node, "SelectStmt")) {
-        const auto& ss = node["SelectStmt"];
-        if (has_key(ss, "fromClause")) {
-            walk_for_tables(ss["fromClause"], tables, seen);
+    if (has_key(node, kSelectStmt)) {
+        const auto& ss = node[kSelectStmt];
+        if (has_key(ss, kFromClause)) {
+            walk_for_tables(ss[kFromClause], tables, seen);
         }
         // Walk CTEs
-        if (has_key(ss, "withClause")) {
+        if (has_key(ss, kWithClauseFld)) {
             // withClause can be {"WithClause": {...}} or directly {...}
-            const auto& wc_outer = ss["withClause"];
-            const json& wc = has_key(wc_outer, "WithClause")
-                             ? wc_outer["WithClause"] : wc_outer;
-            if (has_key(wc, "ctes") && wc["ctes"].is_array()) {
-                for (const auto& cte : wc["ctes"]) {
+            const auto& wc_outer = ss[kWithClauseFld];
+            const json& wc = has_key(wc_outer, kWithClause)
+                             ? wc_outer[kWithClause] : wc_outer;
+            if (has_key(wc, kCtes) && wc[kCtes].is_array()) {
+                for (const auto& cte : wc[kCtes]) {
                     // CTE can be {"CommonTableExpr": {...}} or directly {...}
-                    const json& cte_body = has_key(cte, "CommonTableExpr")
-                                           ? cte["CommonTableExpr"] : cte;
-                    if (has_key(cte_body, "ctequery")) {
-                        walk_for_tables(cte_body["ctequery"], tables, seen);
+                    const json& cte_body = has_key(cte, kCommonTableExpr)
+                                           ? cte[kCommonTableExpr] : cte;
+                    if (has_key(cte_body, kCtequery)) {
+                        walk_for_tables(cte_body[kCtequery], tables, seen);
                     }
                 }
             }
         }
         // Walk subqueries in WHERE clause
-        if (has_key(ss, "whereClause")) {
-            walk_for_subquery_tables(ss["whereClause"], tables, seen);
+        if (has_key(ss, kWhereClause)) {
+            walk_for_subquery_tables(ss[kWhereClause], tables, seen);
         }
         return;
     }
 
     // InsertStmt: walk relation and selectStmt
-    if (has_key(node, "InsertStmt")) {
-        const auto& is = node["InsertStmt"];
-        if (has_key(is, "relation")) {
-            json wrapped = json::wrap("RangeVar", is["relation"]);
+    if (has_key(node, kInsertStmt)) {
+        const auto& is = node[kInsertStmt];
+        if (has_key(is, kRelation)) {
+            json wrapped = json::wrap(kRangeVar, is[kRelation]);
             walk_for_tables(wrapped, tables, seen);
         }
-        if (has_key(is, "selectStmt")) {
-            walk_for_tables(is["selectStmt"], tables, seen);
+        if (has_key(is, kSelectStmtFld)) {
+            walk_for_tables(is[kSelectStmtFld], tables, seen);
         }
         return;
     }
 
     // UpdateStmt: walk relation and fromClause
-    if (has_key(node, "UpdateStmt")) {
-        const auto& us = node["UpdateStmt"];
-        if (has_key(us, "relation")) {
-            json wrapped = json::wrap("RangeVar", us["relation"]);
+    if (has_key(node, kUpdateStmt)) {
+        const auto& us = node[kUpdateStmt];
+        if (has_key(us, kRelation)) {
+            json wrapped = json::wrap(kRangeVar, us[kRelation]);
             walk_for_tables(wrapped, tables, seen);
         }
-        if (has_key(us, "fromClause")) {
-            walk_for_tables(us["fromClause"], tables, seen);
+        if (has_key(us, kFromClause)) {
+            walk_for_tables(us[kFromClause], tables, seen);
         }
-        if (has_key(us, "whereClause")) {
-            walk_for_subquery_tables(us["whereClause"], tables, seen);
+        if (has_key(us, kWhereClause)) {
+            walk_for_subquery_tables(us[kWhereClause], tables, seen);
         }
         return;
     }
 
     // DeleteStmt: walk relation
-    if (has_key(node, "DeleteStmt")) {
-        const auto& ds = node["DeleteStmt"];
-        if (has_key(ds, "relation")) {
-            json wrapped = json::wrap("RangeVar", ds["relation"]);
+    if (has_key(node, kDeleteStmt)) {
+        const auto& ds = node[kDeleteStmt];
+        if (has_key(ds, kRelation)) {
+            json wrapped = json::wrap(kRangeVar, ds[kRelation]);
             walk_for_tables(wrapped, tables, seen);
         }
-        if (has_key(ds, "whereClause")) {
-            walk_for_subquery_tables(ds["whereClause"], tables, seen);
+        if (has_key(ds, kWhereClause)) {
+            walk_for_subquery_tables(ds[kWhereClause], tables, seen);
         }
         return;
     }
@@ -548,13 +625,13 @@ static void walk_for_subquery_tables(const json& node,
         return;
     }
 
-    if (has_key(node, "SubLink")) {
-        const auto& sub = node["SubLink"];
-        if (has_key(sub, "subselect")) {
-            walk_for_tables(sub["subselect"], tables, seen);
+    if (has_key(node, kSubLink)) {
+        const auto& sub = node[kSubLink];
+        if (has_key(sub, kSubselect)) {
+            walk_for_tables(sub[kSubselect], tables, seen);
         }
-        if (has_key(sub, "testexpr")) {
-            walk_for_subquery_tables(sub["testexpr"], tables, seen);
+        if (has_key(sub, kTestexpr)) {
+            walk_for_subquery_tables(sub[kTestexpr], tables, seen);
         }
         return;
     }
@@ -585,7 +662,7 @@ static bool walk_for_subquery(const json& node) {
         return false;
     }
 
-    if (has_key(node, "SubLink") || has_key(node, "RangeSubselect")) {
+    if (has_key(node, kSubLink) || has_key(node, kRangeSubselect)) {
         return true;
     }
 
@@ -618,7 +695,7 @@ static bool walk_for_join(const json& node) {
         return false;
     }
 
-    if (has_key(node, "JoinExpr")) {
+    if (has_key(node, kJoinExpr)) {
         return true;
     }
 
@@ -652,22 +729,22 @@ static bool walk_for_aggregation(const json& node) {
     }
 
     // Check for FuncCall with aggregate function name
-    if (has_key(node, "FuncCall")) {
-        const auto& func = node["FuncCall"];
+    if (has_key(node, kFuncCall)) {
+        const auto& func = node[kFuncCall];
         std::string name = extract_func_name(func);
         if (!name.empty() && is_aggregate_function(name)) {
             return true;
         }
         // Also check agg_star (e.g., COUNT(*))
-        if (has_key(func, "agg_star") && func["agg_star"].is_boolean() && func["agg_star"].get<bool>()) {
+        if (has_key(func, kAggStar) && func[kAggStar].is_boolean() && func[kAggStar].get<bool>()) {
             return true;
         }
     }
 
     // Check for groupClause or havingClause in a SelectStmt
-    if (has_key(node, "SelectStmt")) {
-        const auto& ss = node["SelectStmt"];
-        if (has_key(ss, "groupClause") || has_key(ss, "havingClause")) {
+    if (has_key(node, kSelectStmt)) {
+        const auto& ss = node[kSelectStmt];
+        if (has_key(ss, kGroupClause) || has_key(ss, kHavingClause)) {
             return true;
         }
     }
@@ -808,22 +885,22 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         return projections;
     }
 
-    if (!has_key(body, "targetList") || !body["targetList"].is_array()) {
+    if (!has_key(body, kTargetList) || !body[kTargetList].is_array()) {
         return projections;
     }
 
-    for (const auto& target_item : body["targetList"]) {
-        if (!has_key(target_item, "ResTarget")) {
+    for (const auto& target_item : body[kTargetList]) {
+        if (!has_key(target_item, kResTarget)) {
             continue;
         }
 
-        const auto& res_target = target_item["ResTarget"];
+        const auto& res_target = target_item[kResTarget];
         ProjectionColumn col;
 
         // Extract alias name if present
-        col.name = get_string(res_target, "name");
+        col.name = get_string(res_target, kName);
 
-        if (!has_key(res_target, "val")) {
+        if (!has_key(res_target, kVal)) {
             // No value expression - skip
             if (!col.name.empty()) {
                 projections.push_back(std::move(col));
@@ -831,11 +908,11 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             continue;
         }
 
-        const auto& val = res_target["val"];
+        const auto& val = res_target[kVal];
 
         // Case 1: Direct ColumnRef
-        if (has_key(val, "ColumnRef")) {
-            const auto& col_ref = val["ColumnRef"];
+        if (has_key(val, kColumnRef)) {
+            const auto& col_ref = val[kColumnRef];
 
             // Check for SELECT *
             if (is_star_ref(col_ref)) {
@@ -848,15 +925,15 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             }
 
             // Extract column name from fields
-            if (has_key(col_ref, "fields") && col_ref["fields"].is_array()) {
-                const auto& fields = col_ref["fields"];
+            if (has_key(col_ref, kFields) && col_ref[kFields].is_array()) {
+                const auto& fields = col_ref[kFields];
                 std::vector<std::string> parts;
 
                 for (const auto& field : fields) {
-                    if (has_key(field, "String")) {
-                        std::string sval = get_string(field["String"], "sval");
+                    if (has_key(field, kStringNode)) {
+                        std::string sval = get_string(field[kStringNode], kSval);
                         if (sval.empty()) {
-                            sval = get_string(field["String"], "str");
+                            sval = get_string(field[kStringNode], kStr);
                         }
                         if (!sval.empty()) {
                             parts.push_back(std::move(sval));
@@ -888,14 +965,14 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         }
 
         // Case 2: FuncCall (e.g., UPPER(email), COUNT(*))
-        if (has_key(val, "FuncCall")) {
-            const auto& func = val["FuncCall"];
+        if (has_key(val, kFuncCall)) {
+            const auto& func = val[kFuncCall];
             std::string func_name = extract_func_name(func);
 
             col.expression = func_name;
 
             // Check for agg_star (COUNT(*))
-            if (has_key(func, "agg_star") && func["agg_star"].is_boolean() && func["agg_star"].get<bool>()) {
+            if (has_key(func, kAggStar) && func[kAggStar].is_boolean() && func[kAggStar].get<bool>()) {
                 if (col.name.empty()) {
                     col.name = func_name;
                 }
@@ -906,8 +983,8 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             }
 
             // Extract source columns from function arguments
-            if (has_key(func, "args") && func["args"].is_array()) {
-                for (const auto& arg : func["args"]) {
+            if (has_key(func, kArgs) && func[kArgs].is_array()) {
+                for (const auto& arg : func[kArgs]) {
                     std::vector<std::string> arg_cols;
                     collect_column_names(arg, arg_cols);
                     for (auto& c : arg_cols) {
@@ -926,7 +1003,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         }
 
         // Case 3: A_Expr (arithmetic expression, e.g., price * quantity)
-        if (has_key(val, "A_Expr")) {
+        if (has_key(val, kAExpr)) {
             std::vector<std::string> expr_cols;
             collect_column_names(val, expr_cols);
             for (auto& c : expr_cols) {
@@ -944,7 +1021,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         }
 
         // Case 4: SubLink (scalar subquery in SELECT list)
-        if (has_key(val, "SubLink")) {
+        if (has_key(val, kSubLink)) {
             col.expression = "subquery";
             col.confidence = 0.5;
 
@@ -957,7 +1034,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         }
 
         // Case 5: CaseExpr
-        if (has_key(val, "CaseExpr")) {
+        if (has_key(val, kCaseExpr)) {
             std::vector<std::string> case_cols;
             collect_column_names(val, case_cols);
             for (auto& c : case_cols) {
@@ -977,7 +1054,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         }
 
         // Case 6: TypeCast
-        if (has_key(val, "TypeCast")) {
+        if (has_key(val, kTypeCast)) {
             std::vector<std::string> cast_cols;
             collect_column_names(val, cast_cols);
             for (auto& c : cast_cols) {
@@ -995,13 +1072,13 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         }
 
         // Case 7: A_Const (literal value, e.g., SELECT 1, SELECT 'hello')
-        if (has_key(val, "A_Const")) {
-            const auto& a_const = val["A_Const"];
-            if (has_key(a_const, "ival")) {
+        if (has_key(val, kAConst)) {
+            const auto& a_const = val[kAConst];
+            if (has_key(a_const, kIval)) {
                 col.expression = "integer_literal";
-            } else if (has_key(a_const, "sval")) {
+            } else if (has_key(a_const, kSval)) {
                 col.expression = "string_literal";
-            } else if (has_key(a_const, "fval")) {
+            } else if (has_key(a_const, kFval)) {
                 col.expression = "float_literal";
             } else {
                 col.expression = "literal";
@@ -1017,7 +1094,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         }
 
         // Case 8: CoalesceExpr
-        if (has_key(val, "CoalesceExpr")) {
+        if (has_key(val, kCoalesceExpr)) {
             std::vector<std::string> coalesce_cols;
             collect_column_names(val, coalesce_cols);
             for (auto& c : coalesce_cols) {
@@ -1082,10 +1159,10 @@ std::vector<ColumnRef> SQLAnalyzer::extract_filter_columns(void* parse_tree) {
     }
 
     // Extract columns from WHERE clause
-    if (has_key(body, "whereClause")) {
+    if (has_key(body, kWhereClause)) {
         std::vector<std::string> col_names;
         std::vector<std::string> table_qualified;
-        walk_expr_for_columns(body["whereClause"], col_names, table_qualified);
+        walk_expr_for_columns(body[kWhereClause], col_names, table_qualified);
 
         // Use table-qualified names when available, otherwise plain column names
         std::unordered_set<std::string> added;
@@ -1120,8 +1197,8 @@ std::vector<ColumnRef> SQLAnalyzer::extract_filter_columns(void* parse_tree) {
     }
 
     // Extract columns from JOIN ON conditions
-    if (has_key(body, "fromClause") && body["fromClause"].is_array()) {
-        for (const auto& from_item : body["fromClause"]) {
+    if (has_key(body, kFromClause) && body[kFromClause].is_array()) {
+        for (const auto& from_item : body[kFromClause]) {
             extract_join_filter_columns(from_item, columns);
         }
     }
@@ -1135,14 +1212,14 @@ static void extract_join_filter_columns(const json& node, std::vector<ColumnRef>
         return;
     }
 
-    if (has_key(node, "JoinExpr")) {
-        const auto& je = node["JoinExpr"];
+    if (has_key(node, kJoinExpr)) {
+        const auto& je = node[kJoinExpr];
 
         // Extract columns from ON condition (quals)
-        if (has_key(je, "quals")) {
+        if (has_key(je, kQuals)) {
             std::vector<std::string> col_names;
             std::vector<std::string> table_qualified;
-            walk_expr_for_columns(je["quals"], col_names, table_qualified);
+            walk_expr_for_columns(je[kQuals], col_names, table_qualified);
 
             std::unordered_set<std::string> added;
             for (const auto& tq : table_qualified) {
@@ -1175,11 +1252,11 @@ static void extract_join_filter_columns(const json& node, std::vector<ColumnRef>
         }
 
         // Recurse into left and right args for nested joins
-        if (has_key(je, "larg")) {
-            extract_join_filter_columns(je["larg"], columns);
+        if (has_key(je, kLarg)) {
+            extract_join_filter_columns(je[kLarg], columns);
         }
-        if (has_key(je, "rarg")) {
-            extract_join_filter_columns(je["rarg"], columns);
+        if (has_key(je, kRarg)) {
+            extract_join_filter_columns(je[kRarg], columns);
         }
     }
 }
@@ -1202,19 +1279,19 @@ std::vector<ColumnRef> SQLAnalyzer::extract_write_columns(void* parse_tree, Stat
     }
 
     if (type == StatementType::INSERT) {
-        if (!has_key(stmt, "InsertStmt")) {
+        if (!has_key(stmt, kInsertStmt)) {
             return columns;
         }
-        const auto& insert_stmt = stmt["InsertStmt"];
+        const auto& insert_stmt = stmt[kInsertStmt];
 
         // Extract column list from "cols" array
-        if (has_key(insert_stmt, "cols") && insert_stmt["cols"].is_array()) {
-            for (const auto& col_item : insert_stmt["cols"]) {
-                if (!has_key(col_item, "ResTarget")) {
+        if (has_key(insert_stmt, kCols) && insert_stmt[kCols].is_array()) {
+            for (const auto& col_item : insert_stmt[kCols]) {
+                if (!has_key(col_item, kResTarget)) {
                     continue;
                 }
-                const auto& res_target = col_item["ResTarget"];
-                std::string col_name = get_string(res_target, "name");
+                const auto& res_target = col_item[kResTarget];
+                std::string col_name = get_string(res_target, kName);
                 if (!col_name.empty()) {
                     ColumnRef ref;
                     ref.column = std::move(col_name);
@@ -1223,19 +1300,19 @@ std::vector<ColumnRef> SQLAnalyzer::extract_write_columns(void* parse_tree, Stat
             }
         }
     } else if (type == StatementType::UPDATE) {
-        if (!has_key(stmt, "UpdateStmt")) {
+        if (!has_key(stmt, kUpdateStmt)) {
             return columns;
         }
-        const auto& update_stmt = stmt["UpdateStmt"];
+        const auto& update_stmt = stmt[kUpdateStmt];
 
         // Extract SET target columns from "targetList"
-        if (has_key(update_stmt, "targetList") && update_stmt["targetList"].is_array()) {
-            for (const auto& target_item : update_stmt["targetList"]) {
-                if (!has_key(target_item, "ResTarget")) {
+        if (has_key(update_stmt, kTargetList) && update_stmt[kTargetList].is_array()) {
+            for (const auto& target_item : update_stmt[kTargetList]) {
+                if (!has_key(target_item, kResTarget)) {
                     continue;
                 }
-                const auto& res_target = target_item["ResTarget"];
-                std::string col_name = get_string(res_target, "name");
+                const auto& res_target = target_item[kResTarget];
+                std::string col_name = get_string(res_target, kName);
                 if (!col_name.empty()) {
                     ColumnRef ref;
                     ref.column = std::move(col_name);
@@ -1366,24 +1443,24 @@ std::optional<int64_t> SQLAnalyzer::extract_limit(void* parse_tree) {
         return std::nullopt;
     }
 
-    if (!has_key(body, "limitCount")) {
+    if (!has_key(body, kLimitCount)) {
         return std::nullopt;
     }
 
-    const auto& limit_node = body["limitCount"];
+    const auto& limit_node = body[kLimitCount];
 
     // Case 1: A_Const with Integer value (e.g., LIMIT 10)
     // libpg_query v17 format: {"A_Const": {"ival": {"ival": 10}}}
     // or older: {"A_Const": {"val": {"Integer": {"ival": 10}}}}
     // or direct: {"Integer": {"ival": 10}}
-    if (has_key(limit_node, "A_Const")) {
-        const auto& a_const = limit_node["A_Const"];
+    if (has_key(limit_node, kAConst)) {
+        const auto& a_const = limit_node[kAConst];
 
         // v17 format: ival is an object with ival inside
-        if (has_key(a_const, "ival")) {
-            const auto& ival_node = a_const["ival"];
+        if (has_key(a_const, kIval)) {
+            const auto& ival_node = a_const[kIval];
             if (ival_node.is_object()) {
-                auto val = get_int(ival_node, "ival");
+                auto val = get_int(ival_node, kIval);
                 if (val.has_value()) {
                     return val;
                 }
@@ -1395,17 +1472,17 @@ std::optional<int64_t> SQLAnalyzer::extract_limit(void* parse_tree) {
         }
 
         // Older format: val -> Integer -> ival
-        if (has_key(a_const, "val")) {
-            const auto& val = a_const["val"];
-            if (has_key(val, "Integer")) {
-                return get_int(val["Integer"], "ival");
+        if (has_key(a_const, kVal)) {
+            const auto& val = a_const[kVal];
+            if (has_key(val, kIntegerNode)) {
+                return get_int(val[kIntegerNode], kIval);
             }
         }
     }
 
     // Direct Integer node
-    if (has_key(limit_node, "Integer")) {
-        return get_int(limit_node["Integer"], "ival");
+    if (has_key(limit_node, kIntegerNode)) {
+        return get_int(limit_node[kIntegerNode], kIval);
     }
 
     return std::nullopt;
