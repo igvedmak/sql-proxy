@@ -3,7 +3,7 @@
 #include "core/types.hpp"
 #include "server/http_server.hpp"  // UserInfo
 
-#include <nlohmann/json.hpp>
+#include "core/json.hpp"
 
 #include <string>
 #include <vector>
@@ -139,11 +139,11 @@ struct ProxyConfig {
 };
 
 // ============================================================================
-// TOML Parser - Lightweight subset parser using nlohmann::json
+// TOML Parser - Lightweight subset parser using JsonValue
 // ============================================================================
 
 /**
- * @brief Parse a TOML file into nlohmann::json representation
+ * @brief Parse a TOML file into JsonValue representation
  *
  * Supports the subset of TOML used by proxy.toml:
  * - [section] headers
@@ -166,7 +166,7 @@ namespace toml {
  * @return Parsed JSON object
  * @throws std::runtime_error on parse failure
  */
-[[nodiscard]] nlohmann::json parse_string(const std::string& content);
+[[nodiscard]] JsonValue parse_string(const std::string& content);
 
 /**
  * @brief Parse TOML file into JSON
@@ -174,7 +174,7 @@ namespace toml {
  * @return Parsed JSON object
  * @throws std::runtime_error on file I/O or parse failure
  */
-[[nodiscard]] nlohmann::json parse_file(const std::string& file_path);
+[[nodiscard]] JsonValue parse_file(const std::string& file_path);
 
 } // namespace toml
 
@@ -219,19 +219,19 @@ public:
     [[nodiscard]] static LoadResult load_from_string(const std::string& toml_content);
 
 private:
-    static ServerConfig extract_server(const nlohmann::json& root);
-    static LoggingConfig extract_logging(const nlohmann::json& root);
-    static std::vector<DatabaseConfig> extract_databases(const nlohmann::json& root);
-    static std::unordered_map<std::string, UserInfo> extract_users(const nlohmann::json& root);
-    static std::vector<Policy> extract_policies(const nlohmann::json& root);
-    static RateLimitingConfig extract_rate_limiting(const nlohmann::json& root);
-    static CacheConfig extract_cache(const nlohmann::json& root);
-    static AuditConfig extract_audit(const nlohmann::json& root);
-    static std::vector<ClassifierConfig> extract_classifiers(const nlohmann::json& root);
-    static CircuitBreakerConfig extract_circuit_breaker(const nlohmann::json& root);
-    static AllocatorConfig extract_allocator(const nlohmann::json& root);
-    static MetricsConfig extract_metrics(const nlohmann::json& root);
-    static ConfigWatcherConfig extract_config_watcher(const nlohmann::json& root);
+    static ServerConfig extract_server(const JsonValue& root);
+    static LoggingConfig extract_logging(const JsonValue& root);
+    static std::vector<DatabaseConfig> extract_databases(const JsonValue& root);
+    static std::unordered_map<std::string, UserInfo> extract_users(const JsonValue& root);
+    static std::vector<Policy> extract_policies(const JsonValue& root);
+    static RateLimitingConfig extract_rate_limiting(const JsonValue& root);
+    static CacheConfig extract_cache(const JsonValue& root);
+    static AuditConfig extract_audit(const JsonValue& root);
+    static std::vector<ClassifierConfig> extract_classifiers(const JsonValue& root);
+    static CircuitBreakerConfig extract_circuit_breaker(const JsonValue& root);
+    static AllocatorConfig extract_allocator(const JsonValue& root);
+    static MetricsConfig extract_metrics(const JsonValue& root);
+    static ConfigWatcherConfig extract_config_watcher(const JsonValue& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

@@ -95,7 +95,7 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  LAYER 1: HIERARCHICAL RATE LIMITER                                          │
 │  Class: HierarchicalRateLimiter                                              │
-│  Performance: ~80ns for all 4 checks                                         │
+│  Performance: ~52ns for all 4 checks                                         │
 │                                                                              │
 │  4 levels - ALL must pass:                                                   │
 │                                                                              │
@@ -163,7 +163,7 @@
 │                                                                              │
 │  Input: ctx.sql (raw SQL string)                                             │
 │                                                                              │
-│  Step 1: FINGERPRINTING (single-pass, ~10ns)                                 │
+│  Step 1: FINGERPRINTING (single-pass, ~450ns)                                │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │ Fingerprinter::fingerprint(sql):                                    │     │
 │  │                                                                     │     │
@@ -443,13 +443,13 @@
 │  │  └───────────────────────┬──────────────────────────────┘           │     │
 │  │                          │ NO MATCH                                 │     │
 │  │  ┌───────────────────────▼──────────────────────────────┐           │     │
-│  │  │ Strategy 3: REGEX VALUE (80% confidence, ~1-10μs)    │           │     │
+│  │  │ Strategy 3: PATTERN VALUE (80% confidence, ~100ns)   │           │     │
 │  │  │                                                      │           │     │
-│  │  │  Sample up to 20 rows, test precompiled regex:       │           │     │
-│  │  │  ├─ email_regex_:       user@domain.com patterns     │           │     │
-│  │  │  ├─ phone_regex_:       +1-555-123-4567 patterns     │           │     │
-│  │  │  ├─ ssn_regex_:         123-45-6789 patterns         │           │     │
-│  │  │  └─ credit_card_regex_: 4111-1111-1111-1111 patterns │           │     │
+│  │  │  Sample up to 20 rows, hand-rolled O(n) scanners:   │           │     │
+│  │  │  ├─ looks_like_email():       user@domain.com        │           │     │
+│  │  │  ├─ looks_like_phone():       +1-555-123-4567        │           │     │
+│  │  │  ├─ looks_like_ssn():         123-45-6789            │           │     │
+│  │  │  └─ looks_like_credit_card(): 4111-1111-1111-1111    │           │     │
 │  │  │                                                      │           │     │
 │  │  │  Match? → DONE                                       │           │     │
 │  │  └───────────────────────┬──────────────────────────────┘           │     │
@@ -515,7 +515,7 @@
 │  │   HTTP Thread 3 ──emit()──┼──→ │  MPSC Ring   │──→ │  Writer    │  │     │
 │  │   HTTP Thread N ──emit()──┘    │  Buffer      │    │  Thread    │  │     │
 │  │                                │  65536 slots │    │  (single)  │  │     │
-│  │        ~50ns CAS enqueue       │  lock-free   │    │            │  │     │
+│  │       ~210ns CAS enqueue       │  lock-free   │    │            │  │     │
 │  │                                └──────────────┘    │ Batch drain│  │     │
 │  │                                                    │ 1000/batch │  │     │
 │  │                                                    │ or 100ms   │  │     │
@@ -691,7 +691,7 @@
                        └──────────────┘
 
   ┌──────────────┐
-  │ Classifier   │  (4-strategy chain: name → OID → regex → derived)
+  │ Classifier   │  (4-strategy chain: name → OID → pattern → derived)
   │  Registry    │
   └──────────────┘
 ```

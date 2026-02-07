@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(sql_proxy VERSION 1.0.0 LANGUAGES CXX)
 
-# C++20 standard required
-set(CMAKE_CXX_STANDARD 20)
+# C++23 standard required
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -53,8 +53,15 @@ find_package(Drogon REQUIRED)
 # xxHash - hashing
 set(XXHASH_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third_party/xxHash)
 
-# nlohmann-json (header-only JSON parser)
-set(NLOHMANN_JSON_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third_party/nlohmann-json/include)
+# glaze (high-performance JSON library with compile-time reflection)
+include(FetchContent)
+FetchContent_Declare(
+    glaze
+    GIT_REPOSITORY https://github.com/stephenberry/glaze.git
+    GIT_TAG v4.2.2
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(glaze)
 
 # ============================================================================
 # Download dependencies via FetchContent
@@ -179,7 +186,6 @@ set(INCLUDE_DIRS
     ${XXHASH_INCLUDE_DIR}
     ${OPENSSL_INCLUDE_DIR}
     ${Drogon_INCLUDE_DIRS}
-    ${NLOHMANN_JSON_INCLUDE_DIR}
 )
 
 if(ENABLE_POSTGRESQL)
@@ -212,6 +218,9 @@ target_link_libraries(${PROJECT_NAME}_lib PUBLIC
 
     # Drogon
     Drogon::Drogon
+
+    # JSON
+    glaze::glaze
 )
 
 # PostgreSQL libraries (conditional)
@@ -346,7 +355,7 @@ add_custom_target(format
 
 # Run static analysis with clang-tidy
 add_custom_target(lint
-    COMMAND clang-tidy ${ALL_SOURCES} -- -std=c++20 ${INCLUDE_DIRS}
+    COMMAND clang-tidy ${ALL_SOURCES} -- -std=c++23 ${INCLUDE_DIRS}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Running static analysis with clang-tidy"
 )

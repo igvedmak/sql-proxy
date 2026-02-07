@@ -16,6 +16,24 @@ namespace toml {
 
 namespace {
 
+// Type aliases for internal TOML parser (uses glz::json_t directly for mutation)
+using jt = glz::json_t;
+using object_t = jt::object_t;
+using array_t = jt::array_t;
+
+// Helpers for creating json_t values
+jt make_object() { jt j; j = object_t{}; return j; }
+jt make_array() { jt j; j = array_t{}; return j; }
+jt make_null() { return jt{}; }
+
+void json_push(jt& arr, jt val) {
+    arr.get_array().push_back(std::move(val));
+}
+
+jt& json_back(jt& arr) {
+    return arr.get_array().back();
+}
+
 // ---- Parsing helpers -------------------------------------------------------
 
 /**
@@ -53,15 +71,15 @@ std::string strip_comment(const std::string& line) {
  *
  * Supports: strings, integers, floats, booleans, inline arrays.
  */
-nlohmann::json parse_value(const std::string& raw) {
+jt parse_value(const std::string& raw) {
     const std::string val = utils::trim(raw);
     if (val.empty()) {
-        return nlohmann::json(nullptr);
+        return make_null();
     }
 
     // Boolean
-    if (val == "true")  return nlohmann::json(true);
-    if (val == "false") return nlohmann::json(false);
+    if (val == "true")  { jt j; j = true; return j; }
+    if (val == "false") { jt j; j = false; return j; }
 
     // Quoted string
     if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
@@ -83,12 +101,12 @@ nlohmann::json parse_value(const std::string& raw) {
                 result += val[i];
             }
         }
-        return nlohmann::json(result);
+        jt j; j = std::move(result); return j;
     }
 
     // Inline array  ["a", "b", ...]
     if (val.front() == '[' && val.back() == ']') {
-        nlohmann::json arr = nlohmann::json::array();
+        jt arr = make_array();
         const std::string inner = val.substr(1, val.size() - 2);
 
         // Tokenize respecting quoted strings
@@ -115,7 +133,7 @@ nlohmann::json parse_value(const std::string& raw) {
             if (c == ',' && !in_str) {
                 const std::string trimmed = utils::trim(token);
                 if (!trimmed.empty()) {
-                    arr.push_back(parse_value(trimmed));
+                    json_push(arr, parse_value(trimmed));
                 }
                 token.clear();
                 continue;
@@ -124,7 +142,7 @@ nlohmann::json parse_value(const std::string& raw) {
         }
         const std::string trimmed = utils::trim(token);
         if (!trimmed.empty()) {
-            arr.push_back(parse_value(trimmed));
+            json_push(arr, parse_value(trimmed));
         }
         return arr;
     }
@@ -134,7 +152,7 @@ nlohmann::json parse_value(const std::string& raw) {
     if (val.find('.') == std::string::npos) {
         try {
             const long long int_val = std::stoll(val);
-            return nlohmann::json(int_val);
+            jt j; j = static_cast<double>(int_val); return j;
         } catch (...) {
             // Fall through
         }
@@ -143,13 +161,13 @@ nlohmann::json parse_value(const std::string& raw) {
     // Float
     try {
         const double float_val = std::stod(val);
-        return nlohmann::json(float_val);
+        jt j; j = float_val; return j;
     } catch (...) {
         // Fall through
     }
 
     // Treat as bare string (shouldn't happen in valid TOML, but be lenient)
-    return nlohmann::json(val);
+    jt j; j = val; return j;
 }
 
 /**
@@ -174,11 +192,11 @@ std::vector<std::string> parse_dotted_key(const std::string& key) {
  * For a path like ["rate_limiting", "global"], returns a reference to
  * root["rate_limiting"]["global"], creating intermediate objects as needed.
  */
-nlohmann::json& navigate_to(nlohmann::json& root, const std::vector<std::string>& path) {
-    nlohmann::json* current = &root;
+jt& navigate_to(jt& root, const std::vector<std::string>& path) {
+    jt* current = &root;
     for (const auto& segment : path) {
         if (!current->contains(segment)) {
-            (*current)[segment] = nlohmann::json::object();
+            (*current)[segment] = make_object();
         }
         current = &(*current)[segment];
     }
@@ -187,8 +205,8 @@ nlohmann::json& navigate_to(nlohmann::json& root, const std::vector<std::string>
 
 } // anonymous namespace
 
-nlohmann::json parse_string(const std::string& content) {
-    nlohmann::json root = nlohmann::json::object();
+JsonValue parse_string(const std::string& content) {
+    jt root = make_object();
 
     std::istringstream stream(content);
     std::string line;
@@ -205,7 +223,7 @@ nlohmann::json parse_string(const std::string& content) {
     bool in_multiline_array = false;
     std::string multiline_key;
     std::string multiline_buffer;
-    nlohmann::json* multiline_target = nullptr;
+    jt* multiline_target = nullptr;
 
     while (std::getline(stream, line)) {
         ++line_num;
@@ -243,7 +261,7 @@ nlohmann::json parse_string(const std::string& content) {
 
             if (bracket_depth <= 0) {
                 // Array is complete
-                nlohmann::json value = parse_value(utils::trim(multiline_buffer));
+                jt value = parse_value(utils::trim(multiline_buffer));
                 if (multiline_target) {
                     (*multiline_target)[multiline_key] = std::move(value);
                 }
@@ -271,22 +289,22 @@ nlohmann::json parse_string(const std::string& content) {
 
             // Ensure the array exists in the JSON tree
             // Navigate to parent, then ensure the last key is an array
-            nlohmann::json* parent = &root;
+            jt* parent = &root;
             for (size_t i = 0; i + 1 < array_section_path.size(); ++i) {
                 const auto& seg = array_section_path[i];
                 if (!parent->contains(seg)) {
-                    (*parent)[seg] = nlohmann::json::object();
+                    (*parent)[seg] = make_object();
                 }
                 parent = &(*parent)[seg];
             }
 
             const auto& array_key = array_section_path.back();
             if (!parent->contains(array_key)) {
-                (*parent)[array_key] = nlohmann::json::array();
+                (*parent)[array_key] = make_array();
             }
 
             // Append a new empty object to the array
-            (*parent)[array_key].push_back(nlohmann::json::object());
+            json_push((*parent)[array_key], make_object());
 
             // Current section points into this new array element
             // We'll track it via array_section_path
@@ -322,15 +340,15 @@ nlohmann::json parse_string(const std::string& content) {
         }
 
         // Determine target object
-        nlohmann::json* target = nullptr;
+        jt* target = nullptr;
         if (in_array_section) {
             // Navigate to the parent of the array, get the array, index last element
-            nlohmann::json* parent = &root;
+            jt* parent = &root;
             for (size_t i = 0; i + 1 < array_section_path.size(); ++i) {
                 parent = &(*parent)[array_section_path[i]];
             }
             auto& arr = (*parent)[array_section_path.back()];
-            target = &arr.back();
+            target = &json_back(arr);
         } else if (!current_section.empty()) {
             target = &navigate_to(root, current_section);
         } else {
@@ -364,7 +382,7 @@ nlohmann::json parse_string(const std::string& content) {
         }
 
         // Parse and assign value
-        nlohmann::json value = parse_value(value_str);
+        jt value = parse_value(value_str);
         (*target)[key] = std::move(value);
     }
 
@@ -374,10 +392,10 @@ nlohmann::json parse_string(const std::string& content) {
             multiline_key + "'");
     }
 
-    return root;
+    return JsonValue(std::move(root));
 }
 
-nlohmann::json parse_file(const std::string& file_path) {
+JsonValue parse_file(const std::string& file_path) {
     std::ifstream file(file_path);
     if (!file.is_open()) {
         throw std::runtime_error(
@@ -427,7 +445,7 @@ std::optional<StatementType> ConfigLoader::parse_statement_type(const std::strin
 
 std::optional<Decision> ConfigLoader::parse_action(const std::string& action_str) {
     const std::string lower = utils::to_lower(action_str);
-    
+
     static const std::unordered_map<std::string, Decision> lookup = {
         {"allow", Decision::ALLOW},
         {"block", Decision::BLOCK},
@@ -442,7 +460,7 @@ std::optional<Decision> ConfigLoader::parse_action(const std::string& action_str
 namespace {
 
 template<typename T>
-T json_value(const nlohmann::json& obj, const std::string& key, const T& default_val) {
+T json_value(const JsonValue& obj, const std::string& key, const T& default_val) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
             return obj[key].get<T>();
@@ -454,68 +472,75 @@ T json_value(const nlohmann::json& obj, const std::string& key, const T& default
 }
 
 // Specialization-like overloads for common types
-std::string json_string(const nlohmann::json& obj, const std::string& key,
+std::string json_string(const JsonValue& obj, const std::string& key,
                         const std::string& default_val = "") {
     return json_value<std::string>(obj, key, default_val);
 }
 
-int json_int(const nlohmann::json& obj, const std::string& key, int default_val = 0) {
+int json_int(const JsonValue& obj, const std::string& key, int default_val = 0) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
-            if (obj[key].is_number_integer()) {
-                return static_cast<int>(obj[key].get<int64_t>());
+            auto val = obj[key];
+            if (val.is_number_integer()) {
+                return static_cast<int>(val.get<int64_t>());
             }
-            if (obj[key].is_number_float()) {
-                return static_cast<int>(obj[key].get<double>());
+            if (val.is_number_float()) {
+                return static_cast<int>(val.get<double>());
+            }
+            if (val.is_number()) {
+                return static_cast<int>(val.get<double>());
             }
         } catch (...) {}
     }
     return default_val;
 }
 
-uint32_t json_uint32(const nlohmann::json& obj, const std::string& key, uint32_t default_val = 0) {
+uint32_t json_uint32(const JsonValue& obj, const std::string& key, uint32_t default_val = 0) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
-            if (obj[key].is_number_integer()) {
-                return static_cast<uint32_t>(obj[key].get<int64_t>());
+            auto val = obj[key];
+            if (val.is_number()) {
+                return static_cast<uint32_t>(val.get<int64_t>());
             }
         } catch (...) {}
     }
     return default_val;
 }
 
-size_t json_size(const nlohmann::json& obj, const std::string& key, size_t default_val = 0) {
+size_t json_size(const JsonValue& obj, const std::string& key, size_t default_val = 0) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
-            if (obj[key].is_number_integer()) {
-                return static_cast<size_t>(obj[key].get<int64_t>());
+            auto val = obj[key];
+            if (val.is_number()) {
+                return static_cast<size_t>(val.get<int64_t>());
             }
         } catch (...) {}
     }
     return default_val;
 }
 
-bool json_bool(const nlohmann::json& obj, const std::string& key, bool default_val = false) {
+bool json_bool(const JsonValue& obj, const std::string& key, bool default_val = false) {
     return json_value<bool>(obj, key, default_val);
 }
 
-double json_double(const nlohmann::json& obj, const std::string& key, double default_val = 0.0) {
+double json_double(const JsonValue& obj, const std::string& key, double default_val = 0.0) {
     if (obj.contains(key) && !obj[key].is_null()) {
         try {
-            if (obj[key].is_number()) {
-                return obj[key].get<double>();
+            auto val = obj[key];
+            if (val.is_number()) {
+                return val.get<double>();
             }
         } catch (...) {}
     }
     return default_val;
 }
 
-std::vector<std::string> json_string_array(const nlohmann::json& obj, const std::string& key) {
+std::vector<std::string> json_string_array(const JsonValue& obj, const std::string& key) {
     std::vector<std::string> result;
     if (!obj.contains(key) || !obj[key].is_array()) {
         return result;
     }
-    const auto& arr = obj[key];
+    const auto arr = obj[key];
     result.reserve(arr.size());
     for (const auto& elem : arr) {
         if (elem.is_string()) {
@@ -525,7 +550,7 @@ std::vector<std::string> json_string_array(const nlohmann::json& obj, const std:
     return result;
 }
 
-std::optional<std::string> json_optional_string(const nlohmann::json& obj, const std::string& key) {
+std::optional<std::string> json_optional_string(const JsonValue& obj, const std::string& key) {
     if (obj.contains(key) && obj[key].is_string()) {
         return obj[key].get<std::string>();
     }
@@ -536,12 +561,12 @@ std::optional<std::string> json_optional_string(const nlohmann::json& obj, const
 
 // ---- Section extractors ----------------------------------------------------
 
-ServerConfig ConfigLoader::extract_server(const nlohmann::json& root) {
+ServerConfig ConfigLoader::extract_server(const JsonValue& root) {
     ServerConfig cfg;
     if (!root.contains("server")) {
         return cfg;
     }
-    const auto& s = root["server"];
+    const auto s = root["server"];
     cfg.host = json_string(s, "host", "0.0.0.0");
     cfg.port = static_cast<uint16_t>(json_int(s, "port", 8080));
     cfg.thread_pool_size = json_size(s, "threads", 4);
@@ -552,24 +577,24 @@ ServerConfig ConfigLoader::extract_server(const nlohmann::json& root) {
     return cfg;
 }
 
-LoggingConfig ConfigLoader::extract_logging(const nlohmann::json& root) {
+LoggingConfig ConfigLoader::extract_logging(const JsonValue& root) {
     LoggingConfig cfg;
     if (!root.contains("logging")) {
         return cfg;
     }
-    const auto& l = root["logging"];
+    const auto l = root["logging"];
     cfg.level = json_string(l, "level", "info");
     cfg.file = json_string(l, "file", "");
     cfg.async_logging = json_bool(l, "async", true);
     return cfg;
 }
 
-std::vector<DatabaseConfig> ConfigLoader::extract_databases(const nlohmann::json& root) {
+std::vector<DatabaseConfig> ConfigLoader::extract_databases(const JsonValue& root) {
     std::vector<DatabaseConfig> result;
     if (!root.contains("databases") || !root["databases"].is_array()) {
         return result;
     }
-    const auto& arr = root["databases"];
+    const auto arr = root["databases"];
     result.reserve(arr.size());
     for (const auto& db : arr) {
         DatabaseConfig cfg;
@@ -592,12 +617,12 @@ std::vector<DatabaseConfig> ConfigLoader::extract_databases(const nlohmann::json
     return result;
 }
 
-std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const nlohmann::json& root) {
+std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const JsonValue& root) {
     std::unordered_map<std::string, UserInfo> result;
     if (!root.contains("users") || !root["users"].is_array()) {
         return result;
     }
-    const auto& arr = root["users"];
+    const auto arr = root["users"];
     for (const auto& u : arr) {
         UserInfo info;
         info.name = json_string(u, "name", "");
@@ -610,12 +635,12 @@ std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const nloh
     return result;
 }
 
-std::vector<Policy> ConfigLoader::extract_policies(const nlohmann::json& root) {
+std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
     std::vector<Policy> result;
     if (!root.contains("policies") || !root["policies"].is_array()) {
         return result;
     }
-    const auto& arr = root["policies"];
+    const auto arr = root["policies"];
     result.reserve(arr.size());
 
     for (const auto& p : arr) {
@@ -676,25 +701,25 @@ std::vector<Policy> ConfigLoader::extract_policies(const nlohmann::json& root) {
     return result;
 }
 
-RateLimitingConfig ConfigLoader::extract_rate_limiting(const nlohmann::json& root) {
+RateLimitingConfig ConfigLoader::extract_rate_limiting(const JsonValue& root) {
     RateLimitingConfig cfg;
     if (!root.contains("rate_limiting")) {
         return cfg;
     }
-    const auto& rl = root["rate_limiting"];
+    const auto rl = root["rate_limiting"];
 
     cfg.enabled = json_bool(rl, "enabled", true);
 
     // Level 1: Global
     if (rl.contains("global") && rl["global"].is_object()) {
-        const auto& g = rl["global"];
+        const auto g = rl["global"];
         cfg.global_tokens_per_second = json_uint32(g, "tokens_per_second", 50000);
         cfg.global_burst_capacity = json_uint32(g, "burst_capacity", 10000);
     }
 
     // Level 2: Per-User overrides
     if (rl.contains("per_user") && rl["per_user"].is_array()) {
-        const auto& arr = rl["per_user"];
+        const auto arr = rl["per_user"];
         cfg.per_user.reserve(arr.size());
         for (const auto& u : arr) {
             PerUserRateLimit limit;
@@ -709,14 +734,14 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const nlohmann::json& roo
 
     // Per-User defaults
     if (rl.contains("per_user_default") && rl["per_user_default"].is_object()) {
-        const auto& d = rl["per_user_default"];
+        const auto d = rl["per_user_default"];
         cfg.per_user_default_tokens_per_second = json_uint32(d, "tokens_per_second", 100);
         cfg.per_user_default_burst_capacity = json_uint32(d, "burst_capacity", 20);
     }
 
     // Level 3: Per-Database
     if (rl.contains("per_database") && rl["per_database"].is_array()) {
-        const auto& arr = rl["per_database"];
+        const auto arr = rl["per_database"];
         cfg.per_database.reserve(arr.size());
         for (const auto& db : arr) {
             PerDatabaseRateLimit limit;
@@ -731,7 +756,7 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const nlohmann::json& roo
 
     // Level 4: Per-User-Per-Database
     if (rl.contains("per_user_per_database") && rl["per_user_per_database"].is_array()) {
-        const auto& arr = rl["per_user_per_database"];
+        const auto arr = rl["per_user_per_database"];
         cfg.per_user_per_database.reserve(arr.size());
         for (const auto& upd : arr) {
             PerUserPerDatabaseRateLimit limit;
@@ -748,24 +773,24 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const nlohmann::json& roo
     return cfg;
 }
 
-CacheConfig ConfigLoader::extract_cache(const nlohmann::json& root) {
+CacheConfig ConfigLoader::extract_cache(const JsonValue& root) {
     CacheConfig cfg;
     if (!root.contains("cache")) {
         return cfg;
     }
-    const auto& c = root["cache"];
+    const auto c = root["cache"];
     cfg.max_entries = json_size(c, "max_entries", 10000);
     cfg.num_shards = json_size(c, "num_shards", 16);
     cfg.ttl = std::chrono::seconds(json_int(c, "ttl_seconds", 300));
     return cfg;
 }
 
-AuditConfig ConfigLoader::extract_audit(const nlohmann::json& root) {
+AuditConfig ConfigLoader::extract_audit(const JsonValue& root) {
     AuditConfig cfg;
     if (!root.contains("audit")) {
         return cfg;
     }
-    const auto& a = root["audit"];
+    const auto a = root["audit"];
 
     cfg.async_mode = json_bool(a, "async_mode", true);
     cfg.ring_buffer_size = json_size(a, "ring_buffer_size", 65536);
@@ -776,7 +801,7 @@ AuditConfig ConfigLoader::extract_audit(const nlohmann::json& root) {
 
     // File sink settings
     if (a.contains("file") && a["file"].is_object()) {
-        const auto& f = a["file"];
+        const auto f = a["file"];
         cfg.output_file = json_string(f, "output_file", "audit.jsonl");
     }
 
@@ -784,7 +809,7 @@ AuditConfig ConfigLoader::extract_audit(const nlohmann::json& root) {
     // come from the database sub-section; the top-level AuditConfig
     // captures only what the struct supports)
     if (a.contains("database") && a["database"].is_object()) {
-        const auto& db = a["database"];
+        const auto db = a["database"];
         // If there's a db-specific flush_interval_ms, prefer it
         const int db_flush = json_int(db, "flush_interval_ms", 0);
         if (db_flush > 0) {
@@ -795,12 +820,12 @@ AuditConfig ConfigLoader::extract_audit(const nlohmann::json& root) {
     return cfg;
 }
 
-std::vector<ClassifierConfig> ConfigLoader::extract_classifiers(const nlohmann::json& root) {
+std::vector<ClassifierConfig> ConfigLoader::extract_classifiers(const JsonValue& root) {
     std::vector<ClassifierConfig> result;
     if (!root.contains("classifiers") || !root["classifiers"].is_array()) {
         return result;
     }
-    const auto& arr = root["classifiers"];
+    const auto arr = root["classifiers"];
     result.reserve(arr.size());
 
     for (const auto& c : arr) {
@@ -820,12 +845,12 @@ std::vector<ClassifierConfig> ConfigLoader::extract_classifiers(const nlohmann::
     return result;
 }
 
-CircuitBreakerConfig ConfigLoader::extract_circuit_breaker(const nlohmann::json& root) {
+CircuitBreakerConfig ConfigLoader::extract_circuit_breaker(const JsonValue& root) {
     CircuitBreakerConfig cfg;
     if (!root.contains("circuit_breaker")) {
         return cfg;
     }
-    const auto& cb = root["circuit_breaker"];
+    const auto cb = root["circuit_breaker"];
     cfg.enabled = json_bool(cb, "enabled", true);
     cfg.failure_threshold = json_int(cb, "failure_threshold", 10);
     cfg.success_threshold = json_int(cb, "success_threshold", 5);
@@ -834,36 +859,36 @@ CircuitBreakerConfig ConfigLoader::extract_circuit_breaker(const nlohmann::json&
     return cfg;
 }
 
-AllocatorConfig ConfigLoader::extract_allocator(const nlohmann::json& root) {
+AllocatorConfig ConfigLoader::extract_allocator(const JsonValue& root) {
     AllocatorConfig cfg;
     if (!root.contains("allocator")) {
         return cfg;
     }
-    const auto& a = root["allocator"];
+    const auto a = root["allocator"];
     cfg.enabled = json_bool(a, "enabled", true);
     cfg.initial_size_bytes = json_size(a, "initial_size_bytes", 1024);
     cfg.max_size_bytes = json_size(a, "max_size_bytes", 65536);
     return cfg;
 }
 
-MetricsConfig ConfigLoader::extract_metrics(const nlohmann::json& root) {
+MetricsConfig ConfigLoader::extract_metrics(const JsonValue& root) {
     MetricsConfig cfg;
     if (!root.contains("metrics")) {
         return cfg;
     }
-    const auto& m = root["metrics"];
+    const auto m = root["metrics"];
     cfg.enabled = json_bool(m, "enabled", true);
     cfg.endpoint = json_string(m, "endpoint", "/metrics");
     cfg.export_interval_ms = json_int(m, "export_interval_ms", 5000);
     return cfg;
 }
 
-ConfigWatcherConfig ConfigLoader::extract_config_watcher(const nlohmann::json& root) {
+ConfigWatcherConfig ConfigLoader::extract_config_watcher(const JsonValue& root) {
     ConfigWatcherConfig cfg;
     if (!root.contains("config_watcher")) {
         return cfg;
     }
-    const auto& cw = root["config_watcher"];
+    const auto cw = root["config_watcher"];
     cfg.enabled = json_bool(cw, "enabled", true);
     cfg.poll_interval_seconds = json_int(cw, "poll_interval_seconds", 5);
     return cfg;

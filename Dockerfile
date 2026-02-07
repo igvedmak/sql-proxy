@@ -18,7 +18,13 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libjsoncpp-dev \
     curl \
+    gcc-14 \
+    g++-14 \
     && rm -rf /var/lib/apt/lists/*
+
+# Use GCC 14 for C++23 support
+ENV CC=gcc-14
+ENV CXX=g++-14
 
 # Stage 2: Build Drogon (cached unless Drogon version changes)
 FROM base AS drogon-builder
@@ -71,8 +77,6 @@ COPY --from=libpgquery-builder /build/libpg_query /build/sql_proxy/third_party/l
 # Copy header-only libraries
 COPY third_party/cpp-httplib /build/sql_proxy/third_party/cpp-httplib
 COPY third_party/xxHash /build/sql_proxy/third_party/xxHash
-COPY third_party/nlohmann-json/include /build/sql_proxy/third_party/nlohmann-json/include
-
 # Copy source files (this layer rebuilds on code changes, but deps are cached)
 COPY src /build/sql_proxy/src
 

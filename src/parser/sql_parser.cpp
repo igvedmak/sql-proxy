@@ -6,7 +6,7 @@ extern "C" {
 #include "pg_query.h"
 }
 
-#include <nlohmann/json.hpp>
+#include "core/json.hpp"
 
 #include <cctype>
 #include <cstring>
@@ -214,7 +214,7 @@ StatementType SQLParser::extract_statement_type(void* parse_result_ptr) {
  * @param tables Output vector of extracted table references
  * @param seen_tables Set for O(1) duplicate detection (keyed on "schema.table")
  */
-static void find_range_vars(const nlohmann::json& node,
+static void find_range_vars(const JsonValue& node,
                             std::vector<TableRef>& tables,
                             std::unordered_set<std::string>& seen_tables) {
     if (node.is_object()) {
@@ -285,10 +285,10 @@ std::vector<TableRef> SQLParser::extract_tables(void* parse_result_ptr) {
     }
 
     // Parse the JSON AST from libpg_query
-    nlohmann::json ast;
+    JsonValue ast;
     try {
-        ast = nlohmann::json::parse(parse_result->parse_tree);
-    } catch (const nlohmann::json::parse_error&) {
+        ast = JsonValue::parse(parse_result->parse_tree);
+    } catch (const JsonValue::parse_error&) {
         // Malformed JSON from libpg_query - should not happen, but fail gracefully
         return tables;
     }

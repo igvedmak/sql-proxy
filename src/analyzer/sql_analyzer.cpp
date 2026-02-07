@@ -5,14 +5,14 @@ extern "C" {
 #include "pg_query.h"
 }
 
-#include <nlohmann/json.hpp>
+#include "core/json.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <future>
 #include <unordered_set>
 
-using json = nlohmann::json;
+using json = sqlproxy::JsonValue;
 
 namespace sqlproxy {
 
@@ -487,8 +487,7 @@ static void walk_for_tables(const json& node,
     if (has_key(node, "InsertStmt")) {
         const auto& is = node["InsertStmt"];
         if (has_key(is, "relation")) {
-            json wrapped;
-            wrapped["RangeVar"] = is["relation"];
+            json wrapped = json::wrap("RangeVar", is["relation"]);
             walk_for_tables(wrapped, tables, seen);
         }
         if (has_key(is, "selectStmt")) {
@@ -501,8 +500,7 @@ static void walk_for_tables(const json& node,
     if (has_key(node, "UpdateStmt")) {
         const auto& us = node["UpdateStmt"];
         if (has_key(us, "relation")) {
-            json wrapped;
-            wrapped["RangeVar"] = us["relation"];
+            json wrapped = json::wrap("RangeVar", us["relation"]);
             walk_for_tables(wrapped, tables, seen);
         }
         if (has_key(us, "fromClause")) {
@@ -518,8 +516,7 @@ static void walk_for_tables(const json& node,
     if (has_key(node, "DeleteStmt")) {
         const auto& ds = node["DeleteStmt"];
         if (has_key(ds, "relation")) {
-            json wrapped;
-            wrapped["RangeVar"] = ds["relation"];
+            json wrapped = json::wrap("RangeVar", ds["relation"]);
             walk_for_tables(wrapped, tables, seen);
         }
         if (has_key(ds, "whereClause")) {
