@@ -147,6 +147,7 @@ set(AUDIT_SOURCES
 
 set(CONFIG_SOURCES
     src/config/config_loader.cpp
+    src/config/config_watcher.cpp
 )
 
 set(LIB_SOURCES
@@ -281,6 +282,7 @@ if(BUILD_TESTS)
         tests/test_policy_engine.cpp
         tests/test_classifier.cpp
         tests/test_rate_limiter.cpp
+        tests/test_config_reload.cpp
     )
 
     add_executable(${PROJECT_NAME}_tests ${TEST_SOURCES})

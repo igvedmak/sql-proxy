@@ -93,14 +93,18 @@ HttpServer::HttpServer(
     std::string host,
     int port,
     std::unordered_map<std::string, UserInfo> users,
-    std::string admin_token)
+    std::string admin_token,
+    size_t max_sql_length)
     : pipeline_(std::move(pipeline)),
       host_(std::move(host)),
       port_(port),
+      admin_token_(std::move(admin_token)),
       users_(std::move(users)),
-      admin_token_(std::move(admin_token)) {}
+      max_sql_length_(max_sql_length) {}
 
 std::optional<UserInfo> HttpServer::validate_user(const std::string& username) const {
+    std::shared_lock lock(users_mutex_);
+
     auto it = users_.find(username);
     if (it != users_.end()) {
         return it->second;
@@ -115,6 +119,12 @@ std::optional<UserInfo> HttpServer::validate_user(const std::string& username) c
     }
 
     return std::nullopt;  // User not found
+}
+
+void HttpServer::update_users(std::unordered_map<std::string, UserInfo> new_users) {
+    std::unique_lock lock(users_mutex_);
+    users_ = std::move(new_users);
+    utils::log::info(std::format("Users reloaded: {} users", users_.size()));
 }
 
 void HttpServer::start() {
@@ -158,12 +168,12 @@ void HttpServer::start() {
                 return;
             }
 
-            // Validate SQL length (max 100KB)
-            constexpr size_t MAX_SQL_LENGTH = 100 * 1024;
-            if (sql_sv.length() > MAX_SQL_LENGTH) {
+            // Validate SQL length
+            const size_t max_sql = max_sql_length_.load();
+            if (sql_sv.length() > max_sql) {
                 res.status = 400;
                 res.set_content(
-                    std::format(R"({{"success":false,"error":"SQL too long: max {} bytes"}})", MAX_SQL_LENGTH),
+                    std::format(R"({{"success":false,"error":"SQL too long: max {} bytes"}})", max_sql),
                     "application/json");
                 return;
             }

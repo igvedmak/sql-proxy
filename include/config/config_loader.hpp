@@ -110,6 +110,15 @@ struct MetricsConfig {
 };
 
 // ============================================================================
+// Config Watcher Config
+// ============================================================================
+
+struct ConfigWatcherConfig {
+    bool enabled = true;
+    int poll_interval_seconds = 5;
+};
+
+// ============================================================================
 // ProxyConfig - Complete parsed configuration
 // ============================================================================
 
@@ -126,6 +135,7 @@ struct ProxyConfig {
     CircuitBreakerConfig circuit_breaker;
     AllocatorConfig allocator;
     MetricsConfig metrics;
+    ConfigWatcherConfig config_watcher;
 };
 
 // ============================================================================
@@ -221,6 +231,7 @@ private:
     static CircuitBreakerConfig extract_circuit_breaker(const nlohmann::json& root);
     static AllocatorConfig extract_allocator(const nlohmann::json& root);
     static MetricsConfig extract_metrics(const nlohmann::json& root);
+    static ConfigWatcherConfig extract_config_watcher(const nlohmann::json& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

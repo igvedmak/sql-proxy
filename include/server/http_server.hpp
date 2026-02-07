@@ -1,7 +1,9 @@
 #pragma once
 
 #include "core/pipeline.hpp"
+#include <atomic>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -24,6 +26,10 @@ struct UserInfo {
  * - POST /api/v1/execute - Execute DML/DDL
  * - GET /health - Health check
  * - GET /metrics - Metrics endpoint
+ *
+ * Hot-reloadable state (via ConfigWatcher):
+ * - users_: User registry (shared_mutex protected)
+ * - max_sql_length_: Max SQL size (atomic)
  */
 class HttpServer {
 public:
@@ -34,13 +40,15 @@ public:
      * @param port Bind port (default: 8080)
      * @param users User registry for authentication (optional)
      * @param admin_token Bearer token for admin endpoints (empty = no auth required)
+     * @param max_sql_length Max SQL query size in bytes (default: 100KB)
      */
     explicit HttpServer(
         std::shared_ptr<Pipeline> pipeline,
         std::string host = "0.0.0.0",
         int port = 8080,
         std::unordered_map<std::string, UserInfo> users = {},
-        std::string admin_token = ""
+        std::string admin_token = "",
+        size_t max_sql_length = 102400
     );
 
     /**
@@ -53,6 +61,17 @@ public:
      */
     void stop();
 
+    /**
+     * @brief Hot-reload users (thread-safe, zero-downtime)
+     * In-flight requests use old users; new requests get updated users.
+     */
+    void update_users(std::unordered_map<std::string, UserInfo> new_users);
+
+    /**
+     * @brief Hot-reload max SQL length (thread-safe, atomic)
+     */
+    void update_max_sql_length(size_t new_max) { max_sql_length_.store(new_max); }
+
 private:
     /**
      * @brief Validate user exists and resolve roles
@@ -63,8 +82,12 @@ private:
     std::shared_ptr<Pipeline> pipeline_;
     const std::string host_;
     const int port_;
-    const std::unordered_map<std::string, UserInfo> users_;
     const std::string admin_token_;
+
+    // Hot-reloadable state
+    std::unordered_map<std::string, UserInfo> users_;
+    mutable std::shared_mutex users_mutex_;
+    std::atomic<size_t> max_sql_length_;
 };
 
 } // namespace sqlproxy

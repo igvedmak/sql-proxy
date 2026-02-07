@@ -5,6 +5,7 @@ host = "0.0.0.0"
 port = 8080
 threads = 4
 request_timeout_ms = 30000
+max_sql_length = 102400
 
 [logging]
 level = "info"
@@ -17,14 +18,17 @@ async = true
 
 [[databases]]
 name = "testdb"
+type = "postgresql"
 connection_string = "postgresql://proxy_user:secure_password@postgres:5432/testdb"
 min_connections = 2
 max_connections = 10
 connection_timeout_ms = 5000
 query_timeout_ms = 30000
-enable_circuit_breaker = true
-circuit_breaker_threshold = 10
-circuit_breaker_timeout_ms = 60000
+health_check_query = "SELECT 1"
+health_check_interval_seconds = 10
+idle_timeout_seconds = 300
+pool_acquire_timeout_ms = 5000
+max_result_rows = 10000
 
 # ============================================================================
 # Users and Roles
@@ -333,8 +337,9 @@ confidence_threshold = 0.7
 enabled = true
 async_mode = true
 ring_buffer_size = 65536
-batch_size = 1000
 flush_interval_ms = 100
+max_batch_size = 1000
+fsync_interval_batches = 10
 
 # File sink (primary)
 [audit.file]
@@ -379,3 +384,11 @@ max_size_bytes = 65536
 enabled = true
 endpoint = "/metrics"
 export_interval_ms = 5000
+
+# ============================================================================
+# Config Hot-Reload Watcher
+# ============================================================================
+
+[config_watcher]
+enabled = true
+poll_interval_seconds = 5

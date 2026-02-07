@@ -548,6 +548,7 @@ ServerConfig ConfigLoader::extract_server(const nlohmann::json& root) {
     cfg.request_timeout = std::chrono::milliseconds(
         json_int(s, "request_timeout_ms", 30000));
     cfg.admin_token = json_string(s, "admin_token", "");
+    cfg.max_sql_length = json_size(s, "max_sql_length", 102400);
     return cfg;
 }
 
@@ -581,6 +582,11 @@ std::vector<DatabaseConfig> ConfigLoader::extract_databases(const nlohmann::json
             json_int(db, "connection_timeout_ms", 5000));
         cfg.query_timeout = std::chrono::milliseconds(
             json_int(db, "query_timeout_ms", 30000));
+        cfg.health_check_query = json_string(db, "health_check_query", "SELECT 1");
+        cfg.health_check_interval_seconds = json_int(db, "health_check_interval_seconds", 10);
+        cfg.idle_timeout_seconds = json_int(db, "idle_timeout_seconds", 300);
+        cfg.pool_acquire_timeout_ms = json_int(db, "pool_acquire_timeout_ms", 5000);
+        cfg.max_result_rows = json_size(db, "max_result_rows", 10000);
         result.push_back(std::move(cfg));
     }
     return result;
@@ -765,6 +771,8 @@ AuditConfig ConfigLoader::extract_audit(const nlohmann::json& root) {
     cfg.ring_buffer_size = json_size(a, "ring_buffer_size", 65536);
     cfg.batch_flush_interval = std::chrono::milliseconds(
         json_int(a, "flush_interval_ms", 1000));
+    cfg.max_batch_size = json_size(a, "max_batch_size", 1000);
+    cfg.fsync_interval_batches = json_int(a, "fsync_interval_batches", 10);
 
     // File sink settings
     if (a.contains("file") && a["file"].is_object()) {
@@ -850,6 +858,17 @@ MetricsConfig ConfigLoader::extract_metrics(const nlohmann::json& root) {
     return cfg;
 }
 
+ConfigWatcherConfig ConfigLoader::extract_config_watcher(const nlohmann::json& root) {
+    ConfigWatcherConfig cfg;
+    if (!root.contains("config_watcher")) {
+        return cfg;
+    }
+    const auto& cw = root["config_watcher"];
+    cfg.enabled = json_bool(cw, "enabled", true);
+    cfg.poll_interval_seconds = json_int(cw, "poll_interval_seconds", 5);
+    return cfg;
+}
+
 // ---- Public API ------------------------------------------------------------
 
 ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_path) {
@@ -868,6 +887,7 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.circuit_breaker = extract_circuit_breaker(json);
         config.allocator = extract_allocator(json);
         config.metrics = extract_metrics(json);
+        config.config_watcher = extract_config_watcher(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));
@@ -890,6 +910,7 @@ ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_
         config.circuit_breaker = extract_circuit_breaker(json);
         config.allocator = extract_allocator(json);
         config.metrics = extract_metrics(json);
+        config.config_watcher = extract_config_watcher(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to parse config: {}", e.what()));

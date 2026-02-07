@@ -482,12 +482,14 @@ struct ServerConfig {
     size_t thread_pool_size;
     std::chrono::milliseconds request_timeout;
     std::string admin_token;  // Bearer token for admin endpoints (empty = no auth)
+    size_t max_sql_length;    // Max SQL query size in bytes
 
     ServerConfig()
         : host("0.0.0.0"),
           port(8080),
           thread_pool_size(4),
-          request_timeout(30000) {}
+          request_timeout(30000),
+          max_sql_length(102400) {}  // 100KB
 };
 
 struct DatabaseConfig {
@@ -498,13 +500,23 @@ struct DatabaseConfig {
     size_t max_connections;
     std::chrono::milliseconds connection_timeout;
     std::chrono::milliseconds query_timeout;
+    std::string health_check_query;
+    int health_check_interval_seconds;
+    int idle_timeout_seconds;
+    int pool_acquire_timeout_ms;
+    size_t max_result_rows;
 
     DatabaseConfig()
         : name("default"),
           min_connections(2),
           max_connections(10),
           connection_timeout(5000),
-          query_timeout(30000) {}
+          query_timeout(30000),
+          health_check_query("SELECT 1"),
+          health_check_interval_seconds(10),
+          idle_timeout_seconds(300),
+          pool_acquire_timeout_ms(5000),
+          max_result_rows(10000) {}
 };
 
 struct CacheConfig {
@@ -523,12 +535,16 @@ struct AuditConfig {
     size_t ring_buffer_size;
     std::chrono::milliseconds batch_flush_interval;
     bool async_mode;
+    size_t max_batch_size;
+    int fsync_interval_batches;
 
     AuditConfig()
         : output_file("audit.jsonl"),
           ring_buffer_size(65536),
           batch_flush_interval(1000),
-          async_mode(true) {}
+          async_mode(true),
+          max_batch_size(1000),
+          fsync_interval_batches(10) {}
 };
 
 // ============================================================================
