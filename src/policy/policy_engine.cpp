@@ -255,9 +255,11 @@ PolicyEvaluationResult PolicyEngine::evaluate_table(
     matching_policies.insert(matching_policies.end(),
                             wildcard_matches.begin(), wildcard_matches.end());
 
-    // Filter by user/role match
+    // Filter by user/role match, skipping column-level policies
+    // (column policies are evaluated separately by evaluate_columns())
     std::vector<const Policy*> user_matched_policies;
     for (const auto* policy : matching_policies) {
+        if (!policy->scope.columns.empty()) continue;
         if (matches_user(*policy, user, roles)) {
             user_matched_policies.push_back(policy);
         }
