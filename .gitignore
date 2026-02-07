@@ -33,3 +33,19 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+# Third-party library extras (keep only sources, exclude tests/docs/examples)
+# This reduces git size while keeping all necessary code for builds
+third_party/*/tests/
+third_party/*/test/
+third_party/*/docs/
+third_party/*/doc/
+third_party/*/documentation/
+third_party/*/examples/
+third_party/*/example/
+third_party/*/benchmark/
+third_party/*/benchmarks/
+third_party/**/*.md
+third_party/**/*.markdown
+# Exception: Keep important library headers and source
+!third_party/*/include/
+!third_party/*/src/
