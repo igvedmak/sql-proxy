@@ -69,9 +69,9 @@ public:
      * Safe to call from multiple threads concurrently.
      * Safe to call after shutdown (record is silently dropped).
      *
-     * @param record Audit record to emit
+     * @param record Audit record to emit (taken by value for move optimization)
      */
-    void emit(const AuditRecord& record);
+    void emit(AuditRecord record);
 
     /**
      * @brief Force flush all pending records to disk

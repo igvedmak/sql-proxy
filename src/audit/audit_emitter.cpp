@@ -47,20 +47,18 @@ AuditEmitter::~AuditEmitter() {
 // Public Interface
 // ============================================================================
 
-void AuditEmitter::emit(const AuditRecord& record) {
+void AuditEmitter::emit(AuditRecord record) {
     // Silently drop if already shut down
     if (!running_.load(std::memory_order_acquire)) {
         return;
     }
 
     // Assign monotonic sequence number (thread-safe, lock-free)
-    AuditRecord mutable_record = record;
-    mutable_record.sequence_num = sequence_counter_.fetch_add(1, std::memory_order_relaxed);
+    record.sequence_num = sequence_counter_.fetch_add(1, std::memory_order_relaxed);
 
-    // Non-blocking enqueue into ring buffer (~50ns)
-    // If buffer is full, try_push returns false and the ring buffer
-    // increments its internal overflow counter.
-    (void)ring_buffer_.try_push(std::move(mutable_record));
+    // Non-blocking enqueue into ring buffer
+    // Record is moved directly — no copy when caller passes rvalue
+    (void)ring_buffer_.try_push(std::move(record));
 
     total_emitted_.fetch_add(1, std::memory_order_relaxed);
 }

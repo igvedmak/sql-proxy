@@ -222,7 +222,7 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
     record.rate_limited = ctx.rate_limited;
     record.cache_hit = ctx.cache_hit;
 
-    audit_emitter_->emit(record);
+    audit_emitter_->emit(std::move(record));
 }
 
 ProxyResponse Pipeline::build_response(const RequestContext& ctx) {

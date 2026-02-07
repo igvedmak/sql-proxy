@@ -1,7 +1,6 @@
 #include "classifier/classifier_registry.hpp"
 #include "core/utils.hpp"
 #include <array>
-#include <regex>
 #include <algorithm>
 #include <numeric>
 #include <cctype>
@@ -87,6 +86,93 @@ bool validate_ssn(std::string_view value) {
     return true;
 }
 
+/**
+ * @brief Fast email detection — single-pass O(n) character scan
+ * Replaces std::regex which is ~50-100x slower
+ * Pattern: [alnum._%+-]+@[alnum.-]+\.[alpha]{2,8}
+ */
+bool looks_like_email(std::string_view value) {
+    const auto at_pos = value.find('@');
+    if (at_pos == std::string_view::npos || at_pos == 0 || at_pos >= value.size() - 1)
+        return false;
+
+    // Local part: alphanumeric + ._%+-
+    for (size_t i = 0; i < at_pos; ++i) {
+        const auto c = static_cast<unsigned char>(value[i]);
+        if (!std::isalnum(c) && c != '.' && c != '_' && c != '%' && c != '+' && c != '-')
+            return false;
+    }
+
+    // Domain: must have at least one dot after @
+    const auto domain = value.substr(at_pos + 1);
+    const auto last_dot = domain.rfind('.');
+    if (last_dot == std::string_view::npos || last_dot == 0 || last_dot >= domain.size() - 1)
+        return false;
+
+    // TLD: 2-8 alpha characters
+    const auto tld = domain.substr(last_dot + 1);
+    if (tld.size() < 2 || tld.size() > 8) return false;
+    for (const auto c : tld) {
+        if (!std::isalpha(static_cast<unsigned char>(c))) return false;
+    }
+
+    // Domain part before TLD: alphanumeric + .-
+    for (size_t i = 0; i < last_dot; ++i) {
+        const auto c = static_cast<unsigned char>(domain[i]);
+        if (!std::isalnum(c) && c != '.' && c != '-') return false;
+    }
+
+    return true;
+}
+
+/**
+ * @brief Fast phone number detection — count digits, check separators
+ * Pattern: optional +1, 10-11 digits with ()-.space separators
+ */
+bool looks_like_phone(std::string_view value) {
+    int digits = 0;
+    for (const char c : value) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            ++digits;
+        } else if (c != '-' && c != '.' && c != ' ' && c != '(' && c != ')' && c != '+') {
+            return false; // Invalid character for phone number
+        }
+    }
+    return digits >= 10 && digits <= 11;
+}
+
+/**
+ * @brief Fast SSN detection — exactly 9 digits with optional -/space separators
+ * Pattern: NNN[-\s]?NN[-\s]?NNNN
+ */
+bool looks_like_ssn(std::string_view value) {
+    int digits = 0;
+    for (const char c : value) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            ++digits;
+        } else if (c != '-' && c != ' ') {
+            return false;
+        }
+    }
+    return digits == 9;
+}
+
+/**
+ * @brief Fast credit card detection — 13-19 digits with optional -/space separators
+ * Pattern: groups of digits with optional separators
+ */
+bool looks_like_credit_card(std::string_view value) {
+    int digits = 0;
+    for (const char c : value) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            ++digits;
+        } else if (c != '-' && c != ' ') {
+            return false;
+        }
+    }
+    return digits >= 13 && digits <= 19;
+}
+
 } // anonymous namespace
 
 ClassifierRegistry::ClassifierRegistry() {
@@ -120,24 +206,6 @@ ClassifierRegistry::ClassifierRegistry() {
     column_patterns_["pwd"] = ClassificationType::SENSITIVE_PASSWORD;
     column_patterns_["pass_hash"] = ClassificationType::SENSITIVE_PASSWORD;
 
-    // Compile regex patterns once for performance (10-50x faster than recompiling)
-    // Tightened patterns to reduce false positives:
-
-    // Email: No double dots, proper local part and domain structure
-    email_regex_ = std::regex(
-        R"([a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,8})");
-
-    // Phone: US/international format, 10-15 digits total
-    phone_regex_ = std::regex(
-        R"(\+?1?[-.\s]?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4})");
-
-    // SSN: hyphenated, spaced, or raw 9-digit format
-    ssn_regex_ = std::regex(
-        R"(\d{3}[-\s]?\d{2}[-\s]?\d{4})");
-
-    // Credit card: 13-19 digits with optional separators (Luhn validated separately)
-    credit_card_regex_ = std::regex(
-        R"(\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{1,7})");
 }
 
 ClassificationResult ClassifierRegistry::classify(
@@ -260,25 +328,18 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_pattern(
     int cc_matches = 0;
 
     for (const auto& value : sample_values) {
-        if (std::regex_search(value, email_regex_)) {
+        if (looks_like_email(value)) {
             ++email_matches;
         }
-        // Phone: prevent false positives on long digit strings (credit cards, etc.)
-        if (std::regex_search(value, phone_regex_)) {
-            size_t digit_count = 0;
-            for (char c : value) {
-                if (std::isdigit(static_cast<unsigned char>(c))) ++digit_count;
-            }
-            if (digit_count <= 11) {  // Phone numbers are max 11 digits (1 + area + number)
-                ++phone_matches;
-            }
+        if (looks_like_phone(value)) {
+            ++phone_matches;
         }
-        // SSN: regex match + structural validation (no 000/666/9xx area)
-        if (std::regex_search(value, ssn_regex_) && validate_ssn(value)) {
+        // SSN: pattern match + structural validation (no 000/666/9xx area)
+        if (looks_like_ssn(value) && validate_ssn(value)) {
             ++ssn_matches;
         }
-        // Credit card: regex match + Luhn algorithm validation
-        if (std::regex_search(value, credit_card_regex_) && luhn_validate(value)) {
+        // Credit card: pattern match + Luhn algorithm validation
+        if (looks_like_credit_card(value) && luhn_validate(value)) {
             ++cc_matches;
         }
     }

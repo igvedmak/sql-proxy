@@ -5,7 +5,6 @@
 #include <vector>
 #include <memory>
 #include <unordered_map>
-#include <regex>
 
 namespace sqlproxy {
 
@@ -15,7 +14,7 @@ namespace sqlproxy {
  * 4-stage classification:
  * 1. Column name matching (fast, 90% confidence)
  * 2. Type OID hints from PostgreSQL (medium, 85% confidence)
- * 3. Regex value matching (slow, 80% confidence)
+ * 3. Pattern value matching (hand-rolled O(n) scanners, 80% confidence)
  * 4. Derived column tracking (inherited PII)
  */
 class ClassifierRegistry {
@@ -65,12 +64,6 @@ private:
 
     // Classification patterns
     std::unordered_map<std::string, ClassificationType> column_patterns_;
-
-    // Precompiled regex patterns for performance
-    std::regex email_regex_;
-    std::regex phone_regex_;
-    std::regex ssn_regex_;
-    std::regex credit_card_regex_;
 };
 
 } // namespace sqlproxy
