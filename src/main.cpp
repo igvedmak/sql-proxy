@@ -32,6 +32,24 @@ using namespace sqlproxy;
 // Global server instance for signal handling
 std::shared_ptr<HttpServer> g_server;
 
+// ========================================================================= 
+// Explicit Backend Registration (ensures linker includes backend objects)
+// =========================================================================
+
+static void register_backends() {
+    #ifdef ENABLE_POSTGRESQL
+    BackendRegistry::instance().register_backend(
+        DatabaseType::POSTGRESQL,
+        [] { return std::make_unique<PgBackend>(); });
+    #endif
+    
+    #ifdef ENABLE_MYSQL
+    BackendRegistry::instance().register_backend(
+        DatabaseType::MYSQL,
+        [] { return std::make_unique<MysqlBackend>(); });
+    #endif
+}
+
 void signal_handler(int signal) {
     utils::log::info("Received signal " + std::to_string(signal) + ", shutting down...");
     if (g_server) {
@@ -42,6 +60,9 @@ void signal_handler(int signal) {
 
 int main(int argc, char* argv[]) {
     try {
+        // Register all available backends
+        register_backends();
+        
         utils::log::info("SQL Proxy Service starting...");
 
         // Setup signal handlers
@@ -190,10 +211,17 @@ int main(int argc, char* argv[]) {
             db_name = config_result.config.databases[0].name;
         }
 
+        utils::log::info("Creating circuit breaker for database: " + db_name);
         auto circuit_breaker = std::make_shared<CircuitBreaker>(db_name);
-        auto pool = backend->create_pool(db_name, pool_config, circuit_breaker);
 
+        utils::log::info("Creating connection pool...");
+        auto pool = backend->create_pool(db_name, pool_config, circuit_breaker);
+        utils::log::info("Connection pool created successfully");
+
+        utils::log::info("Creating query executor...");
         auto executor = std::make_shared<GenericQueryExecutor>(pool, circuit_breaker);
+        utils::log::info("Query executor created successfully");
+        
         utils::log::info("Executor: " + std::string(database_type_to_string(db_type)) + " with circuit breaker");
 
         utils::log::info("[8/8] Classifier & audit initializing...");
