@@ -215,8 +215,14 @@ int main(int argc, char* argv[]) {
         auto circuit_breaker = std::make_shared<CircuitBreaker>(db_name);
 
         utils::log::info("Creating connection pool...");
-        auto pool = backend->create_pool(db_name, pool_config, circuit_breaker);
-        utils::log::info("Connection pool created successfully");
+        std::shared_ptr<IConnectionPool> pool;
+        try {
+            pool = backend->create_pool(db_name, pool_config, circuit_breaker);
+            utils::log::info("Connection pool created successfully");
+        } catch (const std::exception& pool_err) {
+            utils::log::error("Pool creation error: " + std::string(pool_err.what()));
+            throw;
+        }
 
         utils::log::info("Creating query executor...");
         auto executor = std::make_shared<GenericQueryExecutor>(pool, circuit_breaker);
