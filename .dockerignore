@@ -1,0 +1,49 @@
+# Docker ignore file - exclude these from Docker build context
+
+# Build artifacts (local only, not in third_party)
+build/
+/CMakeFiles/
+/cmake_install.cmake
+/CMakeCache.txt
+
+# Ignore compiled objects EXCEPT in third_party (Docker will rebuild those)
+*.o
+!third_party/**/*.o
+*.so
+*.dylib
+*.exe
+
+# NOTE: Do NOT ignore third_party/ - contains required source code
+# Makefiles in third_party/ are REQUIRED for building libpg_query
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!BUILD.md
+
+# Logs
+logs/
+*.log
+
+# Docker files (don't need to copy into container)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Scripts (already in container)
+*.sh
+
+# Temporary files
+tmp/
+temp/
+.cache/

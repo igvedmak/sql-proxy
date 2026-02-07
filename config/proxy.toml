@@ -1,0 +1,381 @@
+# SQL Proxy Service Configuration
+
+[server]
+host = "0.0.0.0"
+port = 8080
+threads = 4
+request_timeout_ms = 30000
+
+[logging]
+level = "info"
+file = "/app/logs/proxy.log"
+async = true
+
+# ============================================================================
+# Database Connections
+# ============================================================================
+
+[[databases]]
+name = "testdb"
+connection_string = "postgresql://proxy_user:secure_password@postgres:5432/testdb"
+min_connections = 2
+max_connections = 10
+connection_timeout_ms = 5000
+query_timeout_ms = 30000
+enable_circuit_breaker = true
+circuit_breaker_threshold = 10
+circuit_breaker_timeout_ms = 60000
+
+# ============================================================================
+# Users and Roles
+# ============================================================================
+
+[[users]]
+name = "admin"
+roles = ["admin"]
+description = "Administrator with full access"
+
+[[users]]
+name = "analyst"
+roles = ["analyst", "readonly"]
+description = "Data analyst with read-only access"
+
+[[users]]
+name = "developer"
+roles = ["developer"]
+description = "Developer with DML access"
+
+[[users]]
+name = "auditor"
+roles = ["auditor", "readonly"]
+description = "Auditor with limited read access"
+
+# ============================================================================
+# Access Control Policies
+# ============================================================================
+
+# Highest priority - block all DDL for non-admins
+[[policies]]
+name = "block_all_ddl"
+priority = 100
+action = "BLOCK"
+users = ["*"]
+exclude_roles = ["admin"]
+statement_types = ["CREATE_TABLE", "ALTER_TABLE", "DROP_TABLE", "CREATE_INDEX", "DROP_INDEX", "TRUNCATE"]
+reason = "DDL operations require admin role"
+
+# Block access to sensitive_data table for all except auditors
+[[policies]]
+name = "block_sensitive_data"
+priority = 90
+action = "BLOCK"
+users = ["*"]
+exclude_roles = ["auditor", "admin"]
+database = "testdb"
+schema = "public"
+table = "sensitive_data"
+statement_types = ["SELECT", "INSERT", "UPDATE", "DELETE"]
+reason = "Sensitive data table requires auditor or admin role"
+
+# Block all write operations for readonly roles
+[[policies]]
+name = "block_writes_readonly"
+priority = 80
+action = "BLOCK"
+roles = ["readonly"]
+statement_types = ["INSERT", "UPDATE", "DELETE"]
+reason = "Read-only role cannot perform write operations"
+
+# Allow all users to read information_schema (catalog metadata)
+[[policies]]
+name = "allow_information_schema"
+priority = 50
+action = "ALLOW"
+users = ["*"]
+database = "testdb"
+schema = "information_schema"
+statement_types = ["SELECT"]
+reason = "Information schema is public metadata"
+
+# Allow all users to read pg_catalog (system catalog)
+[[policies]]
+name = "allow_pg_catalog"
+priority = 50
+action = "ALLOW"
+users = ["*"]
+database = "testdb"
+schema = "pg_catalog"
+statement_types = ["SELECT"]
+reason = "System catalog is public metadata"
+
+# Allow analysts to read customers table
+[[policies]]
+name = "allow_analyst_read_customers"
+priority = 50
+action = "ALLOW"
+roles = ["analyst"]
+database = "testdb"
+schema = "public"
+table = "customers"
+statement_types = ["SELECT"]
+reason = "Analysts can read customer data"
+
+# Allow analysts to read orders table
+[[policies]]
+name = "allow_analyst_read_orders"
+priority = 50
+action = "ALLOW"
+roles = ["analyst"]
+database = "testdb"
+schema = "public"
+table = "orders"
+statement_types = ["SELECT"]
+reason = "Analysts can read order data"
+
+# Allow analysts to read order_items table
+[[policies]]
+name = "allow_analyst_read_order_items"
+priority = 50
+action = "ALLOW"
+roles = ["analyst"]
+database = "testdb"
+schema = "public"
+table = "order_items"
+statement_types = ["SELECT"]
+reason = "Analysts can read order items"
+
+# Allow developers to read and write customers (except sensitive fields)
+[[policies]]
+name = "allow_developer_customers"
+priority = 50
+action = "ALLOW"
+roles = ["developer"]
+database = "testdb"
+schema = "public"
+table = "customers"
+statement_types = ["SELECT", "INSERT", "UPDATE"]
+reason = "Developers can manage customer data"
+
+# Allow developers to read and write orders
+[[policies]]
+name = "allow_developer_orders"
+priority = 50
+action = "ALLOW"
+roles = ["developer"]
+database = "testdb"
+schema = "public"
+table = "orders"
+statement_types = ["SELECT", "INSERT", "UPDATE", "DELETE"]
+reason = "Developers can manage orders"
+
+# Allow developers to read and write order_items
+[[policies]]
+name = "allow_developer_order_items"
+priority = 50
+action = "ALLOW"
+roles = ["developer"]
+database = "testdb"
+schema = "public"
+table = "order_items"
+statement_types = ["SELECT", "INSERT", "UPDATE", "DELETE"]
+reason = "Developers can manage order items"
+
+# Allow auditors to read sensitive_data
+[[policies]]
+name = "allow_auditor_sensitive"
+priority = 60
+action = "ALLOW"
+roles = ["auditor"]
+database = "testdb"
+schema = "public"
+table = "sensitive_data"
+statement_types = ["SELECT"]
+reason = "Auditors can review sensitive data"
+
+# Allow admins full access to all tables
+[[policies]]
+name = "allow_admin_all"
+priority = 10
+action = "ALLOW"
+roles = ["admin"]
+database = "testdb"
+statement_types = ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE_TABLE", "ALTER_TABLE", "DROP_TABLE", "CREATE_INDEX", "DROP_INDEX", "TRUNCATE"]
+reason = "Admins have full access"
+
+# Default deny - catch all (lowest priority)
+[[policies]]
+name = "default_deny"
+priority = 1
+action = "BLOCK"
+users = ["*"]
+reason = "Default deny - no matching policy"
+
+# ============================================================================
+# Hierarchical Rate Limiting (4 levels)
+# ============================================================================
+
+[rate_limiting]
+enabled = true
+
+# Level 1 - Global (protects proxy CPU)
+[rate_limiting.global]
+tokens_per_second = 50000
+burst_capacity = 10000
+
+# Level 2 - Per User
+[[rate_limiting.per_user]]
+user = "admin"
+tokens_per_second = 10000
+burst_capacity = 2000
+
+[[rate_limiting.per_user]]
+user = "analyst"
+tokens_per_second = 1000
+burst_capacity = 200
+
+[[rate_limiting.per_user]]
+user = "developer"
+tokens_per_second = 5000
+burst_capacity = 1000
+
+[[rate_limiting.per_user]]
+user = "auditor"
+tokens_per_second = 500
+burst_capacity = 100
+
+# Default per-user rate limit
+[rate_limiting.per_user_default]
+tokens_per_second = 100
+burst_capacity = 20
+
+# Level 3 - Per Database
+[[rate_limiting.per_database]]
+database = "testdb"
+tokens_per_second = 30000
+burst_capacity = 5000
+
+# Level 4 - Per User-Per-Database (most specific)
+[[rate_limiting.per_user_per_database]]
+user = "analyst"
+database = "testdb"
+tokens_per_second = 50
+burst_capacity = 10
+
+[[rate_limiting.per_user_per_database]]
+user = "developer"
+database = "testdb"
+tokens_per_second = 1000
+burst_capacity = 200
+
+# ============================================================================
+# Parse Cache Configuration
+# ============================================================================
+
+[cache]
+enabled = true
+max_entries = 10000
+num_shards = 16
+ttl_seconds = 300
+
+# ============================================================================
+# PII Classification Rules
+# ============================================================================
+
+[[classifiers]]
+type = "PII.Email"
+strategy = "column_name"
+patterns = ["email", ".*_email$", "email_.*", "mail"]
+data_validation_regex = "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+sample_size = 20
+confidence_threshold = 0.8
+
+[[classifiers]]
+type = "PII.Phone"
+strategy = "column_name"
+patterns = ["phone", ".*_phone$", "phone_.*", "mobile", "cell", "telephone"]
+data_validation_regex = "^[+]?[(]?[0-9]{1,4}[)]?[-\\s\\.]?[(]?[0-9]{1,4}[)]?[-\\s\\.]?[0-9]{1,9}$"
+sample_size = 20
+confidence_threshold = 0.8
+
+[[classifiers]]
+type = "PII.SSN"
+strategy = "column_name"
+patterns = ["ssn", "social_security", "social_security_number"]
+data_validation_regex = "^\\d{3}-\\d{2}-\\d{4}$"
+sample_size = 20
+confidence_threshold = 0.95
+
+[[classifiers]]
+type = "PII.CreditCard"
+strategy = "column_name"
+patterns = ["credit_card", "cc_number", "card_number", "creditcard"]
+data_validation_regex = "^\\d{4}-\\d{4}-\\d{4}-\\d{4}$"
+sample_size = 20
+confidence_threshold = 0.95
+
+[[classifiers]]
+type = "Sensitive.Salary"
+strategy = "column_name"
+patterns = ["salary", "compensation", "pay", "wage"]
+confidence_threshold = 0.9
+
+[[classifiers]]
+type = "PII.Address"
+strategy = "column_name"
+patterns = ["address", "street", "location", ".*_address$"]
+confidence_threshold = 0.7
+
+# ============================================================================
+# Audit Configuration
+# ============================================================================
+
+[audit]
+enabled = true
+async_mode = true
+ring_buffer_size = 65536
+batch_size = 1000
+flush_interval_ms = 100
+
+# File sink (primary)
+[audit.file]
+enabled = true
+output_file = "/app/logs/audit.jsonl"
+rotation_size_mb = 100
+max_files = 10
+fsync = false
+
+# Database sink (secondary)
+[audit.database]
+enabled = true
+table_name = "audit_events"
+batch_size = 1000
+flush_interval_ms = 1000
+
+# ============================================================================
+# Circuit Breaker Configuration
+# ============================================================================
+
+[circuit_breaker]
+enabled = true
+failure_threshold = 10
+success_threshold = 5
+timeout_ms = 60000
+half_open_max_calls = 3
+
+# ============================================================================
+# Arena Allocator Configuration
+# ============================================================================
+
+[allocator]
+enabled = true
+initial_size_bytes = 1024
+max_size_bytes = 65536
+
+# ============================================================================
+# Observability
+# ============================================================================
+
+[metrics]
+enabled = true
+endpoint = "/metrics"
+export_interval_ms = 5000

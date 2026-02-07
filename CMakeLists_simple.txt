@@ -1,0 +1,85 @@
+cmake_minimum_required(VERSION 3.15)
+project(sql_proxy VERSION 1.0.0 LANGUAGES CXX)
+
+# C++20 standard
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Compiler flags
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+
+# Thread support
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
+# OpenSSL (for cpp-httplib)
+find_package(OpenSSL)
+
+# ============================================================================
+# Include Directories
+# ============================================================================
+
+set(INCLUDE_DIRS
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party/xxHash
+    ${CMAKE_SOURCE_DIR}/third_party/libpg_query
+    ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
+    ${CMAKE_SOURCE_DIR}/third_party/nlohmann-json/include
+)
+
+# ============================================================================
+# Source Files
+# ============================================================================
+
+set(ALL_SOURCES
+    src/main.cpp
+    src/core/arena.cpp
+    src/core/pipeline.cpp
+    src/parser/fingerprinter.cpp
+    src/parser/parse_cache.cpp
+    src/parser/sql_parser.cpp
+    src/analyzer/sql_analyzer.cpp
+    src/analyzer/schema_cache.cpp
+    src/policy/policy_trie.cpp
+    src/policy/policy_engine.cpp
+    src/policy/policy_loader.cpp
+    src/server/rate_limiter.cpp
+    src/server/http_server.cpp
+    src/executor/circuit_breaker.cpp
+    src/executor/connection_pool.cpp
+    src/executor/query_executor.cpp
+    src/classifier/classifier_registry.cpp
+    src/audit/audit_emitter.cpp
+    src/config/config_loader.cpp
+)
+
+# ============================================================================
+# Create Executable
+# ============================================================================
+
+add_executable(${PROJECT_NAME} ${ALL_SOURCES})
+
+target_include_directories(${PROJECT_NAME} PRIVATE ${INCLUDE_DIRS})
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    Threads::Threads
+    ${CMAKE_SOURCE_DIR}/third_party/libpg_query/libpg_query.a
+)
+
+if(OpenSSL_FOUND)
+    target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+# ============================================================================
+# Build Summary
+# ============================================================================
+
+message(STATUS "")
+message(STATUS "==================== SQL Proxy Build Configuration ====================")
+message(STATUS "Build type:       ${CMAKE_BUILD_TYPE}")
+message(STATUS "C++ Standard:     C++${CMAKE_CXX_STANDARD}")
+message(STATUS "OpenSSL:          ${OpenSSL_FOUND}")
+message(STATUS "========================================================================")
+message(STATUS "")

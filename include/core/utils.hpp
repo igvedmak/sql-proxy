@@ -1,0 +1,197 @@
+#pragma once
+
+#include <string>
+#include <chrono>
+#include <random>
+#include <sstream>
+#include <iomanip>
+#include <iostream>
+#include <mutex>
+
+namespace sqlproxy::utils {
+
+// ============================================================================
+// UUID Generation
+// ============================================================================
+
+inline std::string generate_uuid() {
+    static thread_local std::random_device rd;
+    static thread_local std::mt19937_64 gen(rd());
+    static thread_local std::uniform_int_distribution<uint64_t> dis;
+
+    uint64_t high = dis(gen);
+    uint64_t low = dis(gen);
+
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0')
+        << std::setw(8) << (high >> 32)
+        << '-'
+        << std::setw(4) << ((high >> 16) & 0xFFFF)
+        << '-'
+        << std::setw(4) << (high & 0xFFFF)
+        << '-'
+        << std::setw(4) << (low >> 48)
+        << '-'
+        << std::setw(12) << (low & 0xFFFFFFFFFFFF);
+
+    return oss.str();
+}
+
+// ============================================================================
+// Time Utilities
+// ============================================================================
+
+inline std::string format_timestamp(const std::chrono::system_clock::time_point& tp) {
+    auto time = std::chrono::system_clock::to_time_t(tp);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        tp.time_since_epoch()) % 1000;
+
+    std::tm tm_buf;
+    ::localtime_r(&time, &tm_buf);
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S")
+        << '.' << std::setfill('0') << std::setw(3) << ms.count()
+        << std::put_time(&tm_buf, "%z");
+
+    return oss.str();
+}
+
+inline std::chrono::system_clock::time_point now() {
+    return std::chrono::system_clock::now();
+}
+
+// ============================================================================
+// String Utilities
+// ============================================================================
+
+inline std::string to_lower(const std::string& str) {
+    std::string result = str;
+    for (char& c : result) {
+        c = std::tolower(static_cast<unsigned char>(c));
+    }
+    return result;
+}
+
+inline std::string trim(const std::string& str) {
+    auto start = str.find_first_not_of(" \t\n\r");
+    if (start == std::string::npos) {
+        return "";
+    }
+    auto end = str.find_last_not_of(" \t\n\r");
+    return str.substr(start, end - start + 1);
+}
+
+inline std::vector<std::string> split(const std::string& str, char delimiter) {
+    std::vector<std::string> tokens;
+    std::istringstream iss(str);
+    std::string token;
+    while (std::getline(iss, token, delimiter)) {
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+
+// ============================================================================
+// Performance Timer
+// ============================================================================
+
+class Timer {
+public:
+    Timer() : start_(std::chrono::steady_clock::now()) {}
+
+    void reset() {
+        start_ = std::chrono::steady_clock::now();
+    }
+
+    template<typename Duration = std::chrono::microseconds>
+    Duration elapsed() const {
+        auto end = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<Duration>(end - start_);
+    }
+
+    std::chrono::microseconds elapsed_us() const {
+        return elapsed<std::chrono::microseconds>();
+    }
+
+    std::chrono::milliseconds elapsed_ms() const {
+        return elapsed<std::chrono::milliseconds>();
+    }
+
+private:
+    std::chrono::steady_clock::time_point start_;
+};
+
+// ============================================================================
+// RAII Timer for Scoped Measurements
+// ============================================================================
+
+template<typename Duration>
+class ScopedTimer {
+public:
+    explicit ScopedTimer(Duration& out) : out_(out), timer_() {}
+
+    ~ScopedTimer() {
+        out_ = timer_.elapsed<Duration>();
+    }
+
+private:
+    Duration& out_;
+    Timer timer_;
+};
+
+// ============================================================================
+// Logging (thread-safe, stderr, level-tagged)
+// ============================================================================
+
+namespace log {
+
+enum class Level { INFO, WARN, ERROR };
+
+namespace detail {
+    inline std::mutex& log_mutex() {
+        static std::mutex m;
+        return m;
+    }
+
+    inline void write(Level level, const std::string& msg) {
+        const char* tag = "";
+        switch (level) {
+            case Level::INFO:  tag = "INFO "; break;
+            case Level::WARN:  tag = "WARN "; break;
+            case Level::ERROR: tag = "ERROR"; break;
+        }
+
+        auto now = std::chrono::system_clock::now();
+        auto time = std::chrono::system_clock::to_time_t(now);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()) % 1000;
+
+        std::tm tm_buf;
+        ::localtime_r(&time, &tm_buf);
+
+        std::ostringstream oss;
+        oss << std::put_time(&tm_buf, "%H:%M:%S")
+            << '.' << std::setfill('0') << std::setw(3) << ms.count()
+            << " [" << tag << "] " << msg << '\n';
+
+        std::lock_guard<std::mutex> lock(log_mutex());
+        std::cerr << oss.str();
+    }
+} // namespace detail
+
+inline void info(const std::string& msg) {
+    detail::write(Level::INFO, msg);
+}
+
+inline void warn(const std::string& msg) {
+    detail::write(Level::WARN, msg);
+}
+
+inline void error(const std::string& msg) {
+    detail::write(Level::ERROR, msg);
+}
+
+} // namespace log
+
+} // namespace sqlproxy::utils

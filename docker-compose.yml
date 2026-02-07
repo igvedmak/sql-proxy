@@ -1,0 +1,69 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: sql_proxy_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d testdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - sql_proxy_network
+
+  # SQL Proxy Service
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sql_proxy_service
+    ports:
+      - "8080:8080"
+    environment:
+      # Database connection
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: proxy_user
+      POSTGRES_PASSWORD: secure_password
+      POSTGRES_DB: testdb
+
+      # Service configuration
+      PROXY_HOST: 0.0.0.0
+      PROXY_PORT: 8080
+      PROXY_THREADS: 4
+
+      # Logging
+      LOG_LEVEL: info
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - sql_proxy_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  sql_proxy_network:
+    driver: bridge

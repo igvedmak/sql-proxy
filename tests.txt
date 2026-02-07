@@ -1,0 +1,258 @@
+========================================
+  SQL PROXY TEST SUITE
+========================================
+
+[0;34m[TEST 1][0m Health Check Endpoint
+[1;33mCommand:[0m curl -s http://localhost:8080/health
+[1;33mResponse:[0m
+{"status":"healthy","service":"sql-proxy"}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 2][0m Simple SELECT with Constants
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT 1 as test, '\''hello'\'' as message"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"a4429275-06b7-c522-6ae4-ce12a130b6fd","data":{"columns":["test","message"],"rows":[["1","hello"]]},"classifications":{},"execution_time_us":1004}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 3][0m Count Query - Customers Table
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT COUNT(*) as total FROM customers"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"4565674e-cb84-ba93-2f1b-6f27f45aacbf","data":{"columns":["total"],"rows":[["10"]]},"classifications":{},"execution_time_us":1090}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 4][0m List All Tables in Schema
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT table_name FROM information_schema.tables WHERE table_schema = '\''public'\'' ORDER BY table_name"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"60cfc63f-ca6d-3c2e-03e4-3c31695ba3df","data":{"columns":["table_name"],"rows":[["audit_events"],["customers"],["order_items"],["orders"],["sensitive_data"]]},"classifications":{},"execution_time_us":2325}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 5][0m Select Customers with PII (email)
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT id, name, email FROM customers LIMIT 3"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"dbbe7dbc-afef-9fef-80ee-107275f4c939","data":{"columns":["id","name","email"],"rows":[["1","John Doe","john.doe@example.com"],["2","Jane Smith","jane.smith@example.com"],["3","Bob Johnson","bob.johnson@example.com"]]},"classifications":{"email":"PII.Email"},"execution_time_us":919}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 6][0m Select Products with Price Filter
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name, price FROM products WHERE price > 100 ORDER BY price DESC LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"91f01286-9240-8faf-202e-e8dbf4c95108","error_code":"DATABASE_ERROR","error_message":"ERROR:  relation "products" does not exist
+LINE 1: SELECT name, price FROM products WHERE price > 100 ORDER BY ...
+                                ^
+","execution_time_us":1183}
+[0;31m✗ FAIL[0m
+[0;31mExpected pattern: "success":true[0m
+---
+
+[0;34m[TEST 7][0m JOIN Query - Customers and Orders
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT c.name, COUNT(o.id) as order_count FROM customers c LEFT JOIN orders o ON c.id = o.customer_id GROUP BY c.name LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"31819ee4-638b-ca20-c949-371cfdcdc02a","data":{"columns":["name","order_count"],"rows":[["Eve Martinez","1"],["Alice Williams","2"],["Grace Lee","1"],["John Doe","2"],["Frank Garcia","1"]]},"classifications":{},"execution_time_us":1401}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 8][0m Aggregate Query with HAVING Clause
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT customer_id, COUNT(*) as order_count FROM orders GROUP BY customer_id HAVING COUNT(*) > 1"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"7520ffaa-8ba9-6e1c-e17e-7f470269368d","data":{"columns":["customer_id","order_count"],"rows":[["4","2"],["2","2"],["1","2"]]},"classifications":{},"execution_time_us":1168}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 9][0m Complex JOIN - Orders with Products
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT c.name, p.name as product, o.quantity FROM orders o JOIN customers c ON o.customer_id = c.id JOIN products p ON o.product_id = p.id LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"9e696d10-15a1-6731-8d25-e5904f75139a","error_code":"DATABASE_ERROR","error_message":"ERROR:  relation "products" does not exist
+LINE 1: ...s o JOIN customers c ON o.customer_id = c.id JOIN products p...
+                                                             ^
+","execution_time_us":998}
+[0;31m✗ FAIL[0m
+[0;31mExpected pattern: "success":true[0m
+---
+
+[0;34m[TEST 10][0m Date Range Filter Query
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT COUNT(*) as recent_orders FROM orders WHERE created_at > NOW() - INTERVAL '\''30 days'\''"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"9c812a27-b9b3-5087-cb10-97a6a1bcb736","data":{"columns":["recent_orders"],"rows":[["13"]]},"classifications":{},"execution_time_us":947}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 11][0m Invalid SQL Syntax (expect error)
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"INVALID SQL SYNTAX"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"e62615d1-68ad-fe8f-f293-08e10da68d62","error_code":"PARSE_ERROR","error_message":"syntax error at or near "INVALID"","execution_time_us":77}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 12][0m Query Non-existent Table (expect error)
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT * FROM nonexistent_table"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"e281e3e1-ceb4-e310-6504-020e9953d614","error_code":"DATABASE_ERROR","error_message":"ERROR:  relation "nonexistent_table" does not exist
+LINE 1: SELECT * FROM nonexistent_table
+                      ^
+","execution_time_us":1211}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 13][0m Missing Required Field - sql (expect error)
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb"}'
+[1;33mResponse:[0m
+{"success":false,"error":"Missing required field: sql"}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 14][0m Missing Required Field - user (expect error)
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"database":"testdb","sql":"SELECT 1"}'
+[1;33mResponse:[0m
+{"success":false,"error":"Missing required field: user"}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 15][0m Malformed JSON Request (expect error)
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{invalid json}'
+[1;33mResponse:[0m
+{"success":false,"error":"Missing required field: user"}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 16][0m CASE Expression in SELECT
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name, CASE WHEN price > 500 THEN '\''expensive'\'' WHEN price > 100 THEN '\''moderate'\'' ELSE '\''cheap'\'' END as price_category FROM products LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"c7242a22-8be4-3ff7-a9e8-68df8dfcee12","error_code":"DATABASE_ERROR","error_message":"ERROR:  relation "products" does not exist
+LINE 1: ...moderate' ELSE 'cheap' END as price_category FROM products L...
+                                                             ^
+","execution_time_us":1693}
+[0;31m✗ FAIL[0m
+[0;31mExpected pattern: "success":true[0m
+---
+
+[0;34m[TEST 17][0m Subquery in WHERE Clause
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name FROM customers WHERE id IN (SELECT DISTINCT customer_id FROM orders) LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"1e679aff-6475-af90-6748-32af22fb7264","data":{"columns":["name"],"rows":[["Grace Lee"],["Bob Johnson"],["Charlie Brown"],["Alice Williams"],["Henry Wilson"]]},"classifications":{},"execution_time_us":1482}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 18][0m String Functions (UPPER, LOWER, CONCAT)
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT UPPER(name) as upper_name, LOWER(email) as lower_email FROM customers LIMIT 3"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"1b3b6381-3fe4-7aae-2ce5-cd5b3bc0df65","data":{"columns":["upper_name","lower_email"],"rows":[["JOHN DOE","john.doe@example.com"],["JANE SMITH","jane.smith@example.com"],["BOB JOHNSON","bob.johnson@example.com"]]},"classifications":{"lower_email":"PII.Email"},"execution_time_us":1094}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 19][0m Math Functions (ROUND, CEIL, FLOOR)
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name, ROUND(price, 2) as rounded, CEIL(price) as ceiling FROM products LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"568cb2e3-b6ed-07d3-1cd9-36d492ba8ab3","error_code":"DATABASE_ERROR","error_message":"ERROR:  relation "products" does not exist
+LINE 1: ...price, 2) as rounded, CEIL(price) as ceiling FROM products L...
+                                                             ^
+","execution_time_us":967}
+[0;31m✗ FAIL[0m
+[0;31mExpected pattern: "success":true[0m
+---
+
+[0;34m[TEST 20][0m Pagination with LIMIT and OFFSET
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name FROM customers ORDER BY name LIMIT 5 OFFSET 2"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"a8d51a91-e820-43ba-4a50-1e1688b8243e","data":{"columns":["name"],"rows":[["Charlie Brown"],["Diana Davis"],["Eve Martinez"],["Frank Garcia"],["Grace Lee"]]},"classifications":{},"execution_time_us":1045}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 21][0m DISTINCT Values Query
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT DISTINCT customer_id FROM orders"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"8585b6fc-e141-2728-52a6-77694305b040","data":{"columns":["customer_id"],"rows":[["9"],["3"],["5"],["4"],["10"],["6"],["2"],["7"],["1"],["8"]]},"classifications":{},"execution_time_us":1857}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 22][0m Multiple Aggregate Functions
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT COUNT(*) as total, AVG(price) as avg_price, MAX(price) as max_price, MIN(price) as min_price FROM products"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"f9dc950c-50a3-5598-2f1a-b504123a3f26","error_code":"DATABASE_ERROR","error_message":"ERROR:  relation "products" does not exist
+LINE 1: ...X(price) as max_price, MIN(price) as min_price FROM products
+                                                               ^
+","execution_time_us":955}
+[0;31m✗ FAIL[0m
+[0;31mExpected pattern: "success":true[0m
+---
+
+[0;34m[TEST 23][0m NULL Handling with COALESCE
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name, COALESCE(phone, '\''N/A'\'') as phone_number FROM customers LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"7df34849-c7e7-2cf8-be57-2c748eb1d42c","data":{"columns":["name","phone_number"],"rows":[["John Doe","+1-555-0101"],["Jane Smith","+1-555-0102"],["Bob Johnson","+1-555-0103"],["Alice Williams","+1-555-0104"],["Charlie Brown","+1-555-0105"]]},"classifications":{"phone_number":"PII.Phone"},"execution_time_us":1012}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 24][0m ORDER BY Multiple Columns
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name, price FROM products ORDER BY price DESC, name ASC LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"806d0713-be86-53ff-df48-e7dd9f05dc57","error_code":"DATABASE_ERROR","error_message":"ERROR:  relation "products" does not exist
+LINE 1: SELECT name, price FROM products ORDER BY price DESC, name A...
+                                ^
+","execution_time_us":1002}
+[0;31m✗ FAIL[0m
+[0;31mExpected pattern: "success":true[0m
+---
+
+[0;34m[TEST 25][0m Pattern Matching with LIKE
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name FROM customers WHERE name LIKE '\''%son'\'' LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"4237186c-be4b-9128-6a6a-f23b78ec45b3","data":{"columns":["name"],"rows":[["Bob Johnson"],["Henry Wilson"]]},"classifications":{},"execution_time_us":1022}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 26][0m IN Operator with Multiple Values
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name, price FROM products WHERE id IN (1, 3, 5) ORDER BY id"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"920f9d1c-7811-08c4-904d-a98c1fa4a273","error_code":"DATABASE_ERROR","error_message":"ERROR:  relation "products" does not exist
+LINE 1: SELECT name, price FROM products WHERE id IN (1, 3, 5) ORDER...
+                                ^
+","execution_time_us":926}
+[0;31m✗ FAIL[0m
+[0;31mExpected pattern: "success":true[0m
+---
+
+[0;34m[TEST 27][0m BETWEEN Operator for Range Query
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name, price FROM products WHERE price BETWEEN 100 AND 500 LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":false,"audit_id":"bf6345f6-e100-745b-bcbe-2fcaa37da7b5","error_code":"DATABASE_ERROR","error_message":"ERROR:  relation "products" does not exist
+LINE 1: SELECT name, price FROM products WHERE price BETWEEN 100 AND...
+                                ^
+","execution_time_us":1061}
+[0;31m✗ FAIL[0m
+[0;31mExpected pattern: "success":true[0m
+---
+
+[0;34m[TEST 28][0m EXISTS Subquery
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"1f0ca774-7c7c-d7d0-02c7-d2b24bb2ae56","data":{"columns":["name"],"rows":[["John Doe"],["Jane Smith"],["Bob Johnson"],["Alice Williams"],["Charlie Brown"]]},"classifications":{},"execution_time_us":1259}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 29][0m Complex Multi-table Query
+[1;33mCommand:[0m curl -s -X POST http://localhost:8080/api/v1/query -H 'Content-Type: application/json' -d '{"user":"analyst","database":"testdb","sql":"SELECT DISTINCT c1.name FROM customers c1 JOIN orders o1 ON c1.id = o1.customer_id JOIN orders o2 ON c1.id = o2.customer_id WHERE o1.id != o2.id LIMIT 5"}'
+[1;33mResponse:[0m
+{"success":true,"audit_id":"69cb32c2-3570-1756-b13c-3e0b54263494","data":{"columns":["name"],"rows":[["Alice Williams"],["John Doe"],["Jane Smith"]]},"classifications":{},"execution_time_us":1562}
+[0;32m✓ PASS[0m
+---
+
+[0;34m[TEST 30][0m Metrics Endpoint (if implemented)
+[1;33mCommand:[0m curl -s http://localhost:8080/metrics || echo '{"note":"endpoint not implemented"}'
+[1;33mResponse:[0m
+# SQL Proxy Metrics
+# TODO: Implement Prometheus metrics
+[0;32m✓ PASS[0m
+---
+
+========================================
+  TEST SUMMARY
+========================================
+Total Tests:  30
+[0;32mPassed:       22[0m
+[0;31mFailed:       8[0m
+========================================
+[0;31m✗ SOME TESTS FAILED[0m
