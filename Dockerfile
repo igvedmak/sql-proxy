@@ -86,15 +86,28 @@ RUN mkdir -p build && \
     cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" .. && \
     make -j$(nproc)
 
-# Stage 5: Build and run unit tests (optional, used by docker compose run tests)
-FROM proxy-builder AS test-builder
+# Stage 5: Build Catch2 (cached until CMakeLists.txt changes, survives src/ edits)
+FROM proxy-builder AS test-deps
 
-# Copy test sources
-COPY tests /build/sql_proxy/tests
+# Create stub test files so cmake configure succeeds without real test sources
+RUN mkdir -p tests && \
+    for f in test_fingerprinter test_parser test_analyzer test_policy_engine \
+             test_classifier test_rate_limiter test_config_reload test_stress; do \
+        echo "// stub" > tests/${f}.cpp; \
+    done
 
-# Rebuild with tests enabled (library is already built, only tests compile)
+# Configure with tests enabled and build only Catch2
 RUN cd build && \
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON .. && \
+    make -j$(nproc) Catch2 Catch2WithMain
+
+FROM test-deps AS test-builder
+
+# Copy real test sources (overwrites stubs, only this layer invalidates on test changes)
+COPY tests /build/sql_proxy/tests
+
+# Build test executable (Catch2 is already built and cached)
+RUN cd build && \
     make -j$(nproc) sql_proxy_tests
 
 # Run tests

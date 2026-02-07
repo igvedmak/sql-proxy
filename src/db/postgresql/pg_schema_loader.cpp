@@ -7,6 +7,10 @@
 
 namespace sqlproxy {
 
+static constexpr char kDot = '.';
+static constexpr std::string_view kYes    = "YES";
+static constexpr std::string_view kYesLow = "yes";
+
 // RAII wrappers for libpq resources
 struct PGConnDeleter {
     void operator()(PGconn* conn) const noexcept {
@@ -81,13 +85,13 @@ std::shared_ptr<SchemaMap> PgSchemaLoader::load_schema(const std::string& conn_s
         std::string table_name  = utils::to_lower(table_raw  ? table_raw  : "");
         std::string column_name = utils::to_lower(column_raw ? column_raw : "");
         std::string data_type   = utils::to_lower(type_raw   ? type_raw   : "");
-        std::string nullable_str = nullable_raw ? nullable_raw : "YES";
+        std::string nullable_str = nullable_raw ? nullable_raw : std::string(kYes);
 
         // Construct the map key
         std::string key;
         key.reserve(schema_name.size() + 1 + table_name.size());
         key = schema_name;
-        key += '.';
+        key += kDot;
         key += table_name;
 
         // If we've moved to a new table, finalize the previous one and start fresh
@@ -110,12 +114,9 @@ std::shared_ptr<SchemaMap> PgSchemaLoader::load_schema(const std::string& conn_s
         }
 
         // Build ColumnMetadata for this row
-        ColumnMetadata col;
-        col.name = std::move(column_name);
-        col.type = std::move(data_type);
-        col.type_oid = PgTypeMap::type_name_to_oid(col.type);
-        col.nullable = (nullable_str == "YES" || nullable_str == "yes");
-        col.is_primary_key = false;
+        uint32_t type_oid = PgTypeMap::type_name_to_oid(data_type);
+        bool is_nullable = (nullable_str == kYes || nullable_str == kYesLow);
+        ColumnMetadata col(std::move(column_name), std::move(data_type), type_oid, is_nullable, false);
 
         // Record the column index for fast name-based lookup
         const size_t col_index = current_table->columns.size();
@@ -158,10 +159,10 @@ std::shared_ptr<SchemaMap> PgSchemaLoader::load_schema(const std::string& conn_s
             std::string pk_key;
             pk_key.reserve(pk_schema.size() + 1 + pk_table.size());
             pk_key = pk_schema;
-            pk_key += '.';
+            pk_key += kDot;
             pk_key += pk_table;
 
-            auto it = cache->find(pk_key);
+            const auto it = cache->find(pk_key);
             if (it == cache->end()) {
                 continue;
             }

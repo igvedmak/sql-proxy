@@ -37,7 +37,7 @@ public:
     }
 
     [[nodiscard]] std::unique_ptr<IDbBackend> create(DatabaseType type) const {
-        auto it = factories_.find(type);
+        const auto it = factories_.find(type);
         if (it == factories_.end()) {
             throw std::runtime_error(
                 std::string("No backend registered for database type: ") +

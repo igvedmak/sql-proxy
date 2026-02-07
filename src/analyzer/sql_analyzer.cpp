@@ -92,6 +92,20 @@ static constexpr std::string_view kExpr          = "expr";
 static constexpr std::string_view kResult        = "result";
 static constexpr std::string_view kName          = "name";
 static constexpr std::string_view kStr           = "str";
+static constexpr char kDot = '.';
+static constexpr std::string_view kDotPrefix     = ".";
+
+// Projection expression type labels (used as both expression and fallback name)
+static constexpr std::string_view kExprExpression    = "expression";
+static constexpr std::string_view kExprSubquery      = "subquery";
+static constexpr std::string_view kExprCase          = "case";
+static constexpr std::string_view kExprTypecast      = "typecast";
+static constexpr std::string_view kExprCoalesce      = "coalesce";
+static constexpr std::string_view kExprUnknown       = "unknown";
+static constexpr std::string_view kExprIntLiteral    = "integer_literal";
+static constexpr std::string_view kExprStrLiteral    = "string_literal";
+static constexpr std::string_view kExprFloatLiteral  = "float_literal";
+static constexpr std::string_view kExprLiteral       = "literal";
 
 // ============================================================================
 // Static lookup tables
@@ -375,7 +389,7 @@ static void extract_column_refs_from_node(const json& col_ref,
 
     if (parts.size() >= 2) {
         // table.column or schema.table.column
-        std::string qualified = parts[parts.size() - 2] + "." + col_name;
+        std::string qualified = parts[parts.size() - 2] + std::string(kDotPrefix) + col_name;
         table_qualified_columns.push_back(std::move(qualified));
     }
 }
@@ -493,15 +507,11 @@ static void walk_for_tables(const json& node,
             std::string key;
             key.reserve(schemaname.size() + 1 + relname.size());
             key = schemaname;
-            key += '.';
+            key += kDot;
             key += relname;
 
             if (seen.insert(key).second) {
-                TableRef ref;
-                ref.schema = std::move(schemaname);
-                ref.table = std::move(relname);
-                ref.alias = std::move(alias_name);
-                tables.push_back(std::move(ref));
+                tables.emplace_back(std::move(schemaname), std::move(relname), std::move(alias_name));
             }
         }
         // Don't return - RangeVar won't have sub-nodes with more tables
@@ -881,7 +891,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
     }
 
     auto [stmt_type, body] = get_stmt_body(stmt);
-    if (stmt_type != "SelectStmt" || body.is_null()) {
+    if (stmt_type != kSelectStmt || body.is_null()) {
         return projections;
     }
 
@@ -951,7 +961,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                     if (parts.size() >= 2) {
                         std::string expr;
                         for (size_t i = 0; i < parts.size(); ++i) {
-                            if (i > 0) expr += '.';
+                            if (i > 0) expr += kDot;
                             expr += parts[i];
                         }
                         col.expression = std::move(expr);
@@ -1009,7 +1019,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             for (auto& c : expr_cols) {
                 col.derived_from.push_back(std::move(c));
             }
-            col.expression = "expression";
+            col.expression = kExprExpression;
             col.confidence = 0.8;
 
             if (col.name.empty() && !col.derived_from.empty()) {
@@ -1022,11 +1032,11 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
 
         // Case 4: SubLink (scalar subquery in SELECT list)
         if (has_key(val, kSubLink)) {
-            col.expression = "subquery";
+            col.expression = kExprSubquery;
             col.confidence = 0.5;
 
             if (col.name.empty()) {
-                col.name = "subquery";
+                col.name = kExprSubquery;
             }
 
             projections.push_back(std::move(col));
@@ -1040,13 +1050,13 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             for (auto& c : case_cols) {
                 col.derived_from.push_back(std::move(c));
             }
-            col.expression = "case";
+            col.expression = kExprCase;
             col.confidence = 0.7;
 
             if (col.name.empty() && !col.derived_from.empty()) {
                 col.name = col.derived_from.front();
             } else if (col.name.empty()) {
-                col.name = "case";
+                col.name = kExprCase;
             }
 
             projections.push_back(std::move(col));
@@ -1060,7 +1070,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             for (auto& c : cast_cols) {
                 col.derived_from.push_back(std::move(c));
             }
-            col.expression = "typecast";
+            col.expression = kExprTypecast;
             col.confidence = 0.95;
 
             if (col.name.empty() && !col.derived_from.empty()) {
@@ -1075,13 +1085,13 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         if (has_key(val, kAConst)) {
             const auto& a_const = val[kAConst];
             if (has_key(a_const, kIval)) {
-                col.expression = "integer_literal";
+                col.expression = kExprIntLiteral;
             } else if (has_key(a_const, kSval)) {
-                col.expression = "string_literal";
+                col.expression = kExprStrLiteral;
             } else if (has_key(a_const, kFval)) {
-                col.expression = "float_literal";
+                col.expression = kExprFloatLiteral;
             } else {
-                col.expression = "literal";
+                col.expression = kExprLiteral;
             }
             col.confidence = 1.0;
 
@@ -1100,13 +1110,13 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             for (auto& c : coalesce_cols) {
                 col.derived_from.push_back(std::move(c));
             }
-            col.expression = "coalesce";
+            col.expression = kExprCoalesce;
             col.confidence = 0.85;
 
             if (col.name.empty() && !col.derived_from.empty()) {
                 col.name = col.derived_from.front();
             } else if (col.name.empty()) {
-                col.name = "coalesce";
+                col.name = kExprCoalesce;
             }
 
             projections.push_back(std::move(col));
@@ -1120,13 +1130,13 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             for (auto& c : fallback_cols) {
                 col.derived_from.push_back(std::move(c));
             }
-            col.expression = "unknown";
+            col.expression = kExprUnknown;
             col.confidence = 0.5;
 
             if (col.name.empty() && !col.derived_from.empty()) {
                 col.name = col.derived_from.front();
             } else if (col.name.empty()) {
-                col.name = "unknown";
+                col.name = kExprUnknown;
             }
 
             projections.push_back(std::move(col));
@@ -1168,29 +1178,24 @@ std::vector<ColumnRef> SQLAnalyzer::extract_filter_columns(void* parse_tree) {
         std::unordered_set<std::string> added;
         for (const auto& tq : table_qualified) {
             if (added.insert(tq).second) {
-                size_t dot = tq.find('.');
-                ColumnRef ref;
-                ref.table = tq.substr(0, dot);
-                ref.column = tq.substr(dot + 1);
-                columns.push_back(std::move(ref));
+                size_t dot = tq.find(kDot);
+                columns.emplace_back(std::string(tq.substr(0, dot)), std::string(tq.substr(dot + 1)));
             }
         }
         for (const auto& cn : col_names) {
             // Only add if not already added as table-qualified
             bool already_qualified = false;
             for (const auto& tq : table_qualified) {
-                size_t dot = tq.find('.');
+                size_t dot = tq.find(kDot);
                 if (dot != std::string::npos && tq.substr(dot + 1) == cn) {
                     already_qualified = true;
                     break;
                 }
             }
             if (!already_qualified) {
-                std::string key = "." + cn;
+                std::string key = std::string(kDotPrefix) + cn;
                 if (added.insert(key).second) {
-                    ColumnRef ref;
-                    ref.column = cn;
-                    columns.push_back(std::move(ref));
+                    columns.emplace_back(std::string(cn));
                 }
             }
         }
@@ -1224,28 +1229,23 @@ static void extract_join_filter_columns(const json& node, std::vector<ColumnRef>
             std::unordered_set<std::string> added;
             for (const auto& tq : table_qualified) {
                 if (added.insert(tq).second) {
-                    size_t dot = tq.find('.');
-                    ColumnRef ref;
-                    ref.table = tq.substr(0, dot);
-                    ref.column = tq.substr(dot + 1);
-                    columns.push_back(std::move(ref));
+                    size_t dot = tq.find(kDot);
+                    columns.emplace_back(std::string(tq.substr(0, dot)), std::string(tq.substr(dot + 1)));
                 }
             }
             for (const auto& cn : col_names) {
                 bool already_qualified = false;
                 for (const auto& tq : table_qualified) {
-                    size_t dot = tq.find('.');
+                    size_t dot = tq.find(kDot);
                     if (dot != std::string::npos && tq.substr(dot + 1) == cn) {
                         already_qualified = true;
                         break;
                     }
                 }
                 if (!already_qualified) {
-                    std::string key = "." + cn;
+                    std::string key = std::string(kDotPrefix) + cn;
                     if (added.insert(key).second) {
-                        ColumnRef ref;
-                        ref.column = cn;
-                        columns.push_back(std::move(ref));
+                        columns.emplace_back(std::string(cn));
                     }
                 }
             }
@@ -1293,9 +1293,7 @@ std::vector<ColumnRef> SQLAnalyzer::extract_write_columns(void* parse_tree, Stat
                 const auto& res_target = col_item[kResTarget];
                 std::string col_name = get_string(res_target, kName);
                 if (!col_name.empty()) {
-                    ColumnRef ref;
-                    ref.column = std::move(col_name);
-                    columns.push_back(std::move(ref));
+                    columns.emplace_back(std::move(col_name));
                 }
             }
         }
@@ -1314,9 +1312,7 @@ std::vector<ColumnRef> SQLAnalyzer::extract_write_columns(void* parse_tree, Stat
                 const auto& res_target = target_item[kResTarget];
                 std::string col_name = get_string(res_target, kName);
                 if (!col_name.empty()) {
-                    ColumnRef ref;
-                    ref.column = std::move(col_name);
-                    columns.push_back(std::move(ref));
+                    columns.emplace_back(std::move(col_name));
                 }
             }
         }
@@ -1352,7 +1348,7 @@ std::string SQLAnalyzer::resolve_column(
     const std::unordered_map<std::string, std::string>& aliases) {
 
     // Check if column has table prefix: "alias.column"
-    size_t dot_pos = col.find('.');
+    size_t dot_pos = col.find(kDot);
     if (dot_pos == std::string::npos) {
         return col; // No prefix
     }
@@ -1363,7 +1359,7 @@ std::string SQLAnalyzer::resolve_column(
     // Resolve alias to table name
     auto it = aliases.find(prefix);
     if (it != aliases.end()) {
-        return it->second + "." + col_name;
+        return it->second + std::string(kDotPrefix) + col_name;
     }
 
     return col; // Prefix is already table name
@@ -1439,7 +1435,7 @@ std::optional<int64_t> SQLAnalyzer::extract_limit(void* parse_tree) {
     }
 
     auto [stmt_type, body] = get_stmt_body(stmt);
-    if (stmt_type != "SelectStmt" || body.is_null()) {
+    if (stmt_type != kSelectStmt || body.is_null()) {
         return std::nullopt;
     }
 

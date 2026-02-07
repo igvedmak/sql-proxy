@@ -245,7 +245,7 @@ std::shared_ptr<TokenBucket> HierarchicalRateLimiter::get_user_bucket(
     // Fast path: shared lock for read (99.9% of requests)
     {
         std::shared_lock<std::shared_mutex> lock(user_buckets_mutex_);
-        auto it = user_buckets_.find(user);
+        const auto it = user_buckets_.find(user);
         if (it != user_buckets_.end()) {
             return it->second;
         }
@@ -277,7 +277,7 @@ std::shared_ptr<TokenBucket> HierarchicalRateLimiter::get_database_bucket(
     // Fast path: shared lock for read
     {
         std::shared_lock<std::shared_mutex> lock(db_buckets_mutex_);
-        auto it = db_buckets_.find(database);
+        const auto it = db_buckets_.find(database);
         if (it != db_buckets_.end()) {
             return it->second;
         }
@@ -316,7 +316,7 @@ std::shared_ptr<TokenBucket> HierarchicalRateLimiter::get_user_database_bucket(
     // Fast path: shared lock for read
     {
         std::shared_lock<std::shared_mutex> lock(user_db_buckets_mutex_);
-        auto it = user_db_buckets_.find(key);
+        const auto it = user_db_buckets_.find(key);
         if (it != user_db_buckets_.end()) {
             return it->second;
         }

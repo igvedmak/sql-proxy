@@ -16,6 +16,10 @@ namespace sqlproxy {
 struct UserInfo {
     std::string name;
     std::vector<std::string> roles;
+
+    UserInfo() = default;
+    UserInfo(std::string n, std::vector<std::string> r)
+        : name(std::move(n)), roles(std::move(r)) {}
 };
 
 /**

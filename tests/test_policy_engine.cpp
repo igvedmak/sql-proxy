@@ -20,21 +20,7 @@ static AnalysisResult make_select_analysis(const std::string& table,
     return analysis;
 }
 
-static AnalysisResult make_write_analysis(const std::string& table,
-                                           StatementType type,
-                                           const std::string& schema = "") {
-    AnalysisResult analysis;
-    analysis.statement_type = type;
-    analysis.sub_type = statement_type_to_string(type);
 
-    TableRef ref;
-    ref.table = table;
-    ref.schema = schema;
-    analysis.target_tables.push_back(ref);
-    analysis.table_usage[ref.full_name()] = TableUsage::WRITE;
-
-    return analysis;
-}
 
 static AnalysisResult make_multi_table_analysis(
     const std::vector<std::string>& tables) {

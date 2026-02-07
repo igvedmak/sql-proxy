@@ -6,6 +6,10 @@
 
 namespace sqlproxy {
 
+static constexpr char kDot = '.';
+static constexpr std::string_view kYes    = "YES";
+static constexpr std::string_view kYesLow = "yes";
+
 std::shared_ptr<SchemaMap> MysqlSchemaLoader::load_schema(
     const std::string& conn_string) {
 
@@ -54,7 +58,7 @@ std::shared_ptr<SchemaMap> MysqlSchemaLoader::load_schema(
         std::string key;
         key.reserve(schema_name.size() + 1 + table_name.size());
         key = schema_name;
-        key += '.';
+        key += kDot;
         key += table_name;
 
         if (key != current_key) {
@@ -76,12 +80,8 @@ std::shared_ptr<SchemaMap> MysqlSchemaLoader::load_schema(
         }
 
         // Build ColumnMetadata
-        ColumnMetadata col;
-        col.name = std::move(column_name);
-        col.type = std::move(data_type);
-        col.type_oid = 0;  // MySQL doesn't use OIDs
-        col.nullable = (nullable_str == "YES" || nullable_str == "yes");
-        col.is_primary_key = false;
+        bool is_nullable = (nullable_str == kYes || nullable_str == kYesLow);
+        ColumnMetadata col(std::move(column_name), std::move(data_type), 0, is_nullable, false);
 
         const size_t col_index = current_table->columns.size();
         current_table->column_index[col.name] = col_index;
@@ -115,10 +115,10 @@ std::shared_ptr<SchemaMap> MysqlSchemaLoader::load_schema(
             std::string pk_key;
             pk_key.reserve(pk_schema.size() + 1 + pk_table.size());
             pk_key = pk_schema;
-            pk_key += '.';
+            pk_key += kDot;
             pk_key += pk_table;
 
-            auto it = cache->find(pk_key);
+            const auto it = cache->find(pk_key);
             if (it == cache->end()) continue;
 
             auto& table = it->second;

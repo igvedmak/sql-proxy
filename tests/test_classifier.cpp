@@ -25,24 +25,7 @@ static AnalysisResult make_simple_analysis() {
     return analysis;
 }
 
-// Helper to build AnalysisResult with derived column tracking
-static AnalysisResult make_derived_analysis(
-    const std::string& output_name,
-    const std::vector<std::string>& derived_from,
-    const std::string& expression = "") {
 
-    AnalysisResult analysis;
-    analysis.statement_type = StatementType::SELECT;
-
-    ProjectionColumn proj;
-    proj.name = output_name;
-    proj.derived_from = derived_from;
-    proj.expression = expression;
-    proj.confidence = 0.9;
-    analysis.projections.push_back(proj);
-
-    return analysis;
-}
 
 TEST_CASE("ClassifierRegistry column name classification", "[classifier]") {
 

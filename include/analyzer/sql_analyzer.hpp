@@ -29,6 +29,12 @@ struct ProjectionColumn {
           derived_from(std::move(sources)),
           is_star_expansion(false),
           confidence(1.0) {}
+
+    ProjectionColumn(std::string n, std::string expr,
+                     std::vector<std::string> sources, double conf = 1.0)
+        : name(std::move(n)), expression(std::move(expr)),
+          derived_from(std::move(sources)),
+          is_star_expansion(false), confidence(conf) {}
 };
 
 /**

@@ -22,6 +22,7 @@ static constexpr std::string_view kSchemaname = "schemaname";
 static constexpr std::string_view kAliasFld   = "alias";
 static constexpr std::string_view kAlias      = "Alias";
 static constexpr std::string_view kAliasname  = "aliasname";
+static constexpr char kDot = '.';
 
 // Static hash map for O(1) statement type lookup
 static const std::unordered_map<std::string_view, StatementType> STATEMENT_TYPE_MAP = {
@@ -167,7 +168,7 @@ StatementType SQLParser::extract_statement_type(void* parse_result_ptr) {
     std::string_view stmt_type_str = tree.substr(quote_start + 1, quote_end - quote_start - 1);
 
     // O(1) hash map lookup instead of O(n) string comparisons
-    auto it = STATEMENT_TYPE_MAP.find(stmt_type_str);
+    const auto it = STATEMENT_TYPE_MAP.find(stmt_type_str);
     if (it == STATEMENT_TYPE_MAP.end()) {
         return StatementType::UNKNOWN;
     }
@@ -258,16 +259,12 @@ static void find_range_vars(const JsonValue& node,
                 std::string key;
                 key.reserve(schema_name.size() + 1 + table_name.size());
                 key = schema_name;
-                key += '.';
+                key += kDot;
                 key += table_name;
 
                 // O(1) duplicate check - insert returns {iterator, was_inserted}
                 if (seen_tables.insert(key).second) {
-                    TableRef ref;
-                    ref.schema = std::move(schema_name);
-                    ref.table = std::move(table_name);
-                    ref.alias = std::move(alias_name);
-                    tables.push_back(std::move(ref));
+                    tables.emplace_back(std::move(schema_name), std::move(table_name), std::move(alias_name));
                 }
             }
         }

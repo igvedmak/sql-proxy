@@ -111,6 +111,8 @@ struct TableRef {
     TableRef() = default;
     TableRef(std::string t) : table(std::move(t)) {}
     TableRef(std::string s, std::string t) : schema(std::move(s)), table(std::move(t)) {}
+    TableRef(std::string s, std::string t, std::string a)
+        : schema(std::move(s)), table(std::move(t)), alias(std::move(a)) {}
 
     std::string full_name() const {
         return schema.empty() ? table : (schema + "." + table);
@@ -159,6 +161,10 @@ struct ColumnMetadata {
     bool is_primary_key;
 
     ColumnMetadata() : type_oid(0), nullable(true), is_primary_key(false) {}
+    ColumnMetadata(std::string n, std::string t, uint32_t oid = 0,
+                   bool null = true, bool pk = false)
+        : name(std::move(n)), type(std::move(t)), type_oid(oid),
+          nullable(null), is_primary_key(pk) {}
 };
 
 struct TableMetadata {
@@ -171,7 +177,7 @@ struct TableMetadata {
     TableMetadata() : version(0) {}
 
     const ColumnMetadata* find_column(const std::string& col_name) const {
-        auto it = column_index.find(col_name);
+        const auto it = column_index.find(col_name);
         if (it != column_index.end() && it->second < columns.size()) {
             return &columns[it->second];
         }
@@ -316,6 +322,10 @@ struct ColumnClassification {
 
     ColumnClassification()
         : type(ClassificationType::NONE), confidence(0.0) {}
+    ColumnClassification(std::string col, ClassificationType t,
+                         double conf, std::string strat, std::string custom = "")
+        : column_name(std::move(col)), type(t), custom_label(std::move(custom)),
+          confidence(conf), strategy(std::move(strat)) {}
 
     std::string type_string() const {
         switch (type) {

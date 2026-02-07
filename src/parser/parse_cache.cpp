@@ -84,7 +84,7 @@ std::optional<std::shared_ptr<StatementInfo>> ParseCache::Shard::get(
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    auto it = cache_map_.find(fingerprint.hash);
+    const auto it = cache_map_.find(fingerprint.hash);
     if (it == cache_map_.end()) {
         return std::nullopt;
     }
@@ -108,7 +108,7 @@ void ParseCache::Shard::put(std::shared_ptr<StatementInfo> info) {
     uint64_t hash = info->fingerprint.hash;
 
     // Check if already exists
-    auto it = cache_map_.find(hash);
+    const auto it = cache_map_.find(hash);
     if (it != cache_map_.end()) {
         // Update existing entry and move to front
         *(it->second) = info;

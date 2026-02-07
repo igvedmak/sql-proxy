@@ -15,6 +15,8 @@
 
 namespace sqlproxy {
 
+static constexpr const char* kJsonContentType = "application/json";
+
 // Simple JSON parsing/building (would use glaze in production)
 namespace {
     std::string_view parse_json_field(std::string_view json, std::string_view field) {
@@ -105,17 +107,14 @@ HttpServer::HttpServer(
 std::optional<UserInfo> HttpServer::validate_user(const std::string& username) const {
     std::shared_lock lock(users_mutex_);
 
-    auto it = users_.find(username);
+    const auto it = users_.find(username);
     if (it != users_.end()) {
         return it->second;
     }
 
     // If no users configured, allow all users (development mode)
     if (users_.empty()) {
-        UserInfo default_user;
-        default_user.name = username;
-        default_user.roles = {"user"};  // Default role
-        return default_user;
+        return UserInfo(std::string(username), {"user"});
     }
 
     return std::nullopt;  // User not found
@@ -135,9 +134,9 @@ void HttpServer::start() {
         try {
             // Validate Content-Type
             std::string content_type = req.get_header_value("Content-Type");
-            if (content_type.find("application/json") == std::string_view::npos) {
+            if (content_type.find(kJsonContentType) == std::string_view::npos) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Content-Type must be application/json"})", "application/json");
+                res.set_content(R"({"success":false,"error":"Content-Type must be application/json"})", kJsonContentType);
                 return;
             }
 
@@ -145,7 +144,7 @@ void HttpServer::start() {
             std::string_view body = req.body;
             if (body.empty() || body.find('{') == std::string_view::npos || body.find('}') == std::string_view::npos) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Invalid JSON: empty or malformed"})", "application/json");
+                res.set_content(R"({"success":false,"error":"Invalid JSON: empty or malformed"})", kJsonContentType);
                 return;
             }
 
@@ -157,14 +156,14 @@ void HttpServer::start() {
             // Validate required field: user
             if (user_sv.empty()) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Missing required field: user"})", "application/json");
+                res.set_content(R"({"success":false,"error":"Missing required field: user"})", kJsonContentType);
                 return;
             }
 
             // Validate required field: sql
             if (sql_sv.empty()) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Missing required field: sql"})", "application/json");
+                res.set_content(R"({"success":false,"error":"Missing required field: sql"})", kJsonContentType);
                 return;
             }
 
@@ -235,7 +234,7 @@ void HttpServer::start() {
                     : httplib::StatusCode::InternalServerError_500;
             }
 
-            res.set_content(json, "application/json");
+            res.set_content(json, kJsonContentType);
 
         } catch (const std::exception& e) {
             res.status = httplib::StatusCode::InternalServerError_500;
@@ -248,7 +247,7 @@ void HttpServer::start() {
     // GET /health - Health check
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         std::string health_json = R"({"status":"healthy","service":"sql-proxy"})";
-        res.set_content(health_json, "application/json");
+        res.set_content(health_json, kJsonContentType);
     });
 
     // GET /metrics - Prometheus metrics endpoint
@@ -330,7 +329,7 @@ void HttpServer::start() {
                     std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
                     std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
                     res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized: invalid or missing admin token"})", "application/json");
+                    res.set_content(R"({"success":false,"error":"Unauthorized: invalid or missing admin token"})", kJsonContentType);
                     return;
                 }
             }

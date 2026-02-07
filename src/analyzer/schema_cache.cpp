@@ -9,6 +9,10 @@
 
 namespace sqlproxy {
 
+static constexpr char kDot = '.';
+static constexpr std::string_view kYes    = "YES";
+static constexpr std::string_view kYesLow = "yes";
+
 // ============================================================================
 // PostgreSQL Type OID Mapping
 // ============================================================================
@@ -62,7 +66,7 @@ static uint32_t pg_type_oid(const std::string& type_name) {
         {"USER-DEFINED", 0},
     };
 
-    auto it = TYPE_OIDS.find(type_name);
+    const auto it = TYPE_OIDS.find(type_name);
     return it != TYPE_OIDS.end() ? it->second : 0;
 }
 
@@ -124,7 +128,7 @@ std::shared_ptr<const TableMetadata> SchemaCache::get_table(const std::string& t
 
     const std::string normalized = normalize_table_name(table_name);
 
-    auto it = cache->find(normalized);
+    const auto it = cache->find(normalized);
     if (it == cache->end()) {
         return nullptr;
     }
@@ -258,13 +262,13 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
         std::string table_name  = utils::to_lower(table_raw  ? table_raw  : "");
         std::string column_name = utils::to_lower(column_raw ? column_raw : "");
         std::string data_type   = utils::to_lower(type_raw   ? type_raw   : "");
-        std::string nullable_str = nullable_raw ? nullable_raw : "YES";
+        std::string nullable_str = nullable_raw ? nullable_raw : std::string(kYes);
 
         // Construct the map key
         std::string key;
         key.reserve(schema_name.size() + 1 + table_name.size());
         key = schema_name;
-        key += '.';
+        key += kDot;
         key += table_name;
 
         // If we've moved to a new table, finalize the previous one and start fresh
@@ -291,12 +295,9 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
         }
 
         // Build ColumnMetadata for this row
-        ColumnMetadata col;
-        col.name = std::move(column_name);
-        col.type = std::move(data_type);
-        col.type_oid = pg_type_oid(col.type);
-        col.nullable = (nullable_str == "YES" || nullable_str == "yes");
-        col.is_primary_key = false;  // information_schema.columns doesn't expose PK info directly
+        uint32_t type_oid = pg_type_oid(data_type);
+        bool is_nullable = (nullable_str == kYes || nullable_str == kYesLow);
+        ColumnMetadata col(std::move(column_name), std::move(data_type), type_oid, is_nullable, false);
 
         // Record the column index for fast name-based lookup
         const size_t col_index = current_table->columns.size();
@@ -340,16 +341,16 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
             std::string pk_key;
             pk_key.reserve(pk_schema.size() + 1 + pk_table.size());
             pk_key = pk_schema;
-            pk_key += '.';
+            pk_key += kDot;
             pk_key += pk_table;
 
-            auto it = cache->find(pk_key);
+            const auto it = cache->find(pk_key);
             if (it == cache->end()) {
                 continue;
             }
 
             auto& table = it->second;
-            auto col_it = table->column_index.find(pk_col);
+            const auto col_it = table->column_index.find(pk_col);
             if (col_it != table->column_index.end() && col_it->second < table->columns.size()) {
                 table->columns[col_it->second].is_primary_key = true;
             }
@@ -366,7 +367,7 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
 
 std::string SchemaCache::normalize_table_name(const std::string& table_name) {
     // Check for dot before allocating to avoid double-allocation
-    const bool needs_schema = table_name.find('.') == std::string::npos;
+    const bool needs_schema = table_name.find(kDot) == std::string::npos;
 
     std::string result;
     result.reserve(needs_schema ? 7 + table_name.size() : table_name.size());

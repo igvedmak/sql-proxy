@@ -110,7 +110,7 @@ GenericColumnType MysqlTypeMap::type_name_to_generic(const std::string& type_nam
         {"geometry", GenericColumnType::VENDOR_SPECIFIC},
     };
 
-    auto it = TYPE_MAP.find(lower);
+    const auto it = TYPE_MAP.find(lower);
     return it != TYPE_MAP.end() ? it->second : GenericColumnType::UNKNOWN;
 }
 

@@ -235,17 +235,12 @@ ClassificationResult ClassifierRegistry::classify(
         // Skip derived columns (will handle in Phase 2) - O(1) lookup
         if (derived_names.count(col_name) > 0) continue;
 
-        ColumnClassification classification;
-        classification.column_name = col_name;
-
         // Strategy 1: Column name matching
         auto name_type = classify_by_name(col_name);
         if (name_type.has_value()) {
-            classification.type = *name_type;
-            classification.confidence = 0.9;
-            classification.strategy = "ColumnName";
             base_classifications[col_name] = *name_type;
-            classification_result.classifications[col_name] = classification;
+            classification_result.classifications[col_name] =
+                ColumnClassification(col_name, *name_type, 0.9, "ColumnName");
             continue;
         }
 
@@ -253,11 +248,9 @@ ClassificationResult ClassifierRegistry::classify(
         if (i < result.column_type_oids.size() && result.column_type_oids[i] != 0) {
             auto oid_type = classify_by_type_oid(col_name, result.column_type_oids[i]);
             if (oid_type.has_value()) {
-                classification.type = *oid_type;
-                classification.confidence = 0.85;
-                classification.strategy = "TypeOid";
                 base_classifications[col_name] = *oid_type;
-                classification_result.classifications[col_name] = classification;
+                classification_result.classifications[col_name] =
+                    ColumnClassification(col_name, *oid_type, 0.85, "TypeOid");
                 continue;
             }
         }
@@ -273,11 +266,9 @@ ClassificationResult ClassifierRegistry::classify(
 
         auto pattern_type = classify_by_pattern(col_name, sample_values);
         if (pattern_type.has_value()) {
-            classification.type = *pattern_type;
-            classification.confidence = 0.8;
-            classification.strategy = "RegexValue";
             base_classifications[col_name] = *pattern_type;
-            classification_result.classifications[col_name] = classification;
+            classification_result.classifications[col_name] =
+                ColumnClassification(col_name, *pattern_type, 0.8, "RegexValue");
         }
     }
 
@@ -298,7 +289,7 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_name(const std
     std::string lower = utils::to_lower(col_name);
 
     // Exact match
-    auto it = column_patterns_.find(lower);
+    const auto it = column_patterns_.find(lower);
     if (it != column_patterns_.end()) {
         return it->second;
     }
@@ -425,7 +416,7 @@ std::optional<ColumnClassification> ClassifierRegistry::classify_derived_column(
     // Find the most sensitive PII type in a single pass (no intermediate vector)
     ClassificationType pii_type = ClassificationType::NONE;
     for (const auto& source_col : projection.derived_from) {
-        auto it = base_classifications.find(source_col);
+        const auto it = base_classifications.find(source_col);
         if (it != base_classifications.end() && it->second > pii_type) {
             pii_type = it->second;
         }
@@ -457,13 +448,7 @@ std::optional<ColumnClassification> ClassifierRegistry::classify_derived_column(
     // These preserve PII: UPPER, LOWER, TRIM, SUBSTRING, CONCAT, etc.
 
     // Return classification with slightly lower confidence
-    ColumnClassification result;
-    result.column_name = projection.name;
-    result.type = pii_type;
-    result.confidence = 0.9;  // High confidence - derived but still PII
-    result.strategy = "DerivedColumn";
-
-    return result;
+    return ColumnClassification(projection.name, pii_type, 0.9, "DerivedColumn");
 }
 
 } // namespace sqlproxy

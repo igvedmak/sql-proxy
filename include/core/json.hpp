@@ -77,7 +77,7 @@ public:
     [[nodiscard]] JsonValue operator[](std::string_view key) const {
         if (!data_.is_object()) return {};
         const auto& obj = data_.get_object();
-        auto it = obj.find(std::string(key));
+        const auto it = obj.find(std::string(key));
         if (it != obj.end()) return JsonValue(it->second);
         return {};
     }
@@ -119,7 +119,7 @@ public:
     [[nodiscard]] T value(std::string_view key, T default_value) const {
         if (!data_.is_object()) return default_value;
         const auto& obj = data_.get_object();
-        auto it = obj.find(std::string(key));
+        const auto it = obj.find(std::string(key));
         if (it == obj.end()) return default_value;
         return JsonValue(it->second).get<T>();
     }

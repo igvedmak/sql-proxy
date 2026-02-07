@@ -1007,7 +1007,7 @@ TEST_CASE("Edge: Concurrent rate limit check + reset_all", "[edge][rate_limiter]
         checkers.emplace_back([&, i] {
             std::string user = "user_" + std::to_string(i);
             while (!stop.load(std::memory_order_acquire)) {
-                limiter.check(user, "testdb");
+                (void)limiter.check(user, "testdb");
                 total_checks.fetch_add(1, std::memory_order_relaxed);
             }
         });

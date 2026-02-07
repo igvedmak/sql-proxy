@@ -645,12 +645,12 @@ std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const Json
     }
     const auto arr = root[kUsers];
     for (const auto& u : arr) {
-        UserInfo info;
-        info.name = json_string(u, kName, "");
-        if (info.name.empty()) {
+        std::string name = json_string(u, kName, "");
+        if (name.empty()) {
             continue; // Skip unnamed users
         }
-        info.roles = json_string_array(u, kRoles);
+        auto roles = json_string_array(u, kRoles);
+        UserInfo info(std::move(name), std::move(roles));
         result.emplace(info.name, std::move(info));
     }
     return result;

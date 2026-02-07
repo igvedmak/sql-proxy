@@ -43,7 +43,7 @@ uint32_t PgTypeMap::type_name_to_oid(const std::string& type_name) {
         {"USER-DEFINED", 0},
     };
 
-    auto it = TYPE_OIDS.find(type_name);
+    const auto it = TYPE_OIDS.find(type_name);
     return it != TYPE_OIDS.end() ? it->second : 0;
 }
 
@@ -87,12 +87,12 @@ GenericColumnType PgTypeMap::oid_to_generic_type(uint32_t oid) {
         {2277, GenericColumnType::ARRAY},
     };
 
-    auto it = OID_TO_GENERIC.find(oid);
+    const auto it = OID_TO_GENERIC.find(oid);
     return it != OID_TO_GENERIC.end() ? it->second : GenericColumnType::UNKNOWN;
 }
 
 GenericColumnType PgTypeMap::type_name_to_generic(const std::string& type_name) {
-    uint32_t oid = type_name_to_oid(type_name);
+    const uint32_t oid = type_name_to_oid(type_name);
     if (oid == 0) {
         return GenericColumnType::UNKNOWN;
     }

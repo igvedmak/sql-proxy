@@ -113,7 +113,7 @@ StatementType MysqlSqlParser::detect_statement_type(std::string_view sql) {
     std::transform(keyword.begin(), keyword.end(), keyword.begin(),
                    [](unsigned char c) { return std::tolower(c); });
 
-    auto it = MYSQL_STMT_KEYWORDS.find(keyword);
+    const auto it = MYSQL_STMT_KEYWORDS.find(keyword);
     if (it == MYSQL_STMT_KEYWORDS.end()) {
         return StatementType::UNKNOWN;
     }
@@ -191,10 +191,7 @@ std::vector<TableRef> MysqlSqlParser::extract_tables(std::string_view sql, State
                 continue;
             }
 
-            TableRef ref;
-            ref.schema = std::move(schema);
-            ref.table = std::move(table);
-            tables.push_back(std::move(ref));
+            tables.emplace_back(std::move(schema), std::move(table));
         }
     };
 
@@ -219,9 +216,7 @@ std::vector<TableRef> MysqlSqlParser::extract_tables(std::string_view sql, State
                 const auto& m = *it;
                 std::string t = m[1].matched ? m[1].str() : m[2].str();
                 if (!t.empty()) {
-                    TableRef ref;
-                    ref.table = std::move(t);
-                    tables.push_back(std::move(ref));
+                    tables.emplace_back(std::move(t));
                 }
             }
             break;
@@ -233,14 +228,12 @@ std::vector<TableRef> MysqlSqlParser::extract_tables(std::string_view sql, State
                 std::regex::icase);
             std::smatch m;
             if (std::regex_search(sql_str, m, INSERT_RE)) {
-                TableRef ref;
                 if (m[3].matched || m[4].matched) {
-                    ref.schema = m[1].matched ? m[1].str() : m[2].str();
-                    ref.table = m[3].matched ? m[3].str() : m[4].str();
+                    tables.emplace_back(m[1].matched ? m[1].str() : m[2].str(),
+                                        m[3].matched ? m[3].str() : m[4].str());
                 } else {
-                    ref.table = m[1].matched ? m[1].str() : m[2].str();
+                    tables.emplace_back(m[1].matched ? m[1].str() : m[2].str());
                 }
-                tables.push_back(std::move(ref));
             }
             break;
         }
@@ -251,14 +244,12 @@ std::vector<TableRef> MysqlSqlParser::extract_tables(std::string_view sql, State
                 std::regex::icase);
             std::smatch m;
             if (std::regex_search(sql_str, m, UPDATE_RE)) {
-                TableRef ref;
                 if (m[3].matched || m[4].matched) {
-                    ref.schema = m[1].matched ? m[1].str() : m[2].str();
-                    ref.table = m[3].matched ? m[3].str() : m[4].str();
+                    tables.emplace_back(m[1].matched ? m[1].str() : m[2].str(),
+                                        m[3].matched ? m[3].str() : m[4].str());
                 } else {
-                    ref.table = m[1].matched ? m[1].str() : m[2].str();
+                    tables.emplace_back(m[1].matched ? m[1].str() : m[2].str());
                 }
-                tables.push_back(std::move(ref));
             }
             break;
         }
@@ -269,14 +260,12 @@ std::vector<TableRef> MysqlSqlParser::extract_tables(std::string_view sql, State
                 std::regex::icase);
             std::smatch m;
             if (std::regex_search(sql_str, m, DELETE_RE)) {
-                TableRef ref;
                 if (m[3].matched || m[4].matched) {
-                    ref.schema = m[1].matched ? m[1].str() : m[2].str();
-                    ref.table = m[3].matched ? m[3].str() : m[4].str();
+                    tables.emplace_back(m[1].matched ? m[1].str() : m[2].str(),
+                                        m[3].matched ? m[3].str() : m[4].str());
                 } else {
-                    ref.table = m[1].matched ? m[1].str() : m[2].str();
+                    tables.emplace_back(m[1].matched ? m[1].str() : m[2].str());
                 }
-                tables.push_back(std::move(ref));
             }
             break;
         }
@@ -290,14 +279,12 @@ std::vector<TableRef> MysqlSqlParser::extract_tables(std::string_view sql, State
                 std::regex::icase);
             std::smatch m;
             if (std::regex_search(sql_str, m, DDL_RE)) {
-                TableRef ref;
                 if (m[3].matched || m[4].matched) {
-                    ref.schema = m[1].matched ? m[1].str() : m[2].str();
-                    ref.table = m[3].matched ? m[3].str() : m[4].str();
+                    tables.emplace_back(m[1].matched ? m[1].str() : m[2].str(),
+                                        m[3].matched ? m[3].str() : m[4].str());
                 } else {
-                    ref.table = m[1].matched ? m[1].str() : m[2].str();
+                    tables.emplace_back(m[1].matched ? m[1].str() : m[2].str());
                 }
-                tables.push_back(std::move(ref));
             }
             break;
         }

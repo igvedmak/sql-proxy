@@ -23,7 +23,7 @@ PolicyTrieNode* PolicyTrieNode::get_or_create_child(const std::string& key) {
 }
 
 const PolicyTrieNode* PolicyTrieNode::get_child(const std::string& key) const {
-    auto it = children_.find(key);
+    const auto it = children_.find(key);
     return it != children_.end() ? it->second.get() : nullptr;
 }
 
