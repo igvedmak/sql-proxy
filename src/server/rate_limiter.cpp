@@ -2,6 +2,11 @@
 #include <algorithm>
 #include <mutex>
 #include <shared_mutex>
+#include <thread>
+
+#ifdef __x86_64__
+#include <immintrin.h>
+#endif
 
 namespace sqlproxy {
 
@@ -23,7 +28,10 @@ bool TokenBucket::try_acquire(uint32_t tokens) {
     auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 
-    while (true) {
+    // Retry limit prevents infinite spin under extreme contention
+    static constexpr int kMaxRetries = 8;
+
+    for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
         uint32_t current_tokens = tokens_.load(std::memory_order_acquire);
         int64_t last_refill = last_refill_ns_.load(std::memory_order_acquire);
 
@@ -53,8 +61,16 @@ bool TokenBucket::try_acquire(uint32_t tokens) {
             return true; // Successfully acquired tokens
         }
 
-        // CAS failed, retry
+        // CAS failed: pause hint reduces CPU pipeline stalls during spin-wait
+#ifdef __x86_64__
+        _mm_pause();
+#elif defined(__aarch64__)
+        asm volatile("yield" ::: "memory");
+#endif
     }
+
+    // All retries exhausted under extreme contention - treat as rate limited
+    return false;
 }
 
 uint32_t TokenBucket::available_tokens() const {

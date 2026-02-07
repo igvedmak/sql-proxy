@@ -136,7 +136,7 @@ void HttpServer::start() {
             // Validate Content-Type
             std::string content_type = req.get_header_value("Content-Type");
             if (content_type.find("application/json") == std::string_view::npos) {
-                res.status = 400;
+                res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(R"({"success":false,"error":"Content-Type must be application/json"})", "application/json");
                 return;
             }
@@ -144,7 +144,7 @@ void HttpServer::start() {
             // Basic JSON validation - check for opening/closing braces
             std::string_view body = req.body;
             if (body.empty() || body.find('{') == std::string_view::npos || body.find('}') == std::string_view::npos) {
-                res.status = 400;
+                res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(R"({"success":false,"error":"Invalid JSON: empty or malformed"})", "application/json");
                 return;
             }
@@ -156,14 +156,14 @@ void HttpServer::start() {
 
             // Validate required field: user
             if (user_sv.empty()) {
-                res.status = 400;
+                res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(R"({"success":false,"error":"Missing required field: user"})", "application/json");
                 return;
             }
 
             // Validate required field: sql
             if (sql_sv.empty()) {
-                res.status = 400;
+                res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(R"({"success":false,"error":"Missing required field: sql"})", "application/json");
                 return;
             }
@@ -171,7 +171,7 @@ void HttpServer::start() {
             // Validate SQL length
             const size_t max_sql = max_sql_length_.load();
             if (sql_sv.length() > max_sql) {
-                res.status = 400;
+                res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(
                     std::format(R"({{"success":false,"error":"SQL too long: max {} bytes"}})", max_sql),
                     "application/json");
@@ -188,7 +188,7 @@ void HttpServer::start() {
             // Authenticate user and resolve roles
             auto user_info = validate_user(user);
             if (!user_info.has_value()) {
-                res.status = 401;
+                res.status = httplib::StatusCode::Unauthorized_401;
                 res.set_content(
                     std::format(R"({{"success":false,"error":"Unknown user: {}"}})", user_sv),
                     "application/json");
@@ -215,30 +215,30 @@ void HttpServer::start() {
 
             // Set HTTP status
             if (response.success) {
-                res.status = 200;
+                res.status = httplib::StatusCode::OK_200;
             } else {
                 // O(1) lookup: ErrorCode enum index → HTTP status
-                static constexpr int kErrorToHttp[] = {
-                    200,  // NONE
-                    400,  // PARSE_ERROR
-                    403,  // ACCESS_DENIED
-                    429,  // RATE_LIMITED
-                    503,  // CIRCUIT_OPEN
-                    502,  // DATABASE_ERROR
-                    500,  // INTERNAL_ERROR
-                    400,  // INVALID_REQUEST
-                    413,  // RESULT_TOO_LARGE
+                static constexpr httplib::StatusCode kErrorToHttp[] = {
+                    httplib::StatusCode::OK_200,                  // NONE
+                    httplib::StatusCode::BadRequest_400,           // PARSE_ERROR
+                    httplib::StatusCode::Forbidden_403,            // ACCESS_DENIED
+                    httplib::StatusCode::TooManyRequests_429,      // RATE_LIMITED
+                    httplib::StatusCode::ServiceUnavailable_503,   // CIRCUIT_OPEN
+                    httplib::StatusCode::BadGateway_502,           // DATABASE_ERROR
+                    httplib::StatusCode::InternalServerError_500,  // INTERNAL_ERROR
+                    httplib::StatusCode::BadRequest_400,           // INVALID_REQUEST
+                    httplib::StatusCode::PayloadTooLarge_413,      // RESULT_TOO_LARGE
                 };
                 auto idx = static_cast<size_t>(response.error_code);
                 res.status = (idx < std::size(kErrorToHttp))
                     ? kErrorToHttp[idx]
-                    : 500;
+                    : httplib::StatusCode::InternalServerError_500;
             }
 
             res.set_content(json, "application/json");
 
         } catch (const std::exception& e) {
-            res.status = 500;
+            res.status = httplib::StatusCode::InternalServerError_500;
             res.set_content(
                 std::format(R"({{"success":false,"error":"{}"}})", e.what()),
                 "application/json");
@@ -329,7 +329,7 @@ void HttpServer::start() {
                 if (auth.size() <= kBearerPrefix.size() ||
                     std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
                     std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
-                    res.status = 401;
+                    res.status = httplib::StatusCode::Unauthorized_401;
                     res.set_content(R"({"success":false,"error":"Unauthorized: invalid or missing admin token"})", "application/json");
                     return;
                 }
@@ -340,7 +340,7 @@ void HttpServer::start() {
             auto load_result = PolicyLoader::load_from_file(config_path);
 
             if (!load_result.success) {
-                res.status = 400;
+                res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(
                     std::format(R"({{"success":false,"error":"{}"}})", load_result.error_message),
                     "application/json");
@@ -351,7 +351,7 @@ void HttpServer::start() {
             pipeline_->get_policy_engine()->reload_policies(load_result.policies);
 
             // Success response
-            res.status = 200;
+            res.status = httplib::StatusCode::OK_200;
             res.set_content(
                 std::format(R"({{"success":true,"policies_loaded":{}}})", load_result.policies.size()),
                 "application/json");
@@ -359,7 +359,7 @@ void HttpServer::start() {
             utils::log::info(std::format("Policies reloaded: {} policies loaded", load_result.policies.size()));
 
         } catch (const std::exception& e) {
-            res.status = 500;
+            res.status = httplib::StatusCode::InternalServerError_500;
             res.set_content(
                 std::format(R"({{"success":false,"error":"{}"}})", e.what()),
                 "application/json");

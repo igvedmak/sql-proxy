@@ -2,6 +2,8 @@
 #include <algorithm>
 
 namespace sqlproxy {
+    
+static const std::string kWildcardKey = "*";
 
 PolicyEngine::PolicyEngine()
     : store_(std::make_shared<PolicyStore>()) {}
@@ -235,7 +237,7 @@ bool PolicyEngine::matches_user(const Policy& policy, const std::string& user,
     }
 
     // Check user match
-    if (!policy.users.empty() && !policy.users.contains("*") && !policy.users.contains(user)) {
+    if (!policy.users.empty() && !policy.users.contains(kWildcardKey) && !policy.users.contains(user)) {
         return false;
     }
 
@@ -257,13 +259,13 @@ std::shared_ptr<PolicyEngine::PolicyStore> PolicyEngine::build_store(
 
     for (const auto& policy : policies) {
         // Wildcard user policies
-        if (policy.users.empty() || policy.users.contains("*")) {
+        if (policy.users.empty() || policy.users.contains(kWildcardKey)) {
             store->wildcard_trie.insert(policy);
         }
 
         // User-specific policies
         for (const auto& user : policy.users) {
-            if (user != "*") {
+            if (user != kWildcardKey) {
                 store->user_tries[user].insert(policy);
             }
         }
