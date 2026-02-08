@@ -97,6 +97,8 @@ file(GLOB_RECURSE SECURITY_SOURCES   src/security/*.cpp)
 file(GLOB_RECURSE SCHEMA_SOURCES     src/schema/*.cpp)
 file(GLOB_RECURSE PLUGIN_SOURCES     src/plugin/*.cpp)
 file(GLOB_RECURSE TENANT_SOURCES     src/tenant/*.cpp)
+file(GLOB_RECURSE TRACING_SOURCES    src/tracing/*.cpp)
+file(GLOB_RECURSE ALERTING_SOURCES   src/alerting/*.cpp)
 
 # Exclude disabled database backends
 if(NOT ENABLE_POSTGRESQL)
@@ -121,6 +123,8 @@ set(LIB_SOURCES
     ${SCHEMA_SOURCES}
     ${PLUGIN_SOURCES}
     ${TENANT_SOURCES}
+    ${TRACING_SOURCES}
+    ${ALERTING_SOURCES}
 )
 
 set(ALL_SOURCES

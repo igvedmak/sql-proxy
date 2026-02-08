@@ -15,6 +15,8 @@ class ComplianceReporter;
 class LineageTracker;
 class SchemaManager;
 class GraphQLHandler;
+class DashboardHandler;
+class AlertEvaluator;
 
 /**
  * @brief User information for authentication
@@ -67,7 +69,8 @@ public:
         std::shared_ptr<ComplianceReporter> compliance_reporter = nullptr,
         std::shared_ptr<LineageTracker> lineage_tracker = nullptr,
         std::shared_ptr<SchemaManager> schema_manager = nullptr,
-        std::shared_ptr<GraphQLHandler> graphql_handler = nullptr
+        std::shared_ptr<GraphQLHandler> graphql_handler = nullptr,
+        std::shared_ptr<DashboardHandler> dashboard_handler = nullptr
     );
 
     /**
@@ -125,6 +128,7 @@ private:
     std::shared_ptr<LineageTracker> lineage_tracker_;
     std::shared_ptr<SchemaManager> schema_manager_;
     std::shared_ptr<GraphQLHandler> graphql_handler_;
+    std::shared_ptr<DashboardHandler> dashboard_handler_;
 };
 
 } // namespace sqlproxy

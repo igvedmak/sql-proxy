@@ -93,6 +93,11 @@ public:
     size_t policy_count() const;
 
     /**
+     * @brief Get loaded policies (for dashboard/admin)
+     */
+    const std::vector<Policy>& get_policies() const;
+
+    /**
      * @brief Clear all policies
      */
     void clear();
@@ -146,6 +151,9 @@ private:
     // RCU: Readers load shared_ptr atomically, writers build offline and swap
     // Note: Using shared_ptr with atomic operations (C++11 compatible)
     std::shared_ptr<PolicyStore> store_;
+
+    // Raw policies for admin/dashboard access
+    std::vector<Policy> policies_;
 
     // Mutex for reload (single writer)
     mutable std::mutex reload_mutex_;

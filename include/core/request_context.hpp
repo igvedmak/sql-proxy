@@ -8,6 +8,7 @@
 #include "analyzer/sql_analyzer.hpp"
 #include "security/sql_injection_detector.hpp"
 #include "security/anomaly_detector.hpp"
+#include "tracing/trace_context.hpp"
 #include <memory>
 #include <chrono>
 
@@ -71,6 +72,9 @@ struct RequestContext {
     SqlInjectionDetector::DetectionResult injection_result;
     std::chrono::microseconds injection_check_time{0};
     AnomalyDetector::AnomalyResult anomaly_result;
+
+    // Distributed tracing (W3C Trace Context)
+    TraceContext trace_context;
 
     // Tenant (Tier 5)
     std::string tenant_id;

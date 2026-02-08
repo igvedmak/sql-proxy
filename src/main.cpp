@@ -28,6 +28,8 @@
 #include "server/wire_server.hpp"
 #include "server/graphql_handler.hpp"
 #include "server/binary_rpc_server.hpp"
+#include "alerting/alert_evaluator.hpp"
+#include "server/dashboard_handler.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -49,6 +51,7 @@ std::shared_ptr<HttpServer> g_server;
 std::shared_ptr<ConfigWatcher> g_config_watcher;
 std::shared_ptr<WireServer> g_wire_server;
 std::shared_ptr<BinaryRpcServer> g_binary_rpc_server;
+std::shared_ptr<AlertEvaluator> g_alert_evaluator;
 
 // =========================================================================
 // Explicit Backend Registration (ensures linker includes backend objects)
@@ -70,6 +73,9 @@ static void register_backends() {
 
 void signal_handler(int signal) {
     utils::log::info(std::format("Received signal {}, shutting down...", signal));
+    if (g_alert_evaluator) {
+        g_alert_evaluator->stop();
+    }
     if (g_config_watcher) {
         g_config_watcher->stop();
     }
@@ -274,8 +280,17 @@ int main(int argc, char* argv[]) {
 
         utils::log::info("[8/9] Classifier & audit initializing...");
         auto classifier = std::make_shared<ClassifierRegistry>();
-        auto audit_emitter = std::make_shared<AuditEmitter>(audit_file);
-        utils::log::info(std::format("Audit: writing to {}", audit_file));
+        std::shared_ptr<AuditEmitter> audit_emitter;
+        if (config_result.success) {
+            audit_emitter = std::make_shared<AuditEmitter>(audit_config);
+            utils::log::info(std::format("Audit: file={}, webhook={}, syslog={}",
+                audit_config.output_file,
+                audit_config.webhook_enabled ? "enabled" : "disabled",
+                audit_config.syslog_enabled ? "enabled" : "disabled"));
+        } else {
+            audit_emitter = std::make_shared<AuditEmitter>(audit_file);
+            utils::log::info(std::format("Audit: writing to {}", audit_file));
+        }
 
         // Create query rewriter (RLS + enforce_limit)
         std::shared_ptr<QueryRewriter> query_rewriter;
@@ -412,6 +427,32 @@ int main(int argc, char* argv[]) {
             utils::log::info(std::format("GraphQL: enabled at {}", gql_config.endpoint));
         }
 
+        // =====================================================================
+        // Tier 2: Alerting
+        // =====================================================================
+        if (config_result.success && config_result.config.alerting.enabled) {
+            g_alert_evaluator = std::make_shared<AlertEvaluator>(
+                config_result.config.alerting, audit_emitter, rate_limiter);
+            g_alert_evaluator->start();
+            utils::log::info(std::format("Alerting: {} rules, eval every {}s",
+                config_result.config.alerting.rules.size(),
+                config_result.config.alerting.evaluation_interval_seconds));
+        }
+
+        // =====================================================================
+        // Tier 2: Admin Dashboard
+        // =====================================================================
+        std::shared_ptr<DashboardHandler> dashboard_handler;
+        {
+            std::vector<DashboardUser> dash_users;
+            for (const auto& [name, info] : users) {
+                dash_users.push_back({name, info.roles});
+            }
+            dashboard_handler = std::make_shared<DashboardHandler>(
+                pipeline, g_alert_evaluator, std::move(dash_users));
+        }
+        utils::log::info("Dashboard: enabled at /dashboard");
+
         // Determine server bind address and port
         std::string host = "0.0.0.0";
         uint16_t port = 8080;
@@ -420,10 +461,11 @@ int main(int argc, char* argv[]) {
             port = config_result.config.server.port;
         }
 
-        // Create HTTP server (with Tier 5 components)
+        // Create HTTP server (with Tier 2 + Tier 5 components)
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
             config_result.config.server.admin_token, max_sql_length,
-            compliance_reporter, lineage_tracker, schema_manager, graphql_handler);
+            compliance_reporter, lineage_tracker, schema_manager, graphql_handler,
+            dashboard_handler);
 
         // Wire Protocol Server (PostgreSQL v3)
         if (config_result.success && config_result.config.wire_protocol.enabled) {

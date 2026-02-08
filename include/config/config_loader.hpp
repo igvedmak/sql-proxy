@@ -2,6 +2,7 @@
 
 #include "core/types.hpp"
 #include "server/http_server.hpp"  // UserInfo
+#include "alerting/alert_types.hpp"
 
 #include "core/json.hpp"
 
@@ -223,6 +224,10 @@ struct ProxyConfig {
     WireProtocolConfigEntry wire_protocol;
     GraphQLConfigEntry graphql;
     BinaryRpcConfigEntry binary_rpc;
+
+    // Tier 2 (Operational Maturity)
+    AlertingConfig alerting;
+    bool dashboard_enabled = true;
 };
 
 // ============================================================================
@@ -329,6 +334,9 @@ private:
     static WireProtocolConfigEntry extract_wire_protocol(const JsonValue& root);
     static GraphQLConfigEntry extract_graphql(const JsonValue& root);
     static BinaryRpcConfigEntry extract_binary_rpc(const JsonValue& root);
+
+    // Tier 2 extractors
+    static AlertingConfig extract_alerting(const JsonValue& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

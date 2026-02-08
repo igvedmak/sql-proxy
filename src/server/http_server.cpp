@@ -1,6 +1,7 @@
 #include "server/http_server.hpp"
 #include "server/rate_limiter.hpp"
 #include "server/graphql_handler.hpp"
+#include "server/dashboard_handler.hpp"
 #include "audit/audit_emitter.hpp"
 #include "core/utils.hpp"
 #include "policy/policy_loader.hpp"
@@ -125,7 +126,8 @@ HttpServer::HttpServer(
     std::shared_ptr<ComplianceReporter> compliance_reporter,
     std::shared_ptr<LineageTracker> lineage_tracker,
     std::shared_ptr<SchemaManager> schema_manager,
-    std::shared_ptr<GraphQLHandler> graphql_handler)
+    std::shared_ptr<GraphQLHandler> graphql_handler,
+    std::shared_ptr<DashboardHandler> dashboard_handler)
     : pipeline_(std::move(pipeline)),
       host_(std::move(host)),
       port_(port),
@@ -135,7 +137,8 @@ HttpServer::HttpServer(
       compliance_reporter_(std::move(compliance_reporter)),
       lineage_tracker_(std::move(lineage_tracker)),
       schema_manager_(std::move(schema_manager)),
-      graphql_handler_(std::move(graphql_handler)) {
+      graphql_handler_(std::move(graphql_handler)),
+      dashboard_handler_(std::move(dashboard_handler)) {
     rebuild_api_key_index();
 }
 
@@ -287,8 +290,17 @@ void HttpServer::start() {
                 proxy_req.source_ip = req.remote_addr;
             }
 
+            // Extract W3C trace headers
+            proxy_req.traceparent = req.get_header_value("traceparent");
+            proxy_req.tracestate = req.get_header_value("tracestate");
+
             // Execute through pipeline
             auto response = pipeline_->execute(proxy_req);
+
+            // Propagate trace headers on response
+            if (!response.traceparent.empty()) {
+                res.set_header("traceparent", response.traceparent);
+            }
 
             // Build JSON response
             std::string json = build_json_response(response);
@@ -675,8 +687,13 @@ void HttpServer::start() {
         });
     }
 
+    // Register dashboard routes
+    if (dashboard_handler_) {
+        dashboard_handler_->register_routes(svr, admin_token_);
+    }
+
     utils::log::info(std::format("Starting SQL Proxy Server on {}:{}", host_, port_));
-    utils::log::info("Endpoints: POST /api/v1/query, GET /health, GET /metrics, POST /policies/reload, GET /api/v1/compliance/*, POST /api/v1/graphql, GET /api/v1/schema/*");
+    utils::log::info("Endpoints: POST /api/v1/query, GET /health, GET /metrics, POST /policies/reload, GET /api/v1/compliance/*, POST /api/v1/graphql, GET /api/v1/schema/*, GET /dashboard");
 
     if (!svr.listen(host_.c_str(), port_)) {
         throw std::runtime_error("Failed to start HTTP server");

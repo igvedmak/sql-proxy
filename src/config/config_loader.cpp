@@ -942,6 +942,34 @@ AuditConfig ConfigLoader::extract_audit(const JsonValue& root) {
         }
     }
 
+    // Rotation settings
+    if (a.contains("rotation") && a["rotation"].is_object()) {
+        const auto r = a["rotation"];
+        cfg.rotation_max_file_size_mb = json_size(r, "max_file_size_mb", 100);
+        cfg.rotation_max_files = json_int(r, "max_files", 10);
+        cfg.rotation_interval_hours = json_int(r, "interval_hours", 24);
+        cfg.rotation_time_based = json_bool(r, "time_based", true);
+        cfg.rotation_size_based = json_bool(r, "size_based", true);
+    }
+
+    // Webhook sink settings
+    if (a.contains("webhook") && a["webhook"].is_object()) {
+        const auto w = a["webhook"];
+        cfg.webhook_enabled = json_bool(w, "enabled", false);
+        cfg.webhook_url = json_string(w, "url", "");
+        cfg.webhook_auth_header = json_string(w, "auth_header", "");
+        cfg.webhook_timeout_ms = json_int(w, "timeout_ms", 5000);
+        cfg.webhook_max_retries = json_int(w, "max_retries", 3);
+        cfg.webhook_batch_size = json_int(w, "batch_size", 100);
+    }
+
+    // Syslog sink settings
+    if (a.contains("syslog") && a["syslog"].is_object()) {
+        const auto s = a["syslog"];
+        cfg.syslog_enabled = json_bool(s, "enabled", false);
+        cfg.syslog_ident = json_string(s, "ident", "sql-proxy");
+    }
+
     return cfg;
 }
 
@@ -1181,6 +1209,42 @@ BinaryRpcConfigEntry ConfigLoader::extract_binary_rpc(const JsonValue& root) {
     return cfg;
 }
 
+AlertingConfig ConfigLoader::extract_alerting(const JsonValue& root) {
+    AlertingConfig cfg;
+    if (!root.contains("alerting")) return cfg;
+    const auto a = root["alerting"];
+
+    cfg.enabled = json_bool(a, kEnabled, false);
+    cfg.evaluation_interval_seconds = json_int(a, "evaluation_interval_seconds", 10);
+    cfg.alert_log_file = json_string(a, "alert_log_file", "alerts.jsonl");
+
+    // Webhook
+    if (a.contains("webhook") && a["webhook"].is_object()) {
+        const auto w = a["webhook"];
+        cfg.webhook.enabled = json_bool(w, kEnabled, false);
+        cfg.webhook.url = json_string(w, "url", "");
+        cfg.webhook.auth_header = json_string(w, "auth_header", "");
+    }
+
+    // Rules
+    if (a.contains("rules") && a["rules"].is_array()) {
+        const auto rules_arr = a["rules"];
+        for (const auto& r : rules_arr) {
+            AlertRule rule;
+            rule.name = json_string(r, kName, "");
+            rule.condition = parse_alert_condition(json_string(r, "condition", "custom_metric"));
+            rule.threshold = static_cast<double>(json_int(r, "threshold", 0));
+            rule.window = std::chrono::seconds(json_int(r, "window_seconds", 60));
+            rule.cooldown = std::chrono::seconds(json_int(r, "cooldown_seconds", 300));
+            rule.severity = json_string(r, "severity", "warning");
+            rule.enabled = json_bool(r, kEnabled, true);
+            cfg.rules.push_back(std::move(rule));
+        }
+    }
+
+    return cfg;
+}
+
 // ---- Public API ------------------------------------------------------------
 
 ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_path) {
@@ -1210,6 +1274,7 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.wire_protocol = extract_wire_protocol(json);
         config.graphql = extract_graphql(json);
         config.binary_rpc = extract_binary_rpc(json);
+        config.alerting = extract_alerting(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));
@@ -1237,6 +1302,7 @@ ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_
         config.rewrite_rules = extract_rewrite_rules(json);
         config.security = extract_security(json);
         config.encryption = extract_encryption(json);
+        config.alerting = extract_alerting(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to parse config: {}", e.what()));

@@ -6,7 +6,7 @@ port = 8080
 threads = 4
 request_timeout_ms = 30000
 max_sql_length = 102400
-admin_token = "admin-secret-token"
+admin_token = "aproxy.toml:9"
 
 [logging]
 level = "info"
@@ -476,6 +476,67 @@ roles = ["analyst"]
 name = "enforce_limit"
 type = "enforce_limit"
 limit_value = 1000
+
+# ============================================================================
+# Audit Log Rotation (Tier 2)
+# ============================================================================
+
+[audit.rotation]
+max_file_size_mb = 100
+max_files = 10
+interval_hours = 24
+time_based = true
+size_based = true
+
+# ============================================================================
+# Audit Webhook Sink (Tier 2)
+# ============================================================================
+
+[audit.webhook]
+enabled = false
+url = "https://siem.example.com/api/v1/events"
+auth_header = "Bearer your-token-here"
+timeout_ms = 5000
+max_retries = 3
+batch_size = 100
+
+# ============================================================================
+# Audit Syslog Sink (Tier 2)
+# ============================================================================
+
+[audit.syslog]
+enabled = false
+ident = "sql-proxy"
+
+# ============================================================================
+# Alerting (Tier 2)
+# ============================================================================
+
+[alerting]
+enabled = true
+evaluation_interval_seconds = 10
+alert_log_file = "/app/logs/alerts.jsonl"
+
+[alerting.webhook]
+enabled = false
+url = "https://slack.example.com/webhook"
+auth_header = ""
+
+[[alerting.rules]]
+name = "high_rate_limit_rejects"
+condition = "rate_limit_breach"
+threshold = 100
+window_seconds = 60
+cooldown_seconds = 300
+severity = "warning"
+
+[[alerting.rules]]
+name = "audit_buffer_overflow"
+condition = "audit_buffer_overflow"
+threshold = 10
+window_seconds = 60
+cooldown_seconds = 300
+severity = "warning"
 
 # ============================================================================
 # Multi-Tenant SaaS Mode (Tier 5)

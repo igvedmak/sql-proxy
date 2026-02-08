@@ -159,6 +159,125 @@ curl -X POST http://localhost:8080/policies/reload
 | `GET` | `/api/v1/compliance/security-summary` | Security overview |
 | `GET` | `/api/v1/compliance/lineage` | Data lineage summaries |
 
+### Admin Dashboard
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/dashboard` | Admin dashboard SPA (pass `?token=<admin_token>`) |
+| `GET` | `/dashboard/api/stats` | Aggregate stats snapshot (JSON) |
+| `GET` | `/dashboard/api/policies` | List all access policies (JSON) |
+| `GET` | `/dashboard/api/users` | List all configured users (JSON) |
+| `GET` | `/dashboard/api/alerts` | Active alerts + history (JSON) |
+| `GET` | `/dashboard/api/metrics/stream` | SSE real-time metrics (2s interval) |
+
+All dashboard endpoints require the admin token via `Authorization: Bearer <token>` header, or `?token=<token>` query parameter (for SSE/browser).
+
+## Admin Dashboard
+
+The proxy includes an embedded admin dashboard with real-time metrics, policy/user listing, and alert management.
+
+**Open in browser:**
+```
+http://localhost:8080/dashboard?token=admin-secret-token
+```
+
+**Features:**
+- Real-time request rate and audit stats charts (Chart.js + SSE)
+- Policy table with name, scope, action, priority, and roles
+- User table with roles
+- Active alerts with severity badges
+- All data auto-refreshes every 2 seconds
+
+**Test via curl:**
+```bash
+# Stats snapshot
+curl -H "Authorization: Bearer admin-secret-token" http://localhost:8080/dashboard/api/stats
+
+# Policies
+curl -H "Authorization: Bearer admin-secret-token" http://localhost:8080/dashboard/api/policies
+
+# SSE stream (Ctrl+C to stop)
+curl -N "http://localhost:8080/dashboard/api/metrics/stream?token=admin-secret-token"
+```
+
+## Distributed Tracing
+
+The proxy supports W3C Trace Context propagation. Pass a `traceparent` header with your query and the proxy will:
+- Parse the incoming trace context (or generate a new one)
+- Include `trace_id`, `span_id`, `parent_span_id` in audit records
+- Return the `traceparent` header on the response
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query \
+  -H 'Content-Type: application/json' \
+  -H 'traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' \
+  -d '{"user":"analyst","database":"testdb","sql":"SELECT 1"}'
+```
+
+## Alerting
+
+The proxy runs a background alert evaluator that checks metrics every 10 seconds. Configure rules in `proxy.toml`:
+
+```toml
+[alerting]
+enabled = true
+evaluation_interval_seconds = 10
+alert_log_file = "/app/logs/alerts.jsonl"
+
+[[alerting.rules]]
+name = "high_rate_limit_rejects"
+condition = "rate_limit_breach"
+threshold = 100
+window_seconds = 60
+severity = "warning"
+```
+
+View alerts via the dashboard or API:
+```bash
+curl -H "Authorization: Bearer admin-secret-token" http://localhost:8080/dashboard/api/alerts
+```
+
+## Audit Log Shipping
+
+Audit records are written to pluggable sinks. The file sink is always active; webhook and syslog sinks are optional.
+
+### File Sink (with rotation)
+
+Enabled by default. Configure rotation in `proxy.toml`:
+
+```toml
+[audit.rotation]
+max_file_size_mb = 100
+max_files = 10
+interval_hours = 24
+time_based = true
+size_based = true
+```
+
+### Webhook Sink
+
+Ships audit records as NDJSON via HTTP POST:
+
+```toml
+[audit.webhook]
+enabled = true
+url = "https://siem.example.com/api/v1/events"
+auth_header = "Bearer your-token-here"
+timeout_ms = 5000
+max_retries = 3
+batch_size = 100
+```
+
+### Syslog Sink
+
+Writes to local syslog (POSIX `syslog(3)`):
+
+```toml
+[audit.syslog]
+enabled = true
+ident = "sql-proxy"
+```
+
 ## Testing Queries
 
 ```bash

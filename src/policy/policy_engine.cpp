@@ -9,8 +9,13 @@ PolicyEngine::PolicyEngine()
     : store_(std::make_shared<PolicyStore>()) {}
 
 void PolicyEngine::load_policies(const std::vector<Policy>& policies) {
+    policies_ = policies;
     auto new_store = build_store(policies);
     std::atomic_store_explicit(&store_, new_store, std::memory_order_release);
+}
+
+const std::vector<Policy>& PolicyEngine::get_policies() const {
+    return policies_;
 }
 
 PolicyEvaluationResult PolicyEngine::evaluate(
@@ -176,6 +181,7 @@ std::vector<ColumnPolicyDecision> PolicyEngine::evaluate_columns(
 void PolicyEngine::reload_policies(const std::vector<Policy>& policies) {
     std::lock_guard<std::mutex> lock(reload_mutex_);
 
+    policies_ = policies;
     auto new_store = build_store(policies);
     std::atomic_store_explicit(&store_, new_store, std::memory_order_release);
 }

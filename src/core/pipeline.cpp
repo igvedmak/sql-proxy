@@ -11,6 +11,7 @@
 #include "security/column_encryptor.hpp"
 #include "schema/schema_manager.hpp"
 #include "tenant/tenant_manager.hpp"
+#include "tracing/trace_context.hpp"
 
 #include <unordered_set>
 
@@ -58,6 +59,21 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     ctx.source_ip = request.source_ip;
     ctx.user_attributes = request.user_attributes;
     ctx.tenant_id = request.tenant_id;
+
+    // Distributed tracing: parse incoming traceparent or generate new context
+    if (!request.traceparent.empty()) {
+        auto parsed = TraceContext::parse_traceparent(request.traceparent);
+        if (parsed) {
+            ctx.trace_context = *parsed;
+        } else {
+            ctx.trace_context = TraceContext::generate();
+        }
+    } else {
+        ctx.trace_context = TraceContext::generate();
+    }
+    if (!request.tracestate.empty()) {
+        ctx.trace_context.tracestate = request.tracestate;
+    }
 
     // Tenant resolution: if multi-tenant enabled, override pipeline components
     // (policy_engine, rate_limiter, audit_emitter are swapped per-tenant)
@@ -370,6 +386,9 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
 
     AuditRecord record;
     record.audit_id = utils::generate_uuid();
+    record.trace_id = ctx.trace_context.trace_id;
+    record.span_id = ctx.trace_context.span_id;
+    record.parent_span_id = ctx.trace_context.parent_span_id;
     record.timestamp = ctx.received_at;
     record.user = ctx.user;
     record.source_ip = ctx.source_ip;
@@ -446,6 +465,9 @@ ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
 
     auto elapsed = std::chrono::steady_clock::now() - ctx.started_at;
     response.execution_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(elapsed);
+
+    // Propagate trace context
+    response.traceparent = ctx.trace_context.to_traceparent();
 
     response.policy_decision = ctx.policy_result.decision;
     response.matched_policy = ctx.policy_result.matched_policy;

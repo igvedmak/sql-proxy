@@ -471,6 +471,11 @@ struct AuditRecord {
     // Cache
     bool cache_hit;                     // Parse cache hit for operational monitoring
 
+    // Distributed tracing (W3C Trace Context)
+    std::string trace_id;               // 32 hex chars (128-bit)
+    std::string span_id;                // 16 hex chars (64-bit)
+    std::string parent_span_id;         // 16 hex chars (64-bit)
+
     // Masking / query rewriting
     std::vector<std::string> masked_columns;
     bool sql_rewritten = false;
@@ -518,6 +523,8 @@ struct ProxyRequest {
     std::string database;           // Target database
     std::unordered_map<std::string, std::string> user_attributes; // For RLS template expansion
     std::string tenant_id;          // Multi-tenant routing (Tier 5)
+    std::string traceparent;        // W3C traceparent header (incoming)
+    std::string tracestate;         // W3C tracestate header (propagated as-is)
     std::chrono::system_clock::time_point received_at;
 
     ProxyRequest()
@@ -548,6 +555,9 @@ struct ProxyResponse {
     // Column-level masking metadata
     std::vector<std::string> masked_columns;
     std::vector<std::string> blocked_columns;
+
+    // Distributed tracing
+    std::string traceparent;        // W3C traceparent header (outgoing)
 
     ProxyResponse()
         : success(false),
@@ -631,6 +641,25 @@ struct AuditConfig {
     bool async_mode;
     size_t max_batch_size;
     int fsync_interval_batches;
+
+    // File rotation
+    size_t rotation_max_file_size_mb = 100;
+    int rotation_max_files = 10;
+    int rotation_interval_hours = 24;
+    bool rotation_time_based = true;
+    bool rotation_size_based = true;
+
+    // Webhook sink
+    bool webhook_enabled = false;
+    std::string webhook_url;
+    std::string webhook_auth_header;
+    int webhook_timeout_ms = 5000;
+    int webhook_max_retries = 3;
+    int webhook_batch_size = 100;
+
+    // Syslog sink
+    bool syslog_enabled = false;
+    std::string syslog_ident = "sql-proxy";
 
     AuditConfig()
         : output_file("audit.jsonl"),
