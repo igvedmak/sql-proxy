@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS customers (
     email VARCHAR(255) UNIQUE NOT NULL,
     phone VARCHAR(20),
     address TEXT,
+    region VARCHAR(50) DEFAULT 'us-east',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

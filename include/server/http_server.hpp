@@ -10,6 +10,10 @@
 
 namespace sqlproxy {
 
+// Forward declarations for compliance endpoints
+class ComplianceReporter;
+class LineageTracker;
+
 /**
  * @brief User information for authentication
  */
@@ -57,7 +61,9 @@ public:
         int port = 8080,
         std::unordered_map<std::string, UserInfo> users = {},
         std::string admin_token = "",
-        size_t max_sql_length = 102400
+        size_t max_sql_length = 102400,
+        std::shared_ptr<ComplianceReporter> compliance_reporter = nullptr,
+        std::shared_ptr<LineageTracker> lineage_tracker = nullptr
     );
 
     /**
@@ -109,6 +115,10 @@ private:
     std::unordered_map<std::string, std::string> api_key_index_; // api_key → username
     mutable std::shared_mutex users_mutex_;
     std::atomic<size_t> max_sql_length_;
+
+    // Compliance components (optional)
+    std::shared_ptr<ComplianceReporter> compliance_reporter_;
+    std::shared_ptr<LineageTracker> lineage_tracker_;
 };
 
 } // namespace sqlproxy

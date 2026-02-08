@@ -224,7 +224,7 @@ TEST_CASE("Stress: Rate limiter 16-thread different users no interference", "[st
             auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
             while (std::chrono::steady_clock::now() < deadline) {
                 auto result = limiter.check(user, "testdb");
-                if (result.allowed) per_thread_allowed[i]++;
+                if (result.allowed) ++per_thread_allowed[i];
             }
         });
     }
@@ -766,7 +766,7 @@ TEST_CASE("Stress: Audit emitter 8 threads emit max speed", "[stress][audit]") {
             auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
             while (std::chrono::steady_clock::now() < deadline) {
                 audit->emit(record);
-                per_thread_count[i]++;
+                ++per_thread_count[i];
             }
         });
     }
@@ -1273,7 +1273,7 @@ TEST_CASE("Stress: Multi-user fairness under rate limiting", "[stress][mixed][fa
             auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
             while (std::chrono::steady_clock::now() < deadline) {
                 auto result = limiter.check(user, "testdb");
-                if (result.allowed) per_user_allowed[i]++;
+                if (result.allowed) ++per_user_allowed[i];
             }
         });
     }

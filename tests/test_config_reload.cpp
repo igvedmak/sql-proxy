@@ -454,7 +454,7 @@ TEST_CASE("RateLimiter accepts new per-user limits at runtime", "[rate_limit_rel
     int allowed_count = 0;
     for (int i = 0; i < 100; ++i) {
         auto result = limiter.check("alice", "testdb");
-        if (result.allowed) allowed_count++;
+        if (result.allowed) ++allowed_count;
     }
     REQUIRE(allowed_count > 50);
 }
@@ -486,7 +486,7 @@ TEST_CASE("RateLimiter accepts new per-database limits at runtime", "[rate_limit
     int allowed_count = 0;
     for (int i = 0; i < 50; ++i) {
         auto result = limiter.check("user1", "mydb");
-        if (result.allowed) allowed_count++;
+        if (result.allowed) ++allowed_count;
     }
     REQUIRE(allowed_count > 20);
 }

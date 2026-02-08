@@ -1019,6 +1019,44 @@ ConfigWatcherConfig ConfigLoader::extract_config_watcher(const JsonValue& root) 
     return cfg;
 }
 
+SecurityConfig ConfigLoader::extract_security(const JsonValue& root) {
+    SecurityConfig cfg;
+    if (!root.contains("security")) {
+        return cfg;
+    }
+    const auto s = root["security"];
+    cfg.injection_detection_enabled = json_bool(s, "injection_detection", true);
+    cfg.anomaly_detection_enabled = json_bool(s, "anomaly_detection", true);
+    cfg.lineage_tracking_enabled = json_bool(s, "lineage_tracking", true);
+    return cfg;
+}
+
+EncryptionConfig ConfigLoader::extract_encryption(const JsonValue& root) {
+    EncryptionConfig cfg;
+    if (!root.contains("encryption")) {
+        return cfg;
+    }
+    const auto e = root["encryption"];
+    cfg.enabled = json_bool(e, kEnabled, false);
+    cfg.key_file = json_string(e, "key_file", "config/encryption_keys.json");
+
+    if (e.contains("columns") && e["columns"].is_array()) {
+        const auto arr = e["columns"];
+        cfg.columns.reserve(arr.size());
+        for (const auto& c : arr) {
+            EncryptionColumnConfigEntry entry;
+            entry.database = json_string(c, kDatabase, "");
+            entry.table = json_string(c, "table", "");
+            entry.column = json_string(c, "column", "");
+            if (!entry.column.empty()) {
+                cfg.columns.push_back(std::move(entry));
+            }
+        }
+    }
+
+    return cfg;
+}
+
 // ---- RLS & Rewrite Rule extractors -----------------------------------------
 
 namespace {
@@ -1091,6 +1129,8 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.config_watcher = extract_config_watcher(json);
         config.rls_rules = extract_rls_rules(json);
         config.rewrite_rules = extract_rewrite_rules(json);
+        config.security = extract_security(json);
+        config.encryption = extract_encryption(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));
@@ -1116,6 +1156,8 @@ ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_
         config.config_watcher = extract_config_watcher(json);
         config.rls_rules = extract_rls_rules(json);
         config.rewrite_rules = extract_rewrite_rules(json);
+        config.security = extract_security(json);
+        config.encryption = extract_encryption(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to parse config: {}", e.what()));

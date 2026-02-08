@@ -93,6 +93,7 @@ file(GLOB_RECURSE DB_SOURCES         src/db/*.cpp)
 file(GLOB_RECURSE CLASSIFIER_SOURCES src/classifier/*.cpp)
 file(GLOB_RECURSE AUDIT_SOURCES      src/audit/*.cpp)
 file(GLOB_RECURSE CONFIG_SOURCES     src/config/*.cpp)
+file(GLOB_RECURSE SECURITY_SOURCES   src/security/*.cpp)
 
 # Exclude disabled database backends
 if(NOT ENABLE_POSTGRESQL)
@@ -113,6 +114,7 @@ set(LIB_SOURCES
     ${CLASSIFIER_SOURCES}
     ${AUDIT_SOURCES}
     ${CONFIG_SOURCES}
+    ${SECURITY_SOURCES}
 )
 
 set(ALL_SOURCES

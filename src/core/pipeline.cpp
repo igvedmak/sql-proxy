@@ -5,6 +5,10 @@
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
 #include "db/database_router.hpp"
+#include "security/sql_injection_detector.hpp"
+#include "security/anomaly_detector.hpp"
+#include "security/lineage_tracker.hpp"
+#include "security/column_encryptor.hpp"
 
 #include <unordered_set>
 
@@ -19,7 +23,11 @@ Pipeline::Pipeline(
     std::shared_ptr<AuditEmitter> audit_emitter,
     std::shared_ptr<QueryRewriter> rewriter,
     std::shared_ptr<DatabaseRouter> router,
-    std::shared_ptr<PreparedStatementTracker> prepared)
+    std::shared_ptr<PreparedStatementTracker> prepared,
+    std::shared_ptr<SqlInjectionDetector> injection_detector,
+    std::shared_ptr<AnomalyDetector> anomaly_detector,
+    std::shared_ptr<LineageTracker> lineage_tracker,
+    std::shared_ptr<ColumnEncryptor> column_encryptor)
     : parser_(std::move(parser)),
       policy_engine_(std::move(policy_engine)),
       rate_limiter_(std::move(rate_limiter)),
@@ -28,7 +36,11 @@ Pipeline::Pipeline(
       audit_emitter_(std::move(audit_emitter)),
       rewriter_(std::move(rewriter)),
       router_(std::move(router)),
-      prepared_(std::move(prepared)) {}
+      prepared_(std::move(prepared)),
+      injection_detector_(std::move(injection_detector)),
+      anomaly_detector_(std::move(anomaly_detector)),
+      lineage_tracker_(std::move(lineage_tracker)),
+      column_encryptor_(std::move(column_encryptor)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -58,6 +70,15 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         return build_response(ctx);
     }
 
+    // Layer 3.5: SQL injection detection (can block)
+    if (!check_injection(ctx)) {
+        emit_audit(ctx);
+        return build_response(ctx);
+    }
+
+    // Layer 3.7: Anomaly detection (informational, never blocks)
+    check_anomaly(ctx);
+
     // Layer 4: Policy evaluation (table-level)
     if (!evaluate_policy(ctx)) {
         emit_audit(ctx);
@@ -73,6 +94,9 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         return build_response(ctx);
     }
 
+    // Layer 5.3: Decrypt encrypted columns (transparent)
+    decrypt_columns(ctx);
+
     // Layer 5.5: Column-level ACL (remove blocked columns)
     apply_column_policies(ctx);
 
@@ -81,6 +105,9 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
     // Layer 6: Classify (runs on masked data — won't double-report PII)
     classify_results(ctx);
+
+    // Layer 6.5: Record data lineage for PII columns
+    record_lineage(ctx);
 
     // Build response first (response should not wait on audit I/O)
     auto response = build_response(ctx);
@@ -351,6 +378,14 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
         record.original_sql = ctx.original_sql;
     }
 
+    // Security fields
+    record.threat_level = SqlInjectionDetector::threat_level_to_string(
+        ctx.injection_result.threat_level);
+    record.injection_patterns = ctx.injection_result.patterns_matched;
+    record.injection_blocked = ctx.injection_result.should_block;
+    record.anomaly_score = ctx.anomaly_result.anomaly_score;
+    record.anomalies = ctx.anomaly_result.anomalies;
+
     audit_emitter_->emit(std::move(record));
 }
 
@@ -388,6 +423,93 @@ ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
     }
 
     return response;
+}
+
+bool Pipeline::check_injection(RequestContext& ctx) {
+    if (!injection_detector_) return true;
+
+    utils::Timer timer;
+
+    std::string normalized;
+    if (ctx.fingerprint.has_value()) {
+        normalized = ctx.fingerprint->normalized;
+    }
+
+    ctx.injection_result = injection_detector_->analyze(
+        ctx.sql, normalized, ctx.statement_info->parsed);
+
+    ctx.injection_check_time = timer.elapsed_us();
+
+    if (ctx.injection_result.should_block) {
+        ctx.query_result.success = false;
+        ctx.query_result.error_code = ErrorCode::SQLI_BLOCKED;
+        ctx.query_result.error_message = ctx.injection_result.description;
+        return false;
+    }
+    return true;
+}
+
+void Pipeline::check_anomaly(RequestContext& ctx) {
+    if (!anomaly_detector_) return;
+
+    // Collect table names from analysis
+    std::vector<std::string> tables;
+    tables.reserve(ctx.analysis.source_tables.size());
+    for (const auto& t : ctx.analysis.source_tables) {
+        tables.push_back(t.table);
+    }
+
+    uint64_t fp_hash = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
+
+    // Check for anomalies (read-only scoring)
+    ctx.anomaly_result = anomaly_detector_->check(ctx.user, tables, fp_hash);
+
+    // Record this query in the user's profile (updates state)
+    anomaly_detector_->record(ctx.user, tables, fp_hash);
+}
+
+void Pipeline::decrypt_columns(RequestContext& ctx) {
+    if (!column_encryptor_ || !column_encryptor_->is_enabled()) return;
+    if (!ctx.query_result.success || ctx.query_result.rows.empty()) return;
+
+    column_encryptor_->decrypt_result(ctx.query_result, ctx.database, ctx.analysis);
+}
+
+void Pipeline::record_lineage(RequestContext& ctx) {
+    if (!lineage_tracker_) return;
+    if (!ctx.query_result.success) return;
+
+    // Record lineage for each classified column
+    for (const auto& [col_name, classification] : ctx.classification_result.classifications) {
+        LineageEvent event;
+        event.timestamp = utils::format_timestamp(ctx.received_at);
+        event.user = ctx.user;
+        event.database = ctx.database;
+        event.column = col_name;
+        event.classification = classification.type_string();
+        event.access_type = "SELECT";
+
+        // Find the table for this column from analysis
+        if (!ctx.analysis.source_tables.empty()) {
+            event.table = ctx.analysis.source_tables[0].table;
+        }
+
+        // Check if the column was masked
+        event.was_masked = false;
+        for (const auto& m : ctx.masking_applied) {
+            if (m.column_name == col_name) {
+                event.was_masked = true;
+                event.masking_action = masking_action_to_string(m.action);
+                break;
+            }
+        }
+
+        if (ctx.fingerprint.has_value()) {
+            event.query_fingerprint = ctx.fingerprint->normalized;
+        }
+
+        lineage_tracker_->record(event);
+    }
 }
 
 // Stubs for prepared statement handling — implemented in Phase 5

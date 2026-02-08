@@ -79,7 +79,8 @@ enum class ErrorCode {
     DATABASE_ERROR,
     INTERNAL_ERROR,
     INVALID_REQUEST,
-    RESULT_TOO_LARGE
+    RESULT_TOO_LARGE,
+    SQLI_BLOCKED
 };
 
 enum class ClassificationType {
@@ -474,6 +475,13 @@ struct AuditRecord {
     bool sql_rewritten = false;
     std::string original_sql;
 
+    // Security detection
+    std::string threat_level;
+    std::vector<std::string> injection_patterns;
+    bool injection_blocked = false;
+    double anomaly_score = 0.0;
+    std::vector<std::string> anomalies;
+
     AuditRecord()
         : sequence_num(0),
           statement_type(StatementType::UNKNOWN),
@@ -697,6 +705,8 @@ inline const char* error_code_to_string(ErrorCode code) {
         case ErrorCode::DATABASE_ERROR: return "DATABASE_ERROR";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
         case ErrorCode::INVALID_REQUEST: return "INVALID_REQUEST";
+        case ErrorCode::RESULT_TOO_LARGE: return "RESULT_TOO_LARGE";
+        case ErrorCode::SQLI_BLOCKED: return "SQLI_BLOCKED";
         default: return "UNKNOWN";
     }
 }

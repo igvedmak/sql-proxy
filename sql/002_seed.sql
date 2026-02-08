@@ -1,17 +1,17 @@
 -- Seed data for testing SQL Proxy Service
 
 -- Insert sample customers with PII
-INSERT INTO customers (name, email, phone, address) VALUES
-    ('John Doe', 'john.doe@example.com', '+1-555-0101', '123 Main St, New York, NY 10001'),
-    ('Jane Smith', 'jane.smith@example.com', '+1-555-0102', '456 Oak Ave, Los Angeles, CA 90001'),
-    ('Bob Johnson', 'bob.johnson@example.com', '+1-555-0103', '789 Pine Rd, Chicago, IL 60601'),
-    ('Alice Williams', 'alice.williams@example.com', '+1-555-0104', '321 Elm St, Houston, TX 77001'),
-    ('Charlie Brown', 'charlie.brown@example.com', '+1-555-0105', '654 Maple Dr, Phoenix, AZ 85001'),
-    ('Diana Davis', 'diana.davis@example.com', '+1-555-0106', '987 Cedar Ln, Philadelphia, PA 19101'),
-    ('Eve Martinez', 'eve.martinez@example.com', '+1-555-0107', '147 Birch Ct, San Antonio, TX 78201'),
-    ('Frank Garcia', 'frank.garcia@example.com', '+1-555-0108', '258 Spruce Way, San Diego, CA 92101'),
-    ('Grace Lee', 'grace.lee@example.com', '+1-555-0109', '369 Walnut Blvd, Dallas, TX 75201'),
-    ('Henry Wilson', 'henry.wilson@example.com', '+1-555-0110', '741 Ash Ave, San Jose, CA 95101');
+INSERT INTO customers (name, email, phone, address, region) VALUES
+    ('John Doe', 'john.doe@example.com', '+1-555-0101', '123 Main St, New York, NY 10001', 'us-east'),
+    ('Jane Smith', 'jane.smith@example.com', '+1-555-0102', '456 Oak Ave, Los Angeles, CA 90001', 'us-west'),
+    ('Bob Johnson', 'bob.johnson@example.com', '+1-555-0103', '789 Pine Rd, Chicago, IL 60601', 'us-east'),
+    ('Alice Williams', 'alice.williams@example.com', '+1-555-0104', '321 Elm St, Houston, TX 77001', 'us-west'),
+    ('Charlie Brown', 'charlie.brown@example.com', '+1-555-0105', '654 Maple Dr, Phoenix, AZ 85001', 'us-west'),
+    ('Diana Davis', 'diana.davis@example.com', '+1-555-0106', '987 Cedar Ln, Philadelphia, PA 19101', 'us-east'),
+    ('Eve Martinez', 'eve.martinez@example.com', '+1-555-0107', '147 Birch Ct, San Antonio, TX 78201', 'us-west'),
+    ('Frank Garcia', 'frank.garcia@example.com', '+1-555-0108', '258 Spruce Way, San Diego, CA 92101', 'us-west'),
+    ('Grace Lee', 'grace.lee@example.com', '+1-555-0109', '369 Walnut Blvd, Dallas, TX 75201', 'us-east'),
+    ('Henry Wilson', 'henry.wilson@example.com', '+1-555-0110', '741 Ash Ave, San Jose, CA 95101', 'us-west');
 
 -- Insert sample orders
 INSERT INTO orders (customer_id, order_number, amount, status) VALUES

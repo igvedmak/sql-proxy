@@ -3,6 +3,8 @@
 #include "audit/audit_emitter.hpp"
 #include "core/utils.hpp"
 #include "policy/policy_loader.hpp"
+#include "security/compliance_reporter.hpp"
+#include "security/lineage_tracker.hpp"
 
 // cpp-httplib is header-only — suppress its internal deprecation warnings
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -117,13 +119,17 @@ HttpServer::HttpServer(
     int port,
     std::unordered_map<std::string, UserInfo> users,
     std::string admin_token,
-    size_t max_sql_length)
+    size_t max_sql_length,
+    std::shared_ptr<ComplianceReporter> compliance_reporter,
+    std::shared_ptr<LineageTracker> lineage_tracker)
     : pipeline_(std::move(pipeline)),
       host_(std::move(host)),
       port_(port),
       admin_token_(std::move(admin_token)),
       users_(std::move(users)),
-      max_sql_length_(max_sql_length) {
+      max_sql_length_(max_sql_length),
+      compliance_reporter_(std::move(compliance_reporter)),
+      lineage_tracker_(std::move(lineage_tracker)) {
     rebuild_api_key_index();
 }
 
@@ -297,6 +303,7 @@ void HttpServer::start() {
                     httplib::StatusCode::InternalServerError_500,  // INTERNAL_ERROR
                     httplib::StatusCode::BadRequest_400,           // INVALID_REQUEST
                     httplib::StatusCode::PayloadTooLarge_413,      // RESULT_TOO_LARGE
+                    httplib::StatusCode::Forbidden_403,            // SQLI_BLOCKED
                 };
                 auto idx = static_cast<size_t>(response.error_code);
                 res.status = (idx < std::size(kErrorToHttp))
@@ -436,8 +443,87 @@ void HttpServer::start() {
         }
     });
 
+    // GET /api/v1/compliance/pii-report - PII access report (admin only)
+    svr.Get("/api/v1/compliance/pii-report", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!admin_token_.empty()) {
+            auto auth = req.get_header_value("Authorization");
+            constexpr std::string_view kBearerPrefix = "Bearer ";
+            if (auth.size() <= kBearerPrefix.size() ||
+                std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
+                std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                res.status = httplib::StatusCode::Unauthorized_401;
+                res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                return;
+            }
+        }
+        if (!compliance_reporter_) {
+            res.status = httplib::StatusCode::ServiceUnavailable_503;
+            res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", kJsonContentType);
+            return;
+        }
+        auto report = compliance_reporter_->generate_pii_report();
+        res.set_content(ComplianceReporter::pii_report_to_json(report), kJsonContentType);
+    });
+
+    // GET /api/v1/compliance/security-summary - Security overview (admin only)
+    svr.Get("/api/v1/compliance/security-summary", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!admin_token_.empty()) {
+            auto auth = req.get_header_value("Authorization");
+            constexpr std::string_view kBearerPrefix = "Bearer ";
+            if (auth.size() <= kBearerPrefix.size() ||
+                std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
+                std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                res.status = httplib::StatusCode::Unauthorized_401;
+                res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                return;
+            }
+        }
+        if (!compliance_reporter_) {
+            res.status = httplib::StatusCode::ServiceUnavailable_503;
+            res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", kJsonContentType);
+            return;
+        }
+        auto summary = compliance_reporter_->generate_security_summary();
+        res.set_content(ComplianceReporter::security_summary_to_json(summary), kJsonContentType);
+    });
+
+    // GET /api/v1/compliance/lineage - Data lineage summaries (admin only)
+    svr.Get("/api/v1/compliance/lineage", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!admin_token_.empty()) {
+            auto auth = req.get_header_value("Authorization");
+            constexpr std::string_view kBearerPrefix = "Bearer ";
+            if (auth.size() <= kBearerPrefix.size() ||
+                std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
+                std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                res.status = httplib::StatusCode::Unauthorized_401;
+                res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                return;
+            }
+        }
+        if (!lineage_tracker_) {
+            res.status = httplib::StatusCode::ServiceUnavailable_503;
+            res.set_content(R"({"success":false,"error":"Lineage tracker not configured"})", kJsonContentType);
+            return;
+        }
+        auto summaries = lineage_tracker_->get_summaries();
+        std::string json = "{\"summaries\":[";
+        for (size_t i = 0; i < summaries.size(); ++i) {
+            if (i > 0) json += ",";
+            const auto& s = summaries[i];
+            json += std::format(
+                "{{\"column_key\":\"{}\",\"classification\":\"{}\","
+                "\"total_accesses\":{},\"masked_accesses\":{},\"unmasked_accesses\":{},"
+                "\"unique_users\":{}}}",
+                s.column_key, s.classification,
+                s.total_accesses, s.masked_accesses, s.unmasked_accesses,
+                s.accessing_users.size());
+        }
+        json += std::format("],\"total_events\":{}}}", lineage_tracker_->total_events());
+        res.set_content(json, kJsonContentType);
+    });
+
     utils::log::info(std::format("Starting SQL Proxy Server on {}:{}", host_, port_));
-    utils::log::info("Endpoints: POST /api/v1/query, GET /health, GET /metrics, POST /policies/reload");
+    utils::log::info("Endpoints: POST /api/v1/query, GET /health, GET /metrics, POST /policies/reload, GET /api/v1/compliance/*");
 
     if (!svr.listen(host_.c_str(), port_)) {
         throw std::runtime_error("Failed to start HTTP server");

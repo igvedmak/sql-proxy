@@ -124,6 +124,32 @@ struct ConfigWatcherConfig {
 };
 
 // ============================================================================
+// Security Config (Tier 4)
+// ============================================================================
+
+struct SecurityConfig {
+    bool injection_detection_enabled = true;
+    bool anomaly_detection_enabled = true;
+    bool lineage_tracking_enabled = true;
+};
+
+// ============================================================================
+// Encryption Config (Tier 4)
+// ============================================================================
+
+struct EncryptionColumnConfigEntry {
+    std::string database;
+    std::string table;
+    std::string column;
+};
+
+struct EncryptionConfig {
+    bool enabled = false;
+    std::string key_file = "config/encryption_keys.json";
+    std::vector<EncryptionColumnConfigEntry> columns;
+};
+
+// ============================================================================
 // ProxyConfig - Complete parsed configuration
 // ============================================================================
 
@@ -143,6 +169,8 @@ struct ProxyConfig {
     ConfigWatcherConfig config_watcher;
     std::vector<RlsRule> rls_rules;
     std::vector<RewriteRule> rewrite_rules;
+    SecurityConfig security;
+    EncryptionConfig encryption;
 };
 
 // ============================================================================
@@ -239,6 +267,8 @@ private:
     static AllocatorConfig extract_allocator(const JsonValue& root);
     static MetricsConfig extract_metrics(const JsonValue& root);
     static ConfigWatcherConfig extract_config_watcher(const JsonValue& root);
+    static SecurityConfig extract_security(const JsonValue& root);
+    static EncryptionConfig extract_encryption(const JsonValue& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

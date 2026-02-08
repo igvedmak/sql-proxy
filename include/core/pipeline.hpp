@@ -16,6 +16,10 @@ class ClassifierRegistry;
 class QueryRewriter;
 class DatabaseRouter;
 class PreparedStatementTracker;
+class SqlInjectionDetector;
+class AnomalyDetector;
+class LineageTracker;
+class ColumnEncryptor;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -46,7 +50,11 @@ public:
         std::shared_ptr<AuditEmitter> audit_emitter,
         std::shared_ptr<QueryRewriter> rewriter = nullptr,
         std::shared_ptr<DatabaseRouter> router = nullptr,
-        std::shared_ptr<PreparedStatementTracker> prepared = nullptr
+        std::shared_ptr<PreparedStatementTracker> prepared = nullptr,
+        std::shared_ptr<SqlInjectionDetector> injection_detector = nullptr,
+        std::shared_ptr<AnomalyDetector> anomaly_detector = nullptr,
+        std::shared_ptr<LineageTracker> lineage_tracker = nullptr,
+        std::shared_ptr<ColumnEncryptor> column_encryptor = nullptr
     );
 
     /**
@@ -142,6 +150,26 @@ private:
      */
     void handle_deallocate(RequestContext& ctx);
 
+    /**
+     * @brief Layer 3.5: SQL injection detection (can block)
+     */
+    bool check_injection(RequestContext& ctx);
+
+    /**
+     * @brief Layer 3.7: Anomaly detection (informational, never blocks)
+     */
+    void check_anomaly(RequestContext& ctx);
+
+    /**
+     * @brief Layer 5.3: Decrypt encrypted columns (transparent)
+     */
+    void decrypt_columns(RequestContext& ctx);
+
+    /**
+     * @brief Layer 6.5: Record data lineage for PII columns
+     */
+    void record_lineage(RequestContext& ctx);
+
     const std::shared_ptr<ISqlParser> parser_;
     const std::shared_ptr<PolicyEngine> policy_engine_;
     const std::shared_ptr<IRateLimiter> rate_limiter_;
@@ -151,6 +179,10 @@ private:
     const std::shared_ptr<QueryRewriter> rewriter_;
     const std::shared_ptr<DatabaseRouter> router_;
     const std::shared_ptr<PreparedStatementTracker> prepared_;
+    const std::shared_ptr<SqlInjectionDetector> injection_detector_;
+    const std::shared_ptr<AnomalyDetector> anomaly_detector_;
+    const std::shared_ptr<LineageTracker> lineage_tracker_;
+    const std::shared_ptr<ColumnEncryptor> column_encryptor_;
 };
 
 } // namespace sqlproxy

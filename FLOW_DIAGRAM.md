@@ -18,6 +18,9 @@
 │  │  GET  /health            → {"status":"healthy"}                     │   │
 │  │  GET  /metrics           → Prometheus format (rate_limiter + audit)  │   │
 │  │  POST /policies/reload   → Hot-reload policies from TOML config     │   │
+│  │  GET  /api/v1/compliance/pii-report       → PII access report       │   │
+│  │  GET  /api/v1/compliance/security-summary → Security overview       │   │
+│  │  GET  /api/v1/compliance/lineage          → Data lineage summaries  │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  Request Validation:                                                         │
@@ -63,25 +66,38 @@
 │                                                                              │
 │  Sequential layer execution with short-circuit on failure:                   │
 │                                                                              │
-│  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐                  │
-│  │ Layer 1 │───▶│ Layer 2 │───▶│ Layer 3 │───▶│ Layer 4 │──┐               │
-│  │  RATE   │    │  PARSE  │    │ ANALYZE │    │ POLICY  │  │               │
-│  │  LIMIT  │    │ + CACHE │    │         │    │         │  │               │
-│  └────┬────┘    └────┬────┘    └────┬────┘    └────┬────┘  │               │
-│       │FAIL          │FAIL          │FAIL          │FAIL   │PASS           │
-│       ▼              ▼              ▼              ▼       ▼               │
-│   ┌───────┐     ┌───────┐     ┌───────┐     ┌───────┐ ┌─────────┐        │
-│   │ AUDIT │     │ AUDIT │     │ AUDIT │     │ AUDIT │ │ Layer 5 │──┐     │
-│   │ + RES │     │ + RES │     │ + RES │     │ + RES │ │ EXECUTE │  │     │
-│   └───────┘     └───────┘     └───────┘     └───────┘ └────┬────┘  │     │
-│                                                              │FAIL  │PASS │
-│                                                              ▼      ▼     │
-│                                                         ┌───────┐┌──────┐ │
-│                                                         │ AUDIT ││L6+L7│ │
-│                                                         │ + RES ││CLASS│ │
-│                                                         └───────┘│+AUD │ │
-│                                                                  │+RES │ │
-│                                                                  └──────┘ │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐          │
+│  │ Layer 1 │─▶│ Layer 2 │─▶│ Layer 3 │─▶│Layer3.5 │─▶│Layer3.7 │──┐       │
+│  │  RATE   │  │  PARSE  │  │ ANALYZE │  │  SQLI   │  │ ANOMALY │  │       │
+│  │  LIMIT  │  │ + CACHE │  │         │  │ DETECT  │  │ (info)  │  │       │
+│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘  └─────────┘  │       │
+│       │FAIL        │FAIL        │FAIL        │BLOCK               │PASS   │
+│       ▼            ▼            ▼            ▼                    ▼       │
+│   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐          ┌──────────┐   │
+│   │ AUDIT │   │ AUDIT │   │ AUDIT │   │ AUDIT │          │ Layer 4  │   │
+│   │ + RES │   │ + RES │   │ + RES │   │ + RES │          │  POLICY  │   │
+│   └───────┘   └───────┘   └───────┘   └───────┘          └────┬─────┘   │
+│                                                                 │         │
+│                                            FAIL ◀───────────────┤         │
+│                                            ▼                    │PASS     │
+│                                       ┌───────┐           ┌─────▼─────┐  │
+│                                       │ AUDIT │           │  Layer 5  │  │
+│                                       │ + RES │           │  EXECUTE  │  │
+│                                       └───────┘           └─────┬─────┘  │
+│                                                                 │        │
+│                          ┌──────────────────────────────────────┘        │
+│                          ▼                                               │
+│                   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │
+│                   │Layer 5.3 │─▶│Layer 5.5 │─▶│ Layer 6  │─▶│Lay 6.5│  │
+│                   │ DECRYPT  │  │ COL ACL  │  │ CLASSIFY │  │LINEAGE│  │
+│                   │ COLUMNS  │  │ + MASK   │  │          │  │TRACK  │  │
+│                   └──────────┘  └──────────┘  └──────────┘  └───┬────┘  │
+│                                                                  │       │
+│                                                            ┌─────▼─────┐ │
+│                                                            │  Layer 7  │ │
+│                                                            │   AUDIT   │ │
+│                                                            │ + RESPOND │ │
+│                                                            └───────────┘ │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -253,6 +269,108 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Layer 3.5: SQL Injection Detection
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 3.5: SQL INJECTION DETECTION (Security Gate)                          │
+│  Class: SqlInjectionDetector                                                 │
+│                                                                              │
+│  Input: ctx.sql (raw SQL), ctx.statement_info.fingerprint.normalized,        │
+│         ctx.statement_info.parsed (ParsedQuery)                              │
+│                                                                              │
+│  6 DETECTION CHECKS (hand-rolled, no regex):                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │                                                                     │     │
+│  │  ┌──────────────────────────────────────────────────────┐           │     │
+│  │  │ 1. TAUTOLOGY DETECTION (HIGH)                        │           │     │
+│  │  │    1=1, 'a'='a', OR true, 1<>2, ''=''                │           │     │
+│  │  │    Score: 0.7                                         │           │     │
+│  │  └──────────────────────────────────────────────────────┘           │     │
+│  │  ┌──────────────────────────────────────────────────────┐           │     │
+│  │  │ 2. UNION INJECTION (CRITICAL)                        │           │     │
+│  │  │    UNION SELECT, UNION ALL SELECT                     │           │     │
+│  │  │    Score: 1.0                                         │           │     │
+│  │  └──────────────────────────────────────────────────────┘           │     │
+│  │  ┌──────────────────────────────────────────────────────┐           │     │
+│  │  │ 3. COMMENT BYPASS (MEDIUM)                           │           │     │
+│  │  │    Inline --, /* mid-statement                        │           │     │
+│  │  │    Score: 0.4                                         │           │     │
+│  │  └──────────────────────────────────────────────────────┘           │     │
+│  │  ┌──────────────────────────────────────────────────────┐           │     │
+│  │  │ 4. STACKED QUERIES (HIGH)                            │           │     │
+│  │  │    Multiple ; separated statements                    │           │     │
+│  │  │    Score: 0.7                                         │           │     │
+│  │  └──────────────────────────────────────────────────────┘           │     │
+│  │  ┌──────────────────────────────────────────────────────┐           │     │
+│  │  │ 5. TIME-BASED BLIND (HIGH)                           │           │     │
+│  │  │    SLEEP(, pg_sleep(, WAITFOR DELAY                   │           │     │
+│  │  │    Score: 0.7                                         │           │     │
+│  │  └──────────────────────────────────────────────────────┘           │     │
+│  │  ┌──────────────────────────────────────────────────────┐           │     │
+│  │  │ 6. ERROR-BASED (MEDIUM)                              │           │     │
+│  │  │    EXTRACTVALUE, UPDATEXML, CONVERT(                  │           │     │
+│  │  │    Score: 0.4                                         │           │     │
+│  │  └──────────────────────────────────────────────────────┘           │     │
+│  │                                                                     │     │
+│  │  ThreatLevel: NONE < LOW < MEDIUM < HIGH < CRITICAL               │     │
+│  │  Block threshold configurable (default: HIGH)                      │     │
+│  │  should_block = threat_level >= block_threshold                    │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Output: DetectionResult { threat_level, patterns_matched, should_block }    │
+│  BLOCK → ErrorCode::SQLI_BLOCKED (HTTP 403)                                 │
+│  Written to ctx: injection_result, injection_check_time                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Layer 3.7: Anomaly Detection
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 3.7: ANOMALY DETECTION (Informational — never blocks)                 │
+│  Class: AnomalyDetector + UserProfile                                        │
+│                                                                              │
+│  Input: ctx.user, analysis.source_tables, fingerprint.hash                   │
+│                                                                              │
+│  PER-USER BEHAVIORAL PROFILING:                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ UserProfile {                                                       │     │
+│  │   total_queries     (atomic<uint64_t>)                              │     │
+│  │   window_queries    (atomic<uint64_t>, resets each window)          │     │
+│  │   known_tables      (unordered_set<string>)                         │     │
+│  │   known_fingerprints(unordered_set<uint64_t>)                       │     │
+│  │   hour_distribution (map<int, uint64_t>)                            │     │
+│  │   avg/stddev_queries_per_window (rolling stats)                     │     │
+│  │ }                                                                   │     │
+│  │                                                                     │     │
+│  │ Profile management:                                                 │     │
+│  │   ├─ Double-checked locking for lazy creation                       │     │
+│  │   ├─ shared_mutex for concurrent reads                              │     │
+│  │   └─ Window rotation every N minutes (configurable)                 │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  4 ANOMALY SIGNALS:                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ Signal              │ Condition                   │ Score           │     │
+│  │ NEW_TABLE:<name>    │ Table not in known set      │ +0.3            │     │
+│  │ NEW_QUERY_PATTERN   │ Fingerprint hash not seen   │ +0.2            │     │
+│  │ VOLUME_SPIKE:<Nσ>   │ Z-score > 3σ threshold      │ +0.4            │     │
+│  │ UNUSUAL_HOUR:<H>    │ Hour never seen before       │ +0.2            │     │
+│  │                                                                     │     │
+│  │ is_anomalous = (total_score >= 0.5)                                 │     │
+│  │ Score capped at 1.0, signals only after baseline established        │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Two operations per request:                                                │
+│  1. check()  — score anomaly (shared_lock, read-only)                       │
+│  2. record() — update profile (unique_lock, write)                          │
+│                                                                              │
+│  Written to ctx: anomaly_result (score + anomalies list)                    │
+│  Anomaly data flows to audit record and compliance reporting                │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Layer 4: Policy Engine
 
 ```
@@ -404,6 +522,54 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Layer 5.3: Decrypt Encrypted Columns
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 5.3: COLUMN DECRYPTION (Transparent)                                  │
+│  Class: ColumnEncryptor + IKeyManager                                        │
+│                                                                              │
+│  Input: ctx.query_result (after execution), ctx.analysis.source_tables       │
+│                                                                              │
+│  Only runs when encryption is enabled and query returned results.            │
+│                                                                              │
+│  ENCRYPTED VALUE FORMAT:                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ ENC:v1:<key_id>:<base64(IV + ciphertext + auth_tag)>               │     │
+│  │                                                                     │     │
+│  │ Algorithm: AES-256-GCM                                              │     │
+│  │ IV:        12 bytes (random per encryption)                         │     │
+│  │ Tag:       16 bytes (authentication)                                │     │
+│  │ Key:       256-bit from IKeyManager                                 │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  DECRYPTION FLOW:                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ 1. For each column in result, check is_encrypted_column(db,tbl,col) │     │
+│  │    (O(1) lookup in unordered_set<string>)                           │     │
+│  │ 2. For matching columns, scan each row:                              │     │
+│  │    ├─ Starts with "ENC:v1:" → decrypt with key from key_id          │     │
+│  │    └─ Plain text → passthrough (not encrypted)                      │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  KEY MANAGEMENT:                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ IKeyManager (interface):                                            │     │
+│  │   ├─ get_active_key() → current encryption key                      │     │
+│  │   ├─ get_key(key_id)  → lookup by ID (for decryption)              │     │
+│  │   └─ rotate_key()     → generate new key, deactivate old            │     │
+│  │                                                                     │     │
+│  │ LocalKeyManager (file-based implementation):                        │     │
+│  │   ├─ Stores keys in file: key_id:hex_key:active                     │     │
+│  │   ├─ Supports key rotation (old keys kept for decryption)           │     │
+│  │   └─ Thread-safe with shared_mutex                                  │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Config: [encryption] section in proxy.toml                                 │
+│  Columns: [[encryption.columns]] database/table/column entries              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Layer 6: Classification
 
 ```
@@ -472,6 +638,50 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Layer 6.5: Data Lineage Tracking
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 6.5: DATA LINEAGE TRACKING (Post-classification)                      │
+│  Class: LineageTracker                                                       │
+│                                                                              │
+│  Input: ctx.classification_result, ctx.user, ctx.analysis                    │
+│  Only runs when classifications detected (PII columns accessed)             │
+│                                                                              │
+│  For EACH classified column, creates a LineageEvent:                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ LineageEvent {                                                      │     │
+│  │   timestamp, user, database, table, column                          │     │
+│  │   classification: "PII.Email" / "PII.SSN" / ...                     │     │
+│  │   access_type: "SELECT" / "UPDATE" / ...                            │     │
+│  │   query_fingerprint (normalized hash)                               │     │
+│  │   was_masked: bool (was masking applied?)                           │     │
+│  │   masking_action: "PARTIAL" / "HASH" / "REDACT" / ""               │     │
+│  │ }                                                                   │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  STORAGE:                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ Events:     std::deque<LineageEvent> (bounded, max 100K)            │     │
+│  │ Summaries:  unordered_map<column_key, LineageSummary>               │     │
+│  │                                                                     │     │
+│  │ LineageSummary per column:                                          │     │
+│  │   column_key:      "testdb.customers.email"                         │     │
+│  │   classification:  "PII.Email"                                      │     │
+│  │   total_accesses:  count                                            │     │
+│  │   masked_accesses: count (GDPR compliance metric)                   │     │
+│  │   accessing_users: set<string> (who accessed this column)           │     │
+│  │   first/last_access timestamps                                      │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Thread safety: shared_mutex (shared_lock for reads, unique_lock for writes) │
+│  Data feeds into: Compliance Reporter (PII reports, security summaries)     │
+│                                                                              │
+│  API: GET /api/v1/compliance/lineage → summaries JSON                       │
+│       GET /api/v1/compliance/lineage/events?user=X&table=Y&limit=N          │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Layer 7: Audit
 
 ```
@@ -503,7 +713,13 @@
 │  │   "execution_time_us": 1200,                                        │     │
 │  │   "total_duration_us": 1250,                                        │     │
 │  │   "rate_limited": false,                                            │     │
-│  │   "cache_hit": true                                                 │     │
+│  │   "cache_hit": true,                                                │     │
+│  │   // Security fields (Tier 4):                                      │     │
+│  │   "threat_level": "NONE",       // SQL injection threat             │     │
+│  │   "injection_patterns": [],     // Matched patterns                 │     │
+│  │   "injection_blocked": false,   // Was request blocked?             │     │
+│  │   "anomaly_score": 0.3,         // Behavioral anomaly score         │     │
+│  │   "anomalies": ["NEW_TABLE:sensitive_data"]                         │     │
 │  │ }                                                                   │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
@@ -575,6 +791,7 @@
 │  │ NONE (success)        │ 200      │                                        │
 │  │ PARSE_ERROR           │ 400      │                                        │
 │  │ ACCESS_DENIED         │ 403      │                                        │
+│  │ SQLI_BLOCKED          │ 403      │                                        │
 │  │ RATE_LIMITED          │ 429      │                                        │
 │  │ CIRCUIT_OPEN          │ 503      │                                        │
 │  │ DATABASE_ERROR        │ 502      │                                        │
@@ -608,6 +825,19 @@
 │  ├─ Parses policies via PolicyLoader                                         │
 │  ├─ Hot-reloads via RCU (atomic pointer swap)                                │
 │  └─ Returns: {"success":true,"policies_loaded":20}                           │
+│                                                                              │
+│  GET /api/v1/compliance/pii-report (Tier 4)                                  │
+│  ├─ Aggregates lineage data into PII access report                           │
+│  ├─ Per-column: access counts, masked/unmasked, accessing users              │
+│  └─ Returns: { total_pii_accesses, masking_coverage_pct, entries[] }         │
+│                                                                              │
+│  GET /api/v1/compliance/security-summary (Tier 4)                            │
+│  ├─ Aggregates audit stats, anomaly data, lineage counts                     │
+│  └─ Returns: { total_queries, blocked, injection_attempts, tracked_users }   │
+│                                                                              │
+│  GET /api/v1/compliance/lineage (Tier 4)                                     │
+│  ├─ Returns data lineage summaries per column                                │
+│  └─ Returns: { summaries: [{ column_key, classification, accesses, ... }] }  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -617,31 +847,42 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  STARTUP (8 phases)                                                          │
+│  STARTUP (10 phases)                                                         │
 │                                                                              │
-│  [1/8] Load configuration from config/proxy.toml (ConfigLoader)              │
-│        ├─ Parse users, roles, policies, rate limits                          │
-│        └─ Fallback: 2 hardcoded policies + 4 users if config fails           │
+│  [1/10] Load configuration from config/proxy.toml (ConfigLoader)             │
+│         ├─ Parse users, roles, policies, rate limits                         │
+│         ├─ Parse [security] section (injection, anomaly, lineage)            │
+│         ├─ Parse [encryption] section (columns, key_file)                    │
+│         └─ Fallback: 2 hardcoded policies + 4 users if config fails          │
 │                                                                              │
-│  [2/8] Initialize Parse Cache (10K entries, 16 shards)                       │
+│  [2/10] Initialize Parse Cache (10K entries, 16 shards)                      │
 │                                                                              │
-│  [3/8] Initialize SQL Parser (wraps libpg_query)                             │
+│  [3/10] Initialize SQL Parser (wraps libpg_query)                            │
 │                                                                              │
-│  [4/8] Initialize Policy Engine + load policies                              │
+│  [4/10] Initialize Policy Engine + load policies                             │
 │                                                                              │
-│  [5/8] Initialize Rate Limiter (4-level hierarchy)                           │
-│        ├─ Apply per-user rate limit overrides                                │
-│        ├─ Apply per-database rate limit overrides                            │
-│        └─ Apply per-user-per-database overrides                              │
+│  [5/10] Initialize Rate Limiter (4-level hierarchy)                          │
+│         ├─ Apply per-user rate limit overrides                               │
+│         ├─ Apply per-database rate limit overrides                           │
+│         └─ Apply per-user-per-database overrides                             │
 │                                                                              │
-│  [6/8] Initialize Connection Pool + Circuit Breaker + Query Executor         │
-│        └─ Pre-warm pool with min_connections (2)                             │
+│  [6/10] Initialize Connection Pool + Circuit Breaker + Query Executor        │
+│         └─ Pre-warm pool with min_connections (2)                            │
 │                                                                              │
-│  [7/8] Initialize ClassifierRegistry + AuditEmitter                          │
-│        └─ AuditEmitter starts background writer thread                       │
+│  [7/10] Initialize ClassifierRegistry + AuditEmitter                         │
+│         └─ AuditEmitter starts background writer thread                      │
 │                                                                              │
-│  [8/8] Build Pipeline → Create HttpServer → server.start()                   │
-│        └─ Listening on 0.0.0.0:8080                                          │
+│  [8/10] Initialize Security Components (Tier 4)                              │
+│         ├─ SqlInjectionDetector (config from [security] section)              │
+│         ├─ AnomalyDetector (per-user behavioral profiling)                   │
+│         ├─ LineageTracker (PII access tracking)                              │
+│         ├─ ColumnEncryptor + LocalKeyManager (if encryption enabled)         │
+│         └─ ComplianceReporter (aggregates lineage + anomaly + audit)         │
+│                                                                              │
+│  [9/10] Build Pipeline (all 11 layers wired)                                 │
+│                                                                              │
+│ [10/10] Create HttpServer → server.start()                                   │
+│         └─ Listening on 0.0.0.0:8080                                         │
 │                                                                              │
 │  Signal handling: SIGINT/SIGTERM → graceful shutdown                          │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -658,32 +899,45 @@
                             │ creates
                             ▼
                     ┌───────────────┐
-                    │  HttpServer   │
-                    │  (cpp-httplib)│
-                    └───────┬───────┘
-                            │ owns
-                            ▼
-                    ┌───────────────┐
-                    │   Pipeline    │──────────────────────────────────┐
-                    └───┬───┬───┬──┘                                  │
-                        │   │   │                                     │
-          ┌─────────────┘   │   └─────────────┐                       │
-          ▼                 ▼                 ▼                       ▼
-  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐      ┌──────────────┐
-  │  SQLParser   │ │ PolicyEngine │ │ RateLimiter  │      │AuditEmitter  │
-  └──────┬───────┘ └──────┬───────┘ └──────────────┘      └──────┬───────┘
-         │                │                                       │
-         ▼                ▼                                       ▼
-  ┌──────────────┐ ┌──────────────┐                        ┌──────────────┐
-  │  ParseCache  │ │  PolicyTrie  │                        │  RingBuffer  │
-  │  (16 shards) │ │  (radix)     │                        │  (65536)     │
-  └──────┬───────┘ └──────────────┘                        └──────────────┘
-         │
-         ▼
-  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-  │ Fingerprinter│     │QueryExecutor │────▶│ ConnPool     │
-  │ (xxHash64)   │     └──────┬───────┘     │ (libpq)      │
-  └──────────────┘            │             └──────────────┘
+                    │  HttpServer   │──────────────────────────────────┐
+                    │  (cpp-httplib)│                                  │
+                    └───────┬───────┘                                  │
+                            │ owns                                    │
+                            ▼                                         ▼
+                    ┌───────────────┐                          ┌──────────────┐
+                    │   Pipeline    │──────────────┐           │ Compliance   │
+                    └─┬──┬──┬──┬───┘              │           │  Reporter    │
+                      │  │  │  │                  │           └──────┬───────┘
+        ┌─────────────┘  │  │  └──────┐           │                  │
+        ▼                │  │         ▼           ▼           ┌──────▼───────┐
+  ┌──────────────┐       │  │  ┌──────────────┐ ┌──────────┐ │  Lineage     │
+  │  SQLParser   │       │  │  │ RateLimiter  │ │AuditEmit │ │  Tracker     │
+  └──────┬───────┘       │  │  └──────────────┘ └────┬─────┘ └──────────────┘
+         │               │  │                        │
+         ▼               │  │                        ▼
+  ┌──────────────┐       │  │                 ┌──────────────┐
+  │  ParseCache  │       │  │                 │  RingBuffer  │
+  │  (16 shards) │       │  │                 │  (65536)     │
+  └──────┬───────┘       │  │                 └──────────────┘
+         │               │  │
+         ▼               │  │
+  ┌──────────────┐       │  │
+  │ Fingerprinter│       │  │
+  │ (xxHash64)   │       │  │
+  └──────────────┘       │  │
+                         │  │
+           ┌─────────────┘  └──────────────┐
+           ▼                               ▼
+  ┌──────────────┐     ┌──────────────┐  ┌──────────────────┐
+  │ PolicyEngine │     │QueryExecutor │  │ Security Layer   │
+  └──────┬───────┘     └──────┬───────┘  │                  │
+         │                    │          │ SqlInjection     │
+         ▼                    ▼          │  Detector        │
+  ┌──────────────┐     ┌──────────────┐  │ AnomalyDetector  │
+  │  PolicyTrie  │     │ ConnPool     │  │ ColumnEncryptor  │
+  │  (radix)     │     │ (libpq)      │  │  └─IKeyManager   │
+  └──────────────┘     └──────┬───────┘  │    └─LocalKeyMgr │
+                              │          └──────────────────┘
                               ▼
                        ┌──────────────┐
                        │CircuitBreaker│
@@ -718,7 +972,10 @@
 │  │  ├─ Policy store: atomic shared_ptr (RCU, lock-free reads)  │             │
 │  │  ├─ Connection pool: std::mutex + semaphore                 │             │
 │  │  ├─ Circuit breaker: atomic state transitions               │             │
-│  │  └─ Audit emit: lock-free CAS enqueue to ring buffer        │             │
+│  │  ├─ Audit emit: lock-free CAS enqueue to ring buffer        │             │
+│  │  ├─ Anomaly profiles: shared_mutex (double-checked locking) │             │
+│  │  ├─ Lineage tracker: shared_mutex (reads) / unique (writes) │             │
+│  │  └─ Key manager: shared_mutex (reads) / unique (rotation)   │             │
 │  └─────────────────────────────────────────────────────────────┘             │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────┐             │

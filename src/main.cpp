@@ -16,6 +16,12 @@
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
 #include "core/query_rewriter.hpp"
+#include "security/sql_injection_detector.hpp"
+#include "security/anomaly_detector.hpp"
+#include "security/lineage_tracker.hpp"
+#include "security/column_encryptor.hpp"
+#include "security/local_key_manager.hpp"
+#include "security/compliance_reporter.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -269,6 +275,56 @@ int main(int argc, char* argv[]) {
                 config_result.config.rewrite_rules.size()));
         }
 
+        // =====================================================================
+        // Security components (Tier 4)
+        // =====================================================================
+
+        // SQL Injection Detector
+        SqlInjectionDetector::Config sqli_config;
+        if (config_result.success) {
+            sqli_config.enabled = config_result.config.security.injection_detection_enabled;
+        }
+        auto injection_detector = std::make_shared<SqlInjectionDetector>(sqli_config);
+        utils::log::info(std::format("SQL injection detector: {}",
+            sqli_config.enabled ? "enabled" : "disabled"));
+
+        // Anomaly Detector
+        AnomalyDetector::Config anomaly_config;
+        if (config_result.success) {
+            anomaly_config.enabled = config_result.config.security.anomaly_detection_enabled;
+        }
+        auto anomaly_detector = std::make_shared<AnomalyDetector>(anomaly_config);
+        utils::log::info(std::format("Anomaly detector: {}",
+            anomaly_config.enabled ? "enabled" : "disabled"));
+
+        // Data Lineage Tracker
+        LineageTracker::Config lineage_config;
+        if (config_result.success) {
+            lineage_config.enabled = config_result.config.security.lineage_tracking_enabled;
+        }
+        auto lineage_tracker = std::make_shared<LineageTracker>(lineage_config);
+        utils::log::info(std::format("Lineage tracker: {}",
+            lineage_config.enabled ? "enabled" : "disabled"));
+
+        // Column Encryptor
+        std::shared_ptr<ColumnEncryptor> column_encryptor;
+        if (config_result.success && config_result.config.encryption.enabled) {
+            auto key_manager = std::make_shared<LocalKeyManager>(
+                config_result.config.encryption.key_file);
+            ColumnEncryptor::Config enc_config;
+            enc_config.enabled = true;
+            for (const auto& c : config_result.config.encryption.columns) {
+                enc_config.columns.push_back({c.database, c.table, c.column});
+            }
+            column_encryptor = std::make_shared<ColumnEncryptor>(key_manager, enc_config);
+            utils::log::info(std::format("Column encryptor: {} columns configured",
+                enc_config.columns.size()));
+        }
+
+        // Compliance Reporter
+        auto compliance_reporter = std::make_shared<ComplianceReporter>(
+            lineage_tracker, anomaly_detector, audit_emitter);
+
         // Create pipeline
         auto pipeline = std::make_shared<Pipeline>(
             parser,
@@ -277,7 +333,13 @@ int main(int argc, char* argv[]) {
             executor,
             classifier,
             audit_emitter,
-            query_rewriter
+            query_rewriter,
+            nullptr,  // router
+            nullptr,  // prepared
+            injection_detector,
+            anomaly_detector,
+            lineage_tracker,
+            column_encryptor
         );
 
         // Determine server bind address and port
@@ -290,7 +352,8 @@ int main(int argc, char* argv[]) {
 
         // Create HTTP server
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
-            config_result.config.server.admin_token, max_sql_length);
+            config_result.config.server.admin_token, max_sql_length,
+            compliance_reporter, lineage_tracker);
 
         // =====================================================================
         // [9/9] Config Watcher - hot-reload policies, users, rate limits

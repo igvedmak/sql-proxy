@@ -5,6 +5,8 @@
 #include "parser/fingerprinter.hpp"
 #include "parser/parse_cache.hpp"
 #include "analyzer/sql_analyzer.hpp"
+#include "security/sql_injection_detector.hpp"
+#include "security/anomaly_detector.hpp"
 #include <memory>
 #include <chrono>
 
@@ -63,6 +65,11 @@ struct RequestContext {
 
     // User attributes (for RLS template expansion)
     std::unordered_map<std::string, std::string> user_attributes;
+
+    // Security detection
+    SqlInjectionDetector::DetectionResult injection_result;
+    std::chrono::microseconds injection_check_time{0};
+    AnomalyDetector::AnomalyResult anomaly_result;
 
     RequestContext()
         : received_at(std::chrono::system_clock::now()),
