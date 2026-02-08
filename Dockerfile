@@ -155,11 +155,11 @@ COPY config /app/config
 # Copy SQL scripts (for reference)
 COPY sql /app/sql
 
-# Create directory for audit logs
-RUN mkdir -p /app/logs
+# Create directories for logs and plugins
+RUN mkdir -p /app/logs /app/plugins
 
-# Expose HTTP port
-EXPOSE 8080
+# Expose HTTP, Wire Protocol, and Binary RPC ports
+EXPOSE 8080 5433 9090
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \

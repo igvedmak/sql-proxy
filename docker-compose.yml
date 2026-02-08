@@ -29,6 +29,8 @@ services:
     container_name: sql_proxy_service
     ports:
       - "8080:8080"
+      - "5433:5433"
+      - "9090:9090"
     environment:
       # Database connection
       POSTGRES_HOST: postgres
@@ -47,6 +49,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs
+      - ./plugins:/app/plugins:ro
     depends_on:
       postgres:
         condition: service_healthy

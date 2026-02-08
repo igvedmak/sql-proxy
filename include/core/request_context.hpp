@@ -2,6 +2,7 @@
 
 #include "core/types.hpp"
 #include "core/arena.hpp"
+#include "core/utils.hpp"
 #include "parser/fingerprinter.hpp"
 #include "parser/parse_cache.hpp"
 #include "analyzer/sql_analyzer.hpp"
@@ -71,8 +72,15 @@ struct RequestContext {
     std::chrono::microseconds injection_check_time{0};
     AnomalyDetector::AnomalyResult anomaly_result;
 
+    // Tenant (Tier 5)
+    std::string tenant_id;
+
+    // Schema management (Tier 5)
+    bool ddl_requires_approval = false;
+
     RequestContext()
-        : received_at(std::chrono::system_clock::now()),
+        : request_id(utils::generate_uuid()),
+          received_at(std::chrono::system_clock::now()),
           started_at(std::chrono::steady_clock::now()),
           arena(1024) {}
 };

@@ -1108,6 +1108,79 @@ std::vector<RewriteRule> extract_rewrite_rules(const JsonValue& root) {
 
 } // anonymous namespace
 
+// ---- Tier 5 extractors -----------------------------------------------------
+
+TenantConfigEntry ConfigLoader::extract_tenants(const JsonValue& root) {
+    TenantConfigEntry cfg;
+    if (!root.contains("tenants")) return cfg;
+    const auto t = root["tenants"];
+    cfg.enabled = json_bool(t, kEnabled, false);
+    cfg.default_tenant = json_string(t, "default_tenant", "default");
+    cfg.header_name = json_string(t, "header_name", "X-Tenant-Id");
+    return cfg;
+}
+
+std::vector<PluginConfigEntry> ConfigLoader::extract_plugins(const JsonValue& root) {
+    std::vector<PluginConfigEntry> result;
+    if (!root.contains("plugins") || !root["plugins"].is_array()) return result;
+    const auto arr = root["plugins"];
+    result.reserve(arr.size());
+    for (const auto& p : arr) {
+        PluginConfigEntry entry;
+        entry.path = json_string(p, "path", "");
+        entry.type = json_string(p, kType, "");
+        entry.config = json_string(p, "config", "");
+        if (!entry.path.empty() && !entry.type.empty()) {
+            result.push_back(std::move(entry));
+        }
+    }
+    return result;
+}
+
+SchemaManagementConfigEntry ConfigLoader::extract_schema_management(const JsonValue& root) {
+    SchemaManagementConfigEntry cfg;
+    if (!root.contains("schema_management")) return cfg;
+    const auto s = root["schema_management"];
+    cfg.enabled = json_bool(s, kEnabled, false);
+    cfg.require_approval = json_bool(s, "require_approval", false);
+    cfg.max_history_entries = json_size(s, "max_history_entries", 1000);
+    return cfg;
+}
+
+WireProtocolConfigEntry ConfigLoader::extract_wire_protocol(const JsonValue& root) {
+    WireProtocolConfigEntry cfg;
+    if (!root.contains("wire_protocol")) return cfg;
+    const auto w = root["wire_protocol"];
+    cfg.enabled = json_bool(w, kEnabled, false);
+    cfg.host = json_string(w, "host", "0.0.0.0");
+    cfg.port = static_cast<uint16_t>(json_int(w, "port", 5433));
+    cfg.max_connections = json_uint32(w, "max_connections", 100);
+    cfg.thread_pool_size = json_uint32(w, "thread_pool_size", 4);
+    cfg.require_password = json_bool(w, "require_password", false);
+    return cfg;
+}
+
+GraphQLConfigEntry ConfigLoader::extract_graphql(const JsonValue& root) {
+    GraphQLConfigEntry cfg;
+    if (!root.contains("graphql")) return cfg;
+    const auto g = root["graphql"];
+    cfg.enabled = json_bool(g, kEnabled, false);
+    cfg.endpoint = json_string(g, "endpoint", "/api/v1/graphql");
+    cfg.max_query_depth = json_uint32(g, "max_query_depth", 5);
+    return cfg;
+}
+
+BinaryRpcConfigEntry ConfigLoader::extract_binary_rpc(const JsonValue& root) {
+    BinaryRpcConfigEntry cfg;
+    if (!root.contains("binary_rpc")) return cfg;
+    const auto b = root["binary_rpc"];
+    cfg.enabled = json_bool(b, kEnabled, false);
+    cfg.host = json_string(b, "host", "0.0.0.0");
+    cfg.port = static_cast<uint16_t>(json_int(b, "port", 9090));
+    cfg.max_connections = json_uint32(b, "max_connections", 50);
+    return cfg;
+}
+
 // ---- Public API ------------------------------------------------------------
 
 ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_path) {
@@ -1131,6 +1204,12 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.rewrite_rules = extract_rewrite_rules(json);
         config.security = extract_security(json);
         config.encryption = extract_encryption(json);
+        config.tenants = extract_tenants(json);
+        config.plugins = extract_plugins(json);
+        config.schema_management = extract_schema_management(json);
+        config.wire_protocol = extract_wire_protocol(json);
+        config.graphql = extract_graphql(json);
+        config.binary_rpc = extract_binary_rpc(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));

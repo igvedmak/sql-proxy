@@ -9,6 +9,8 @@
 #include "security/anomaly_detector.hpp"
 #include "security/lineage_tracker.hpp"
 #include "security/column_encryptor.hpp"
+#include "schema/schema_manager.hpp"
+#include "tenant/tenant_manager.hpp"
 
 #include <unordered_set>
 
@@ -27,7 +29,9 @@ Pipeline::Pipeline(
     std::shared_ptr<SqlInjectionDetector> injection_detector,
     std::shared_ptr<AnomalyDetector> anomaly_detector,
     std::shared_ptr<LineageTracker> lineage_tracker,
-    std::shared_ptr<ColumnEncryptor> column_encryptor)
+    std::shared_ptr<ColumnEncryptor> column_encryptor,
+    std::shared_ptr<SchemaManager> schema_manager,
+    std::shared_ptr<TenantManager> tenant_manager)
     : parser_(std::move(parser)),
       policy_engine_(std::move(policy_engine)),
       rate_limiter_(std::move(rate_limiter)),
@@ -40,7 +44,9 @@ Pipeline::Pipeline(
       injection_detector_(std::move(injection_detector)),
       anomaly_detector_(std::move(anomaly_detector)),
       lineage_tracker_(std::move(lineage_tracker)),
-      column_encryptor_(std::move(column_encryptor)) {}
+      column_encryptor_(std::move(column_encryptor)),
+      schema_manager_(std::move(schema_manager)),
+      tenant_manager_(std::move(tenant_manager)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -51,6 +57,22 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     ctx.sql = request.sql;
     ctx.source_ip = request.source_ip;
     ctx.user_attributes = request.user_attributes;
+    ctx.tenant_id = request.tenant_id;
+
+    // Tenant resolution: if multi-tenant enabled, override pipeline components
+    // (policy_engine, rate_limiter, audit_emitter are swapped per-tenant)
+    std::shared_ptr<PolicyEngine> active_policy_engine = policy_engine_;
+    std::shared_ptr<IRateLimiter> active_rate_limiter = rate_limiter_;
+    std::shared_ptr<AuditEmitter> active_audit_emitter = audit_emitter_;
+
+    if (tenant_manager_ && !ctx.tenant_id.empty()) {
+        auto tenant_ctx = tenant_manager_->resolve(ctx.tenant_id);
+        if (tenant_ctx) {
+            if (tenant_ctx->policy_engine) active_policy_engine = tenant_ctx->policy_engine;
+            if (tenant_ctx->rate_limiter) active_rate_limiter = tenant_ctx->rate_limiter;
+            if (tenant_ctx->audit_emitter) active_audit_emitter = tenant_ctx->audit_emitter;
+        }
+    }
 
     // Layer 1: Rate limiting
     if (!check_rate_limit(ctx)) {
@@ -85,6 +107,12 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         return build_response(ctx);
     }
 
+    // Layer 4.1: Schema DDL interception (can block if approval required)
+    if (!intercept_ddl(ctx)) {
+        emit_audit(ctx);
+        return build_response(ctx);
+    }
+
     // Layer 4.5: Query rewriting (RLS + enforce_limit)
     rewrite_query(ctx);
 
@@ -92,6 +120,16 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     if (!execute_query(ctx)) {
         emit_audit(ctx);
         return build_response(ctx);
+    }
+
+    // Layer 5.1: Record DDL change (after successful execution)
+    if (schema_manager_ && stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL)) {
+        std::string table_name;
+        if (!ctx.analysis.source_tables.empty()) {
+            table_name = ctx.analysis.source_tables[0].table;
+        }
+        schema_manager_->record_change(ctx.user, ctx.database, table_name,
+            ctx.sql, ctx.analysis.statement_type);
     }
 
     // Layer 5.3: Decrypt encrypted columns (transparent)
@@ -512,7 +550,27 @@ void Pipeline::record_lineage(RequestContext& ctx) {
     }
 }
 
-// Stubs for prepared statement handling — implemented in Phase 5
+bool Pipeline::intercept_ddl(RequestContext& ctx) {
+    if (!schema_manager_) return true;
+    if (!ctx.statement_info) return true;
+
+    // Only intercept DDL statements
+    if (!stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL)) return true;
+
+    bool allowed = schema_manager_->intercept_ddl(
+        ctx.user, ctx.database, ctx.sql, ctx.analysis.statement_type);
+
+    if (!allowed) {
+        ctx.ddl_requires_approval = true;
+        ctx.query_result.success = false;
+        ctx.query_result.error_code = ErrorCode::ACCESS_DENIED;
+        ctx.query_result.error_message = "DDL requires approval — submitted for review";
+        return false;
+    }
+    return true;
+}
+
+// Stubs for prepared statement handling
 void Pipeline::handle_prepare(RequestContext& /*ctx*/) {}
 void Pipeline::handle_execute(RequestContext& /*ctx*/) {}
 void Pipeline::handle_deallocate(RequestContext& /*ctx*/) {}

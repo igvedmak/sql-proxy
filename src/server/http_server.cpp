@@ -1,10 +1,12 @@
 #include "server/http_server.hpp"
 #include "server/rate_limiter.hpp"
+#include "server/graphql_handler.hpp"
 #include "audit/audit_emitter.hpp"
 #include "core/utils.hpp"
 #include "policy/policy_loader.hpp"
 #include "security/compliance_reporter.hpp"
 #include "security/lineage_tracker.hpp"
+#include "schema/schema_manager.hpp"
 
 // cpp-httplib is header-only — suppress its internal deprecation warnings
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -121,7 +123,9 @@ HttpServer::HttpServer(
     std::string admin_token,
     size_t max_sql_length,
     std::shared_ptr<ComplianceReporter> compliance_reporter,
-    std::shared_ptr<LineageTracker> lineage_tracker)
+    std::shared_ptr<LineageTracker> lineage_tracker,
+    std::shared_ptr<SchemaManager> schema_manager,
+    std::shared_ptr<GraphQLHandler> graphql_handler)
     : pipeline_(std::move(pipeline)),
       host_(std::move(host)),
       port_(port),
@@ -129,7 +133,9 @@ HttpServer::HttpServer(
       users_(std::move(users)),
       max_sql_length_(max_sql_length),
       compliance_reporter_(std::move(compliance_reporter)),
-      lineage_tracker_(std::move(lineage_tracker)) {
+      lineage_tracker_(std::move(lineage_tracker)),
+      schema_manager_(std::move(schema_manager)),
+      graphql_handler_(std::move(graphql_handler)) {
     rebuild_api_key_index();
 }
 
@@ -271,7 +277,6 @@ void HttpServer::start() {
 
             // Build proxy request
             ProxyRequest proxy_req;
-            proxy_req.request_id = utils::generate_uuid();
             proxy_req.user = user;
             proxy_req.roles = user_info->roles;
             proxy_req.sql = sql;
@@ -522,8 +527,156 @@ void HttpServer::start() {
         res.set_content(json, kJsonContentType);
     });
 
+    // =====================================================================
+    // GraphQL endpoint (Tier 5)
+    // =====================================================================
+    if (graphql_handler_) {
+        svr.Post("/api/v1/graphql", [this](const httplib::Request& req, httplib::Response& res) {
+            try {
+                // Extract fields from GraphQL JSON body: {"query": "...", "user": "...", "database": "..."}
+                auto query_sv = parse_json_field(req.body, "query");
+                auto user_sv = parse_json_field(req.body, "user");
+                auto db_sv = parse_json_field(req.body, "database");
+
+                if (query_sv.empty()) {
+                    res.status = httplib::StatusCode::BadRequest_400;
+                    res.set_content(R"({"errors":[{"message":"Missing required field: query"}]})", kJsonContentType);
+                    return;
+                }
+
+                std::string user = user_sv.empty() ? "anonymous" : std::string(user_sv);
+                std::string database = db_sv.empty() ? "testdb" : std::string(db_sv);
+
+                // Validate user if configured
+                auto user_info = validate_user(user);
+                std::vector<std::string> roles;
+                if (user_info) roles = user_info->roles;
+
+                auto result_json = graphql_handler_->execute(
+                    std::string(query_sv), user, roles, database);
+                res.set_content(result_json, kJsonContentType);
+            } catch (const std::exception& e) {
+                res.status = httplib::StatusCode::BadRequest_400;
+                res.set_content(
+                    std::format(R"({{"errors":[{{"message":"{}"}}]}})", e.what()),
+                    kJsonContentType);
+            }
+        });
+    }
+
+    // =====================================================================
+    // Schema management endpoints (Tier 5)
+    // =====================================================================
+    if (schema_manager_) {
+        // GET /api/v1/schema/history
+        svr.Get("/api/v1/schema/history", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!admin_token_.empty()) {
+                auto auth = req.get_header_value("Authorization");
+                constexpr std::string_view kBearerPrefix = "Bearer ";
+                if (auth.size() <= kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
+                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                    res.status = httplib::StatusCode::Unauthorized_401;
+                    res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                    return;
+                }
+            }
+            auto history = schema_manager_->get_history();
+            std::string json = "{\"history\":[";
+            for (size_t i = 0; i < history.size(); ++i) {
+                if (i > 0) json += ",";
+                const auto& h = history[i];
+                json += std::format(
+                    "{{\"id\":\"{}\",\"user\":\"{}\",\"database\":\"{}\","
+                    "\"table\":\"{}\",\"status\":\"{}\"}}",
+                    h.id, h.user, h.database, h.table, h.status);
+            }
+            json += std::format("],\"total\":{}}}", history.size());
+            res.set_content(json, kJsonContentType);
+        });
+
+        // GET /api/v1/schema/pending
+        svr.Get("/api/v1/schema/pending", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!admin_token_.empty()) {
+                auto auth = req.get_header_value("Authorization");
+                constexpr std::string_view kBearerPrefix = "Bearer ";
+                if (auth.size() <= kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
+                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                    res.status = httplib::StatusCode::Unauthorized_401;
+                    res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                    return;
+                }
+            }
+            auto pending = schema_manager_->get_pending();
+            std::string json = "{\"pending\":[";
+            for (size_t i = 0; i < pending.size(); ++i) {
+                if (i > 0) json += ",";
+                const auto& p = pending[i];
+                json += std::format(
+                    "{{\"id\":\"{}\",\"user\":\"{}\",\"database\":\"{}\","
+                    "\"table\":\"{}\",\"status\":\"{}\"}}",
+                    p.id, p.user, p.database, p.table, p.status);
+            }
+            json += std::format("],\"total\":{}}}", pending.size());
+            res.set_content(json, kJsonContentType);
+        });
+
+        // POST /api/v1/schema/approve - body: {"id": "...", "admin": "..."}
+        svr.Post("/api/v1/schema/approve", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!admin_token_.empty()) {
+                auto auth = req.get_header_value("Authorization");
+                constexpr std::string_view kBearerPrefix = "Bearer ";
+                if (auth.size() <= kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
+                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                    res.status = httplib::StatusCode::Unauthorized_401;
+                    res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                    return;
+                }
+            }
+            auto id = std::string(parse_json_field(req.body, "id"));
+            auto admin = std::string(parse_json_field(req.body, "admin"));
+            if (id.empty()) {
+                res.status = httplib::StatusCode::BadRequest_400;
+                res.set_content(R"({"success":false,"error":"Missing field: id"})", kJsonContentType);
+                return;
+            }
+            bool ok = schema_manager_->approve(id, admin.empty() ? "admin" : admin);
+            res.set_content(
+                std::format(R"({{"success":{}}})", ok ? "true" : "false"),
+                kJsonContentType);
+        });
+
+        // POST /api/v1/schema/reject - body: {"id": "...", "admin": "..."}
+        svr.Post("/api/v1/schema/reject", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!admin_token_.empty()) {
+                auto auth = req.get_header_value("Authorization");
+                constexpr std::string_view kBearerPrefix = "Bearer ";
+                if (auth.size() <= kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
+                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                    res.status = httplib::StatusCode::Unauthorized_401;
+                    res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                    return;
+                }
+            }
+            auto id = std::string(parse_json_field(req.body, "id"));
+            auto admin = std::string(parse_json_field(req.body, "admin"));
+            if (id.empty()) {
+                res.status = httplib::StatusCode::BadRequest_400;
+                res.set_content(R"({"success":false,"error":"Missing field: id"})", kJsonContentType);
+                return;
+            }
+            bool ok = schema_manager_->reject(id, admin.empty() ? "admin" : admin);
+            res.set_content(
+                std::format(R"({{"success":{}}})", ok ? "true" : "false"),
+                kJsonContentType);
+        });
+    }
+
     utils::log::info(std::format("Starting SQL Proxy Server on {}:{}", host_, port_));
-    utils::log::info("Endpoints: POST /api/v1/query, GET /health, GET /metrics, POST /policies/reload, GET /api/v1/compliance/*");
+    utils::log::info("Endpoints: POST /api/v1/query, GET /health, GET /metrics, POST /policies/reload, GET /api/v1/compliance/*, POST /api/v1/graphql, GET /api/v1/schema/*");
 
     if (!svr.listen(host_.c_str(), port_)) {
         throw std::runtime_error("Failed to start HTTP server");

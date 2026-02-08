@@ -10,9 +10,11 @@
 
 namespace sqlproxy {
 
-// Forward declarations for compliance endpoints
+// Forward declarations
 class ComplianceReporter;
 class LineageTracker;
+class SchemaManager;
+class GraphQLHandler;
 
 /**
  * @brief User information for authentication
@@ -63,7 +65,9 @@ public:
         std::string admin_token = "",
         size_t max_sql_length = 102400,
         std::shared_ptr<ComplianceReporter> compliance_reporter = nullptr,
-        std::shared_ptr<LineageTracker> lineage_tracker = nullptr
+        std::shared_ptr<LineageTracker> lineage_tracker = nullptr,
+        std::shared_ptr<SchemaManager> schema_manager = nullptr,
+        std::shared_ptr<GraphQLHandler> graphql_handler = nullptr
     );
 
     /**
@@ -119,6 +123,8 @@ private:
     // Compliance components (optional)
     std::shared_ptr<ComplianceReporter> compliance_reporter_;
     std::shared_ptr<LineageTracker> lineage_tracker_;
+    std::shared_ptr<SchemaManager> schema_manager_;
+    std::shared_ptr<GraphQLHandler> graphql_handler_;
 };
 
 } // namespace sqlproxy

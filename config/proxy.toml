@@ -476,3 +476,61 @@ roles = ["analyst"]
 name = "enforce_limit"
 type = "enforce_limit"
 limit_value = 1000
+
+# ============================================================================
+# Multi-Tenant SaaS Mode (Tier 5)
+# ============================================================================
+
+[tenants]
+enabled = false
+default_tenant = "default"
+header_name = "X-Tenant-Id"
+
+# ============================================================================
+# Plugin System (Tier 5)
+# ============================================================================
+
+# [[plugins]]
+# path = "/app/plugins/custom_classifier.so"
+# type = "classifier"
+# config = '{"pattern": "SSN"}'
+
+# ============================================================================
+# Schema Change Management (Tier 5)
+# ============================================================================
+
+[schema_management]
+enabled = false
+require_approval = false
+max_history_entries = 1000
+
+# ============================================================================
+# Native Wire Protocol (Tier 5)
+# ============================================================================
+
+[wire_protocol]
+enabled = false
+host = "0.0.0.0"
+port = 5433
+max_connections = 100
+thread_pool_size = 4
+require_password = false
+
+# ============================================================================
+# GraphQL Gateway (Tier 5)
+# ============================================================================
+
+[graphql]
+enabled = false
+endpoint = "/api/v1/graphql"
+max_query_depth = 5
+
+# ============================================================================
+# Binary RPC Gateway (Tier 5)
+# ============================================================================
+
+[binary_rpc]
+enabled = false
+host = "0.0.0.0"
+port = 9090
+max_connections = 50

@@ -150,6 +150,50 @@ struct EncryptionConfig {
 };
 
 // ============================================================================
+// Tier 5 Config Structs
+// ============================================================================
+
+struct TenantConfigEntry {
+    bool enabled = false;
+    std::string default_tenant = "default";
+    std::string header_name = "X-Tenant-Id";
+};
+
+struct PluginConfigEntry {
+    std::string path;
+    std::string type;       // "classifier" or "audit_sink"
+    std::string config;     // JSON config string
+};
+
+struct SchemaManagementConfigEntry {
+    bool enabled = false;
+    bool require_approval = false;
+    size_t max_history_entries = 1000;
+};
+
+struct WireProtocolConfigEntry {
+    bool enabled = false;
+    std::string host = "0.0.0.0";
+    uint16_t port = 5433;
+    uint32_t max_connections = 100;
+    uint32_t thread_pool_size = 4;
+    bool require_password = false;
+};
+
+struct GraphQLConfigEntry {
+    bool enabled = false;
+    std::string endpoint = "/api/v1/graphql";
+    uint32_t max_query_depth = 5;
+};
+
+struct BinaryRpcConfigEntry {
+    bool enabled = false;
+    std::string host = "0.0.0.0";
+    uint16_t port = 9090;
+    uint32_t max_connections = 50;
+};
+
+// ============================================================================
 // ProxyConfig - Complete parsed configuration
 // ============================================================================
 
@@ -171,6 +215,14 @@ struct ProxyConfig {
     std::vector<RewriteRule> rewrite_rules;
     SecurityConfig security;
     EncryptionConfig encryption;
+
+    // Tier 5
+    TenantConfigEntry tenants;
+    std::vector<PluginConfigEntry> plugins;
+    SchemaManagementConfigEntry schema_management;
+    WireProtocolConfigEntry wire_protocol;
+    GraphQLConfigEntry graphql;
+    BinaryRpcConfigEntry binary_rpc;
 };
 
 // ============================================================================
@@ -269,6 +321,14 @@ private:
     static ConfigWatcherConfig extract_config_watcher(const JsonValue& root);
     static SecurityConfig extract_security(const JsonValue& root);
     static EncryptionConfig extract_encryption(const JsonValue& root);
+
+    // Tier 5 extractors
+    static TenantConfigEntry extract_tenants(const JsonValue& root);
+    static std::vector<PluginConfigEntry> extract_plugins(const JsonValue& root);
+    static SchemaManagementConfigEntry extract_schema_management(const JsonValue& root);
+    static WireProtocolConfigEntry extract_wire_protocol(const JsonValue& root);
+    static GraphQLConfigEntry extract_graphql(const JsonValue& root);
+    static BinaryRpcConfigEntry extract_binary_rpc(const JsonValue& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

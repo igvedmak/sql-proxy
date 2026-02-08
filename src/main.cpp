@@ -22,6 +22,12 @@
 #include "security/column_encryptor.hpp"
 #include "security/local_key_manager.hpp"
 #include "security/compliance_reporter.hpp"
+#include "schema/schema_manager.hpp"
+#include "tenant/tenant_manager.hpp"
+#include "plugin/plugin_loader.hpp"
+#include "server/wire_server.hpp"
+#include "server/graphql_handler.hpp"
+#include "server/binary_rpc_server.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -41,6 +47,8 @@ using namespace sqlproxy;
 // Global instances for signal handling and config watcher
 std::shared_ptr<HttpServer> g_server;
 std::shared_ptr<ConfigWatcher> g_config_watcher;
+std::shared_ptr<WireServer> g_wire_server;
+std::shared_ptr<BinaryRpcServer> g_binary_rpc_server;
 
 // =========================================================================
 // Explicit Backend Registration (ensures linker includes backend objects)
@@ -64,6 +72,12 @@ void signal_handler(int signal) {
     utils::log::info(std::format("Received signal {}, shutting down...", signal));
     if (g_config_watcher) {
         g_config_watcher->stop();
+    }
+    if (g_wire_server) {
+        g_wire_server->stop();
+    }
+    if (g_binary_rpc_server) {
+        g_binary_rpc_server->stop();
     }
     if (g_server) {
         g_server->stop();
@@ -325,7 +339,50 @@ int main(int argc, char* argv[]) {
         auto compliance_reporter = std::make_shared<ComplianceReporter>(
             lineage_tracker, anomaly_detector, audit_emitter);
 
-        // Create pipeline
+        // =====================================================================
+        // Tier 5 components
+        // =====================================================================
+
+        // Schema Manager
+        std::shared_ptr<SchemaManager> schema_manager;
+        if (config_result.success && config_result.config.schema_management.enabled) {
+            SchemaManagementConfig sm_config;
+            sm_config.enabled = true;
+            sm_config.require_approval = config_result.config.schema_management.require_approval;
+            sm_config.max_history_entries = config_result.config.schema_management.max_history_entries;
+            schema_manager = std::make_shared<SchemaManager>(sm_config);
+            utils::log::info(std::format("Schema manager: enabled (approval={})",
+                sm_config.require_approval ? "required" : "optional"));
+        }
+
+        // Tenant Manager
+        std::shared_ptr<TenantManager> tenant_manager;
+        if (config_result.success && config_result.config.tenants.enabled) {
+            TenantConfig tenant_config;
+            tenant_config.enabled = true;
+            tenant_config.default_tenant = config_result.config.tenants.default_tenant;
+            tenant_config.header_name = config_result.config.tenants.header_name;
+            tenant_manager = std::make_shared<TenantManager>(tenant_config);
+            utils::log::info(std::format("Tenant manager: enabled (default={})",
+                tenant_config.default_tenant));
+        }
+
+        // Plugin Registry
+        PluginRegistry plugin_registry;
+        if (config_result.success && !config_result.config.plugins.empty()) {
+            for (const auto& plugin_cfg : config_result.config.plugins) {
+                PluginConfig pc;
+                pc.path = plugin_cfg.path;
+                pc.type = plugin_cfg.type;
+                pc.config = plugin_cfg.config;
+                [[maybe_unused]] bool loaded = plugin_registry.load_plugin(pc);
+            }
+            utils::log::info(std::format("Plugins: {} classifier, {} audit sink",
+                plugin_registry.classifier_plugins().size(),
+                plugin_registry.audit_sink_plugins().size()));
+        }
+
+        // Create pipeline (with Tier 5 components)
         auto pipeline = std::make_shared<Pipeline>(
             parser,
             policy_engine,
@@ -339,8 +396,21 @@ int main(int argc, char* argv[]) {
             injection_detector,
             anomaly_detector,
             lineage_tracker,
-            column_encryptor
+            column_encryptor,
+            schema_manager,
+            tenant_manager
         );
+
+        // GraphQL Handler
+        std::shared_ptr<GraphQLHandler> graphql_handler;
+        if (config_result.success && config_result.config.graphql.enabled) {
+            GraphQLConfig gql_config;
+            gql_config.enabled = true;
+            gql_config.endpoint = config_result.config.graphql.endpoint;
+            gql_config.max_query_depth = config_result.config.graphql.max_query_depth;
+            graphql_handler = std::make_shared<GraphQLHandler>(pipeline, gql_config);
+            utils::log::info(std::format("GraphQL: enabled at {}", gql_config.endpoint));
+        }
 
         // Determine server bind address and port
         std::string host = "0.0.0.0";
@@ -350,10 +420,38 @@ int main(int argc, char* argv[]) {
             port = config_result.config.server.port;
         }
 
-        // Create HTTP server
+        // Create HTTP server (with Tier 5 components)
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
             config_result.config.server.admin_token, max_sql_length,
-            compliance_reporter, lineage_tracker);
+            compliance_reporter, lineage_tracker, schema_manager, graphql_handler);
+
+        // Wire Protocol Server (PostgreSQL v3)
+        if (config_result.success && config_result.config.wire_protocol.enabled) {
+            WireProtocolConfig wire_config;
+            wire_config.enabled = true;
+            wire_config.host = config_result.config.wire_protocol.host;
+            wire_config.port = config_result.config.wire_protocol.port;
+            wire_config.max_connections = config_result.config.wire_protocol.max_connections;
+            wire_config.thread_pool_size = config_result.config.wire_protocol.thread_pool_size;
+            wire_config.require_password = config_result.config.wire_protocol.require_password;
+            g_wire_server = std::make_shared<WireServer>(pipeline, wire_config, users);
+            g_wire_server->start();
+            utils::log::info(std::format("Wire protocol: listening on {}:{}",
+                wire_config.host, wire_config.port));
+        }
+
+        // Binary RPC Server
+        if (config_result.success && config_result.config.binary_rpc.enabled) {
+            BinaryRpcConfig rpc_config;
+            rpc_config.enabled = true;
+            rpc_config.host = config_result.config.binary_rpc.host;
+            rpc_config.port = config_result.config.binary_rpc.port;
+            rpc_config.max_connections = config_result.config.binary_rpc.max_connections;
+            g_binary_rpc_server = std::make_shared<BinaryRpcServer>(pipeline, rpc_config, users);
+            g_binary_rpc_server->start();
+            utils::log::info(std::format("Binary RPC: listening on {}:{}",
+                rpc_config.host, rpc_config.port));
+        }
 
         // =====================================================================
         // [9/9] Config Watcher - hot-reload policies, users, rate limits

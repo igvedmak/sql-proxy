@@ -20,6 +20,8 @@ class SqlInjectionDetector;
 class AnomalyDetector;
 class LineageTracker;
 class ColumnEncryptor;
+class SchemaManager;
+class TenantManager;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -54,7 +56,9 @@ public:
         std::shared_ptr<SqlInjectionDetector> injection_detector = nullptr,
         std::shared_ptr<AnomalyDetector> anomaly_detector = nullptr,
         std::shared_ptr<LineageTracker> lineage_tracker = nullptr,
-        std::shared_ptr<ColumnEncryptor> column_encryptor = nullptr
+        std::shared_ptr<ColumnEncryptor> column_encryptor = nullptr,
+        std::shared_ptr<SchemaManager> schema_manager = nullptr,
+        std::shared_ptr<TenantManager> tenant_manager = nullptr
     );
 
     /**
@@ -170,6 +174,11 @@ private:
      */
     void record_lineage(RequestContext& ctx);
 
+    /**
+     * @brief Layer 4.1: Schema DDL interception (can block if approval required)
+     */
+    bool intercept_ddl(RequestContext& ctx);
+
     const std::shared_ptr<ISqlParser> parser_;
     const std::shared_ptr<PolicyEngine> policy_engine_;
     const std::shared_ptr<IRateLimiter> rate_limiter_;
@@ -183,6 +192,8 @@ private:
     const std::shared_ptr<AnomalyDetector> anomaly_detector_;
     const std::shared_ptr<LineageTracker> lineage_tracker_;
     const std::shared_ptr<ColumnEncryptor> column_encryptor_;
+    const std::shared_ptr<SchemaManager> schema_manager_;
+    const std::shared_ptr<TenantManager> tenant_manager_;
 };
 
 } // namespace sqlproxy

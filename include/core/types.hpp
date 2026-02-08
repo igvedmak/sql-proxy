@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include "core/utils.hpp"
 
 namespace sqlproxy {
 
@@ -516,9 +517,12 @@ struct ProxyRequest {
     std::string session_id;
     std::string database;           // Target database
     std::unordered_map<std::string, std::string> user_attributes; // For RLS template expansion
+    std::string tenant_id;          // Multi-tenant routing (Tier 5)
     std::chrono::system_clock::time_point received_at;
 
-    ProxyRequest() : received_at(std::chrono::system_clock::now()) {}
+    ProxyRequest()
+        : request_id(utils::generate_uuid()),
+          received_at(std::chrono::system_clock::now()) {}
 };
 
 struct ProxyResponse {

@@ -94,6 +94,9 @@ file(GLOB_RECURSE CLASSIFIER_SOURCES src/classifier/*.cpp)
 file(GLOB_RECURSE AUDIT_SOURCES      src/audit/*.cpp)
 file(GLOB_RECURSE CONFIG_SOURCES     src/config/*.cpp)
 file(GLOB_RECURSE SECURITY_SOURCES   src/security/*.cpp)
+file(GLOB_RECURSE SCHEMA_SOURCES     src/schema/*.cpp)
+file(GLOB_RECURSE PLUGIN_SOURCES     src/plugin/*.cpp)
+file(GLOB_RECURSE TENANT_SOURCES     src/tenant/*.cpp)
 
 # Exclude disabled database backends
 if(NOT ENABLE_POSTGRESQL)
@@ -115,6 +118,9 @@ set(LIB_SOURCES
     ${AUDIT_SOURCES}
     ${CONFIG_SOURCES}
     ${SECURITY_SOURCES}
+    ${SCHEMA_SOURCES}
+    ${PLUGIN_SOURCES}
+    ${TENANT_SOURCES}
 )
 
 set(ALL_SOURCES
@@ -166,6 +172,9 @@ target_link_libraries(${PROJECT_NAME}_lib PUBLIC
 
     # JSON
     glaze::glaze
+
+    # Dynamic loading (dlopen/dlsym for plugin system)
+    ${CMAKE_DL_LIBS}
 )
 
 # PostgreSQL libraries (conditional)
