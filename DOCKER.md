@@ -72,6 +72,14 @@ docker compose --profile e2e up --abort-on-container-exit
 
 This starts PostgreSQL, the proxy, and runs `test_suite.sh` (30 tests covering queries, error handling, policies, and metrics).
 
+To clean up E2E containers and volumes afterward:
+
+```bash
+docker compose --profile e2e down -v
+```
+
+**Important:** Always include `--profile e2e` in the `down` command. Without it, the e2e-tests container retains a stale network reference and subsequent runs will fail.
+
 ### Benchmarks
 
 Build and run performance benchmarks (Google Benchmark):
@@ -176,6 +184,14 @@ Ensure PostgreSQL container is healthy: `docker compose ps`
 
 ### E2E tests fail with "column does not exist"
 The database schema is out of date. Recreate volumes: `docker compose down -v && docker compose up -d`
+
+### E2E tests fail with "network not found"
+The e2e-tests container has a stale network reference. Clean up with the profile flag and prune:
+
+```bash
+docker compose --profile e2e down -v && docker network prune -f
+docker compose --profile e2e up --abort-on-container-exit
+```
 
 ### Unit tests fail to build
 Ensure the test-builder Docker stage has `BUILD_TESTS=ON`. Check `Dockerfile` for the `test-builder` target.
