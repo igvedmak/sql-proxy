@@ -606,6 +606,9 @@ struct ServerConfig {
     std::string admin_token;  // Bearer token for admin endpoints (empty = no auth)
     size_t max_sql_length;    // Max SQL query size in bytes
     TlsConfig tls;            // TLS/mTLS configuration
+    uint32_t shutdown_timeout_ms = 30000;  // Graceful shutdown timeout
+    bool compression_enabled = false;
+    size_t compression_min_size_bytes = 1024;
 
     ServerConfig()
         : host("0.0.0.0"),

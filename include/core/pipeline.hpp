@@ -22,6 +22,8 @@ class LineageTracker;
 class ColumnEncryptor;
 class SchemaManager;
 class TenantManager;
+class AuditSampler;
+class ResultCache;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -58,7 +60,9 @@ public:
         std::shared_ptr<LineageTracker> lineage_tracker = nullptr,
         std::shared_ptr<ColumnEncryptor> column_encryptor = nullptr,
         std::shared_ptr<SchemaManager> schema_manager = nullptr,
-        std::shared_ptr<TenantManager> tenant_manager = nullptr
+        std::shared_ptr<TenantManager> tenant_manager = nullptr,
+        std::shared_ptr<AuditSampler> audit_sampler = nullptr,
+        std::shared_ptr<ResultCache> result_cache = nullptr
     );
 
     /**
@@ -82,6 +86,11 @@ public:
      * @brief Get audit emitter (for metrics)
      */
     std::shared_ptr<AuditEmitter> get_audit_emitter() const { return audit_emitter_; }
+
+    /**
+     * @brief Get result cache (for metrics)
+     */
+    std::shared_ptr<ResultCache> get_result_cache() const { return result_cache_; }
 
 private:
     /**
@@ -194,6 +203,8 @@ private:
     const std::shared_ptr<ColumnEncryptor> column_encryptor_;
     const std::shared_ptr<SchemaManager> schema_manager_;
     const std::shared_ptr<TenantManager> tenant_manager_;
+    const std::shared_ptr<AuditSampler> audit_sampler_;
+    const std::shared_ptr<ResultCache> result_cache_;
 };
 
 } // namespace sqlproxy

@@ -32,6 +32,11 @@
 #include "server/binary_rpc_server.hpp"
 #include "alerting/alert_evaluator.hpp"
 #include "server/dashboard_handler.hpp"
+#include "server/waitable_rate_limiter.hpp"
+#include "server/shutdown_coordinator.hpp"
+#include "server/response_compressor.hpp"
+#include "audit/audit_sampler.hpp"
+#include "cache/result_cache.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -54,6 +59,7 @@ std::shared_ptr<ConfigWatcher> g_config_watcher;
 std::shared_ptr<WireServer> g_wire_server;
 std::shared_ptr<BinaryRpcServer> g_binary_rpc_server;
 std::shared_ptr<AlertEvaluator> g_alert_evaluator;
+std::shared_ptr<ShutdownCoordinator> g_shutdown;
 
 // =========================================================================
 // Explicit Backend Registration (ensures linker includes backend objects)
@@ -75,6 +81,13 @@ static void register_backends() {
 
 void signal_handler(int signal) {
     utils::log::info(std::format("Received signal {}, shutting down...", signal));
+
+    // Initiate graceful shutdown: stop accepting new requests
+    if (g_shutdown) {
+        g_shutdown->initiate_shutdown();
+    }
+
+    // Stop background services
     if (g_alert_evaluator) {
         g_alert_evaluator->stop();
     }
@@ -87,6 +100,18 @@ void signal_handler(int signal) {
     if (g_binary_rpc_server) {
         g_binary_rpc_server->stop();
     }
+
+    // Wait for in-flight requests to drain
+    if (g_shutdown) {
+        bool drained = g_shutdown->wait_for_drain();
+        if (drained) {
+            utils::log::info("All in-flight requests drained");
+        } else {
+            utils::log::warn(std::format("Shutdown timeout: {} requests still in flight",
+                g_shutdown->in_flight_count()));
+        }
+    }
+
     if (g_server) {
         g_server->stop();
     }
@@ -247,6 +272,20 @@ int main(int argc, char* argv[]) {
                 rate_limiter->set_user_database_limit(
                     limit.user, limit.database, limit.tokens_per_second, limit.burst_capacity);
             }
+        }
+
+        // Wrap rate limiter with queue if enabled
+        std::shared_ptr<IRateLimiter> active_rate_limiter = rate_limiter;
+        if (config_result.success && config_result.config.rate_limiting.queue_enabled) {
+            WaitableRateLimiter::Config queue_cfg;
+            queue_cfg.queue_enabled = true;
+            queue_cfg.queue_timeout = std::chrono::milliseconds(
+                config_result.config.rate_limiting.queue_timeout_ms);
+            queue_cfg.max_queue_depth = config_result.config.rate_limiting.max_queue_depth;
+            active_rate_limiter = std::make_shared<WaitableRateLimiter>(rate_limiter, queue_cfg);
+            utils::log::info(std::format("Request queuing: enabled (timeout={}ms, depth={})",
+                config_result.config.rate_limiting.queue_timeout_ms,
+                config_result.config.rate_limiting.max_queue_depth));
         }
 
         utils::log::info("[7/9] Connection pool & executor initializing...");
@@ -418,11 +457,41 @@ int main(int argc, char* argv[]) {
                 plugin_registry.audit_sink_plugins().size()));
         }
 
-        // Create pipeline (with Tier 5 components)
+        // Tier B: Audit Sampler
+        std::shared_ptr<AuditSampler> audit_sampler;
+        if (config_result.success && config_result.config.audit_sampling.enabled) {
+            AuditSampler::Config as_cfg;
+            as_cfg.enabled = true;
+            as_cfg.default_sample_rate = config_result.config.audit_sampling.default_sample_rate;
+            as_cfg.select_sample_rate = config_result.config.audit_sampling.select_sample_rate;
+            as_cfg.always_log_blocked = config_result.config.audit_sampling.always_log_blocked;
+            as_cfg.always_log_writes = config_result.config.audit_sampling.always_log_writes;
+            as_cfg.always_log_errors = config_result.config.audit_sampling.always_log_errors;
+            as_cfg.deterministic = config_result.config.audit_sampling.deterministic;
+            audit_sampler = std::make_shared<AuditSampler>(as_cfg);
+            utils::log::info(std::format("Audit sampling: enabled (select_rate={:.1f}%, deterministic={})",
+                as_cfg.select_sample_rate * 100, as_cfg.deterministic ? "yes" : "no"));
+        }
+
+        // Tier B: Result Cache
+        std::shared_ptr<ResultCache> result_cache;
+        if (config_result.success && config_result.config.result_cache.enabled) {
+            ResultCache::Config rc_cfg;
+            rc_cfg.enabled = true;
+            rc_cfg.max_entries = config_result.config.result_cache.max_entries;
+            rc_cfg.num_shards = config_result.config.result_cache.num_shards;
+            rc_cfg.ttl = std::chrono::seconds(config_result.config.result_cache.ttl_seconds);
+            rc_cfg.max_result_size_bytes = config_result.config.result_cache.max_result_size_bytes;
+            result_cache = std::make_shared<ResultCache>(rc_cfg);
+            utils::log::info(std::format("Result cache: enabled ({} entries, {}s TTL, {} shards)",
+                rc_cfg.max_entries, config_result.config.result_cache.ttl_seconds, rc_cfg.num_shards));
+        }
+
+        // Create pipeline (with Tier 5 + Tier B components)
         auto pipeline = std::make_shared<Pipeline>(
             parser,
             policy_engine,
-            rate_limiter,
+            active_rate_limiter,
             executor,
             classifier,
             audit_emitter,
@@ -434,7 +503,9 @@ int main(int argc, char* argv[]) {
             lineage_tracker,
             column_encryptor,
             schema_manager,
-            tenant_manager
+            tenant_manager,
+            audit_sampler,
+            result_cache
         );
 
         // GraphQL Handler
@@ -482,11 +553,27 @@ int main(int argc, char* argv[]) {
             port = config_result.config.server.port;
         }
 
-        // Create HTTP server (with Tier 2 + Tier 5 components)
+        // Tier B: Response compressor config
+        ResponseCompressor::Config compressor_config;
+        if (config_result.success) {
+            compressor_config.enabled = config_result.config.server.compression_enabled;
+            compressor_config.min_size_bytes = config_result.config.server.compression_min_size_bytes;
+        }
+
+        // Create HTTP server (with Tier 2 + Tier 5 + Tier B components)
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
             config_result.config.server.admin_token, max_sql_length,
             compliance_reporter, lineage_tracker, schema_manager, graphql_handler,
-            dashboard_handler, config_result.config.server.tls);
+            dashboard_handler, config_result.config.server.tls, compressor_config);
+
+        // Tier B: Graceful shutdown coordinator
+        ShutdownCoordinator::Config shutdown_cfg;
+        if (config_result.success) {
+            shutdown_cfg.shutdown_timeout = std::chrono::milliseconds(
+                config_result.config.server.shutdown_timeout_ms);
+        }
+        g_shutdown = std::make_shared<ShutdownCoordinator>(shutdown_cfg);
+        g_server->set_shutdown_coordinator(g_shutdown);
 
         // Wire Protocol Server (PostgreSQL v3)
         if (config_result.success && config_result.config.wire_protocol.enabled) {

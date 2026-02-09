@@ -55,7 +55,7 @@ TEST_CASE("Audit Sink: FileSink tracks file size", "[audit][sink]") {
     FileSink sink(cfg);
 
     std::string line = "{\"event\":\"test\"}\n";
-    sink.write(line);
+    (void)sink.write(line);
     sink.flush();
 
     REQUIRE(sink.current_file_size() >= line.size());

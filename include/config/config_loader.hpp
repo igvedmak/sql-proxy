@@ -262,6 +262,25 @@ struct ProxyConfig {
 
     // Tier A (Trust & Safety)
     AuthConfig auth;
+
+    // Tier B (Performance & Efficiency)
+    struct AuditSamplingConfig {
+        bool enabled = false;
+        double default_sample_rate = 1.0;
+        double select_sample_rate = 1.0;
+        bool always_log_blocked = true;
+        bool always_log_writes = true;
+        bool always_log_errors = true;
+        bool deterministic = true;
+    } audit_sampling;
+
+    struct ResultCacheConfig {
+        bool enabled = false;
+        size_t max_entries = 5000;
+        size_t num_shards = 16;
+        int ttl_seconds = 60;
+        size_t max_result_size_bytes = 1048576;  // 1MB
+    } result_cache;
 };
 
 // ============================================================================
@@ -374,6 +393,10 @@ private:
 
     // Tier A extractors
     static AuthConfig extract_auth(const JsonValue& root);
+
+    // Tier B extractors
+    static ProxyConfig::AuditSamplingConfig extract_audit_sampling(const JsonValue& root);
+    static ProxyConfig::ResultCacheConfig extract_result_cache(const JsonValue& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

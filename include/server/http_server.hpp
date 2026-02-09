@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/pipeline.hpp"
+#include "server/response_compressor.hpp"
 #include <atomic>
 #include <memory>
 #include <shared_mutex>
@@ -17,6 +18,7 @@ class SchemaManager;
 class GraphQLHandler;
 class DashboardHandler;
 class AlertEvaluator;
+class ShutdownCoordinator;
 
 /**
  * @brief User information for authentication
@@ -72,7 +74,8 @@ public:
         std::shared_ptr<SchemaManager> schema_manager = nullptr,
         std::shared_ptr<GraphQLHandler> graphql_handler = nullptr,
         std::shared_ptr<DashboardHandler> dashboard_handler = nullptr,
-        TlsConfig tls_config = {}
+        TlsConfig tls_config = {},
+        ResponseCompressor::Config compressor_config = ResponseCompressor::Config{}
     );
 
     /**
@@ -95,6 +98,10 @@ public:
      * @brief Hot-reload max SQL length (thread-safe, atomic)
      */
     void update_max_sql_length(size_t new_max) { max_sql_length_.store(new_max); }
+
+    void set_shutdown_coordinator(std::shared_ptr<ShutdownCoordinator> sc) {
+        shutdown_coordinator_ = std::move(sc);
+    }
 
 private:
     /**
@@ -132,6 +139,10 @@ private:
     std::shared_ptr<SchemaManager> schema_manager_;
     std::shared_ptr<GraphQLHandler> graphql_handler_;
     std::shared_ptr<DashboardHandler> dashboard_handler_;
+
+    // Tier B: Shutdown + Compression
+    std::shared_ptr<ShutdownCoordinator> shutdown_coordinator_;
+    ResponseCompressor compressor_;
 };
 
 } // namespace sqlproxy

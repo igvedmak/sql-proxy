@@ -41,6 +41,9 @@ endif()
 # OpenSSL (required by cpp-httplib TLS support)
 find_package(OpenSSL REQUIRED)
 
+# zlib (required for gzip response compression)
+find_package(ZLIB REQUIRED)
+
 # UUID library
 find_library(UUID_LIBRARY uuid REQUIRED)
 
@@ -98,6 +101,7 @@ file(GLOB_RECURSE TENANT_SOURCES     src/tenant/*.cpp)
 file(GLOB_RECURSE TRACING_SOURCES    src/tracing/*.cpp)
 file(GLOB_RECURSE ALERTING_SOURCES   src/alerting/*.cpp)
 file(GLOB_RECURSE AUTH_SOURCES       src/auth/*.cpp)
+file(GLOB_RECURSE CACHE_SOURCES     src/cache/*.cpp)
 
 # Exclude disabled database backends
 if(NOT ENABLE_POSTGRESQL)
@@ -125,6 +129,7 @@ set(LIB_SOURCES
     ${TRACING_SOURCES}
     ${ALERTING_SOURCES}
     ${AUTH_SOURCES}
+    ${CACHE_SOURCES}
 )
 
 set(ALL_SOURCES
@@ -172,6 +177,9 @@ target_link_libraries(${PROJECT_NAME}_lib PUBLIC
 
     # JSON
     glaze::glaze
+
+    # Compression
+    ZLIB::ZLIB
 
     # Dynamic loading (dlopen/dlsym for plugin system)
     ${CMAKE_DL_LIBS}

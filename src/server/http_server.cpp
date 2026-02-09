@@ -1,5 +1,9 @@
 #include "server/http_server.hpp"
 #include "server/rate_limiter.hpp"
+#include "server/waitable_rate_limiter.hpp"
+#include "server/shutdown_coordinator.hpp"
+#include "server/response_compressor.hpp"
+#include "cache/result_cache.hpp"
 #include "server/graphql_handler.hpp"
 #include "server/dashboard_handler.hpp"
 #include "audit/audit_emitter.hpp"
@@ -128,7 +132,8 @@ HttpServer::HttpServer(
     std::shared_ptr<SchemaManager> schema_manager,
     std::shared_ptr<GraphQLHandler> graphql_handler,
     std::shared_ptr<DashboardHandler> dashboard_handler,
-    TlsConfig tls_config)
+    TlsConfig tls_config,
+    ResponseCompressor::Config compressor_config)
     : pipeline_(std::move(pipeline)),
       host_(std::move(host)),
       port_(port),
@@ -140,7 +145,8 @@ HttpServer::HttpServer(
       lineage_tracker_(std::move(lineage_tracker)),
       schema_manager_(std::move(schema_manager)),
       graphql_handler_(std::move(graphql_handler)),
-      dashboard_handler_(std::move(dashboard_handler)) {
+      dashboard_handler_(std::move(dashboard_handler)),
+      compressor_(compressor_config) {
     rebuild_api_key_index();
 }
 
@@ -210,6 +216,17 @@ void HttpServer::start() {
 
     // POST /api/v1/query - Execute SELECT queries
     svr.Post("/api/v1/query", [this](const httplib::Request& req, httplib::Response& res) {
+        // Shutdown guard: reject new requests during graceful shutdown
+        if (shutdown_coordinator_ && !shutdown_coordinator_->try_enter_request()) {
+            res.status = httplib::StatusCode::ServiceUnavailable_503;
+            res.set_content(R"({"success":false,"error":"Server shutting down"})", kJsonContentType);
+            return;
+        }
+        struct ShutdownGuard {
+            ShutdownCoordinator* sc;
+            ~ShutdownGuard() { if (sc) sc->leave_request(); }
+        } shutdown_guard{shutdown_coordinator_.get()};
+
         try {
             // Validate Content-Type
             std::string content_type = req.get_header_value("Content-Type");
@@ -344,6 +361,18 @@ void HttpServer::start() {
                     : httplib::StatusCode::InternalServerError_500;
             }
 
+            // Gzip compression (if client supports it and response is large enough)
+            if (compressor_.should_compress(json.size())) {
+                std::string accept_enc = req.get_header_value("Accept-Encoding");
+                if (accept_enc.find("gzip") != std::string::npos) {
+                    if (auto compressed = compressor_.try_compress(json)) {
+                        res.set_header("Content-Encoding", "gzip");
+                        res.set_content(std::move(*compressed), kJsonContentType);
+                        return;
+                    }
+                }
+            }
+
             res.set_content(json, kJsonContentType);
 
         } catch (const std::exception& e) {
@@ -399,6 +428,24 @@ void HttpServer::start() {
                 rl_stats.total_checks);
         }
 
+        // --- Queue stats (if WaitableRateLimiter wraps the rate limiter) ---
+        auto* waitable_rl = dynamic_cast<WaitableRateLimiter*>(rate_limiter.get());
+        if (waitable_rl) {
+            output += std::format(
+                "# HELP sql_proxy_queue_depth Current requests waiting in queue\n"
+                "# TYPE sql_proxy_queue_depth gauge\n"
+                "sql_proxy_queue_depth {}\n\n"
+                "# HELP sql_proxy_queue_total Total requests that entered queue\n"
+                "# TYPE sql_proxy_queue_total counter\n"
+                "sql_proxy_queue_total {}\n\n"
+                "# HELP sql_proxy_queue_timeouts_total Queue timeout count\n"
+                "# TYPE sql_proxy_queue_timeouts_total counter\n"
+                "sql_proxy_queue_timeouts_total {}\n\n",
+                waitable_rl->current_queue_depth(),
+                waitable_rl->queued_total(),
+                waitable_rl->queue_timeouts());
+        }
+
         // --- Audit emitter stats ---
         auto audit_emitter = pipeline_->get_audit_emitter();
         if (audit_emitter) {
@@ -419,6 +466,27 @@ void HttpServer::start() {
                 "sql_proxy_audit_flushes_total {}\n\n",
                 audit_stats.total_emitted, audit_stats.total_written,
                 audit_stats.overflow_dropped, audit_stats.flush_count);
+        }
+
+        // --- Result cache stats ---
+        auto result_cache = pipeline_->get_result_cache();
+        if (result_cache && result_cache->is_enabled()) {
+            auto cache_stats = result_cache->get_stats();
+            output += std::format(
+                "# HELP sql_proxy_cache_hits_total Cache hit count\n"
+                "# TYPE sql_proxy_cache_hits_total counter\n"
+                "sql_proxy_cache_hits_total {}\n\n"
+                "# HELP sql_proxy_cache_misses_total Cache miss count\n"
+                "# TYPE sql_proxy_cache_misses_total counter\n"
+                "sql_proxy_cache_misses_total {}\n\n"
+                "# HELP sql_proxy_cache_entries Current cache entries\n"
+                "# TYPE sql_proxy_cache_entries gauge\n"
+                "sql_proxy_cache_entries {}\n\n"
+                "# HELP sql_proxy_cache_evictions_total Cache eviction count\n"
+                "# TYPE sql_proxy_cache_evictions_total counter\n"
+                "sql_proxy_cache_evictions_total {}\n\n",
+                cache_stats.hits, cache_stats.misses,
+                cache_stats.current_entries, cache_stats.evictions);
         }
 
         // --- Build info ---
@@ -705,6 +773,16 @@ void HttpServer::start() {
 
     // POST /api/v1/query/dry-run - Dry-run query evaluation (no execution)
     svr.Post("/api/v1/query/dry-run", [this](const httplib::Request& req, httplib::Response& res) {
+        if (shutdown_coordinator_ && !shutdown_coordinator_->try_enter_request()) {
+            res.status = httplib::StatusCode::ServiceUnavailable_503;
+            res.set_content(R"({"success":false,"error":"Server shutting down"})", kJsonContentType);
+            return;
+        }
+        struct ShutdownGuard {
+            ShutdownCoordinator* sc;
+            ~ShutdownGuard() { if (sc) sc->leave_request(); }
+        } shutdown_guard{shutdown_coordinator_.get()};
+
         try {
             auto sql_sv = parse_json_field(req.body, "sql");
             auto user_sv = parse_json_field(req.body, "user");

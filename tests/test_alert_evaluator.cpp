@@ -11,11 +11,6 @@ using namespace sqlproxy;
 
 namespace {
 
-std::string read_file_contents(const std::string& path) {
-    std::ifstream ifs(path);
-    return std::string(std::istreambuf_iterator<char>(ifs),
-                       std::istreambuf_iterator<char>());
-}
 
 } // anonymous namespace
 

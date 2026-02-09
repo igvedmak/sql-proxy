@@ -12,6 +12,8 @@
 #include "schema/schema_manager.hpp"
 #include "tenant/tenant_manager.hpp"
 #include "tracing/trace_context.hpp"
+#include "audit/audit_sampler.hpp"
+#include "cache/result_cache.hpp"
 
 #include <unordered_set>
 
@@ -32,7 +34,9 @@ Pipeline::Pipeline(
     std::shared_ptr<LineageTracker> lineage_tracker,
     std::shared_ptr<ColumnEncryptor> column_encryptor,
     std::shared_ptr<SchemaManager> schema_manager,
-    std::shared_ptr<TenantManager> tenant_manager)
+    std::shared_ptr<TenantManager> tenant_manager,
+    std::shared_ptr<AuditSampler> audit_sampler,
+    std::shared_ptr<ResultCache> result_cache)
     : parser_(std::move(parser)),
       policy_engine_(std::move(policy_engine)),
       rate_limiter_(std::move(rate_limiter)),
@@ -47,7 +51,9 @@ Pipeline::Pipeline(
       lineage_tracker_(std::move(lineage_tracker)),
       column_encryptor_(std::move(column_encryptor)),
       schema_manager_(std::move(schema_manager)),
-      tenant_manager_(std::move(tenant_manager)) {}
+      tenant_manager_(std::move(tenant_manager)),
+      audit_sampler_(std::move(audit_sampler)),
+      result_cache_(std::move(result_cache)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -109,6 +115,22 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         return build_response(ctx);
     }
 
+    // Layer 2.5: Result cache lookup (only for SELECTs)
+    if (result_cache_ && result_cache_->is_enabled() &&
+        ctx.analysis.statement_type == StatementType::SELECT &&
+        ctx.fingerprint.has_value()) {
+        auto cached = result_cache_->get(
+            ctx.fingerprint->hash, ctx.user, ctx.database);
+        if (cached) {
+            ctx.query_result = std::move(*cached);
+            ctx.cache_hit = true;
+            classify_results(ctx);
+            record_lineage(ctx);
+            emit_audit(ctx);
+            return build_response(ctx);
+        }
+    }
+
     // Layer 3.5: SQL injection detection (can block)
     if (!check_injection(ctx)) {
         emit_audit(ctx);
@@ -144,6 +166,20 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     if (!execute_query(ctx)) {
         emit_audit(ctx);
         return build_response(ctx);
+    }
+
+    // Layer 5.05: Cache result (only for successful SELECTs)
+    if (result_cache_ && result_cache_->is_enabled() &&
+        ctx.query_result.success &&
+        ctx.analysis.statement_type == StatementType::SELECT &&
+        ctx.fingerprint.has_value()) {
+        result_cache_->put(ctx.fingerprint->hash, ctx.user, ctx.database,
+                           ctx.query_result);
+    }
+
+    // Write-invalidation (clear cache for modified database)
+    if (result_cache_ && stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kWrite | stmt_mask::kDDL)) {
+        result_cache_->invalidate(ctx.database);
     }
 
     // Layer 5.1: Record DDL change (after successful execution)
@@ -390,6 +426,17 @@ void Pipeline::classify_results(RequestContext& ctx) {
 void Pipeline::emit_audit(const RequestContext& ctx) {
     if (!audit_emitter_) {
         return;
+    }
+
+    // Audit sampling check (before building the record)
+    if (audit_sampler_ && audit_sampler_->is_enabled()) {
+        uint64_t fp = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
+        StatementType st = ctx.statement_info
+            ? ctx.statement_info->parsed.type : StatementType::UNKNOWN;
+        Decision decision = ctx.rate_limited ? Decision::BLOCK : ctx.policy_result.decision;
+        if (!audit_sampler_->should_sample(st, decision, ctx.query_result.error_code, fp)) {
+            return;
+        }
     }
 
     AuditRecord record;

@@ -642,6 +642,11 @@ ServerConfig ConfigLoader::extract_server(const JsonValue& root) {
         cfg.tls.require_client_cert = json_bool(t, "require_client_cert", false);
     }
 
+    // Tier B: Graceful shutdown + compression
+    cfg.shutdown_timeout_ms = static_cast<uint32_t>(json_int(s, "shutdown_timeout_ms", 30000));
+    cfg.compression_enabled = json_bool(s, "compression_enabled", false);
+    cfg.compression_min_size_bytes = json_size(s, "compression_min_size_bytes", 1024);
+
     return cfg;
 }
 
@@ -1340,6 +1345,8 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.binary_rpc = extract_binary_rpc(json);
         config.alerting = extract_alerting(json);
         config.auth = extract_auth(json);
+        config.audit_sampling = extract_audit_sampling(json);
+        config.result_cache = extract_result_cache(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));
@@ -1369,10 +1376,46 @@ ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_
         config.encryption = extract_encryption(json);
         config.alerting = extract_alerting(json);
         config.auth = extract_auth(json);
+        config.audit_sampling = extract_audit_sampling(json);
+        config.result_cache = extract_result_cache(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to parse config: {}", e.what()));
     }
+}
+
+// ============================================================================
+// Tier B extractors
+// ============================================================================
+
+ProxyConfig::AuditSamplingConfig ConfigLoader::extract_audit_sampling(const JsonValue& root) {
+    ProxyConfig::AuditSamplingConfig cfg;
+    if (!root.contains("audit")) return cfg;
+    const auto a = root["audit"];
+    if (!a.contains("sampling") || !a["sampling"].is_object()) return cfg;
+    const auto s = a["sampling"];
+
+    cfg.enabled = json_bool(s, kEnabled, false);
+    cfg.default_sample_rate = json_double(s, "default_sample_rate", 1.0);
+    cfg.select_sample_rate = json_double(s, "select_sample_rate", 1.0);
+    cfg.always_log_blocked = json_bool(s, "always_log_blocked", true);
+    cfg.always_log_writes = json_bool(s, "always_log_writes", true);
+    cfg.always_log_errors = json_bool(s, "always_log_errors", true);
+    cfg.deterministic = json_bool(s, "deterministic", true);
+    return cfg;
+}
+
+ProxyConfig::ResultCacheConfig ConfigLoader::extract_result_cache(const JsonValue& root) {
+    ProxyConfig::ResultCacheConfig cfg;
+    if (!root.contains("result_cache")) return cfg;
+    const auto c = root["result_cache"];
+
+    cfg.enabled = json_bool(c, kEnabled, false);
+    cfg.max_entries = json_size(c, "max_entries", 5000);
+    cfg.num_shards = json_size(c, "num_shards", 16);
+    cfg.ttl_seconds = json_int(c, "ttl_seconds", 60);
+    cfg.max_result_size_bytes = json_size(c, "max_result_size_bytes", 1048576);
+    return cfg;
 }
 
 } // namespace sqlproxy

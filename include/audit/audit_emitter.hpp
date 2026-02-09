@@ -84,6 +84,8 @@ public:
 
     [[nodiscard]] Stats get_stats() const;
 
+    static std::string compute_record_hash(const AuditRecord& record, const std::string& prev_hash);
+
 private:
     void writer_thread_func();
     std::string to_json(const AuditRecord& record);
@@ -125,8 +127,6 @@ private:
     // -- Hash chain (writer thread only, no sync needed) --
     bool integrity_enabled_{true};
     std::string previous_hash_;
-
-    static std::string compute_record_hash(const AuditRecord& record, const std::string& prev_hash);
 };
 
 } // namespace sqlproxy

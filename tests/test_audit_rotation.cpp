@@ -47,9 +47,9 @@ TEST_CASE("Audit Rotation: size-based rotation triggers", "[audit][rotation]") {
         std::string line(60, 'a');
         line += '\n';
 
-        sink.write(line);
-        sink.write(line);
-        sink.write(line);  // This should trigger rotation
+        (void)sink.write(line);
+        (void)sink.write(line);
+        (void)sink.write(line);  // This should trigger rotation
         sink.flush();
 
         REQUIRE(sink.rotation_count() >= 1);
@@ -80,7 +80,7 @@ TEST_CASE("Audit Rotation: max_files cleanup", "[audit][rotation]") {
 
         // Write enough to trigger multiple rotations
         for (int i = 0; i < 6; ++i) {
-            sink.write(line);
+            (void)sink.write(line);
         }
         sink.flush();
     }
@@ -107,9 +107,9 @@ TEST_CASE("Audit Rotation: rotation preserves data", "[audit][rotation]") {
         FileSink sink(cfg);
 
         // Write identifiable data before rotation
-        sink.write("{\"batch\":\"first\"}\n");
-        sink.write(std::string(100, 'x') + "\n");  // Trigger rotation
-        sink.write("{\"batch\":\"second\"}\n");
+        (void)sink.write("{\"batch\":\"first\"}\n");
+        (void)sink.write(std::string(100, 'x') + "\n");  // Trigger rotation
+        (void)sink.write("{\"batch\":\"second\"}\n");
         sink.flush();
     }
 
@@ -143,8 +143,8 @@ TEST_CASE("Audit Rotation: no rotation when disabled", "[audit][rotation]") {
         std::string line(100, 'c');
         line += '\n';
 
-        sink.write(line);
-        sink.write(line);
+        (void)sink.write(line);
+        (void)sink.write(line);
         sink.flush();
 
         REQUIRE(sink.rotation_count() == 0);
@@ -200,7 +200,7 @@ TEST_CASE("Audit Rotation: rename chain correctness", "[audit][rotation]") {
         // Each write should trigger a rotation
         for (int i = 0; i < 4; ++i) {
             std::string line = "{\"rotation\":" + std::to_string(i) + "}\n";
-            sink.write(line);
+            (void)sink.write(line);
         }
         sink.flush();
     }

@@ -1,8 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include "server/waitable_rate_limiter.hpp"
 #include "server/rate_limiter.hpp"
+#include "config/config_loader.hpp"
+#include <atomic>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 using namespace sqlproxy;
 
@@ -104,6 +107,77 @@ TEST_CASE("WaitableRateLimiter: current_queue_depth returns to 0", "[waitable_rl
 
     // Queue depth should be 0 after request completes
     CHECK(waitable.current_queue_depth() == 0);
+}
+
+TEST_CASE("WaitableRateLimiter: max_queue_depth rejects overflow", "[waitable_rl]") {
+    auto inner = make_limiter(1, 1);  // Very slow refill
+    WaitableRateLimiter::Config cfg;
+    cfg.queue_enabled = true;
+    cfg.queue_timeout = std::chrono::milliseconds(200);
+    cfg.max_queue_depth = 2;  // Only allow 2 waiters
+
+    WaitableRateLimiter waitable(inner, cfg);
+
+    // Exhaust tokens
+    (void)waitable.check("user", "db");
+
+    // Fill queue from background threads
+    std::vector<std::thread> threads;
+    std::atomic<int> rejected{0};
+    for (int i = 0; i < 5; ++i) {
+        threads.emplace_back([&] {
+            auto r = waitable.check("user", "db");
+            if (!r.allowed) rejected.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    // Some should have been rejected due to queue overflow
+    CHECK(rejected.load() > 0);
+}
+
+TEST_CASE("WaitableRateLimiter: concurrent waiters all resolved", "[waitable_rl]") {
+    auto inner = make_limiter(1000, 5);  // Fast refill
+    WaitableRateLimiter::Config cfg;
+    cfg.queue_enabled = true;
+    cfg.queue_timeout = std::chrono::milliseconds(500);
+    cfg.max_queue_depth = 100;
+
+    WaitableRateLimiter waitable(inner, cfg);
+
+    // Launch concurrent requests
+    std::atomic<int> allowed{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 10; ++i) {
+        threads.emplace_back([&] {
+            auto r = waitable.check("user", "db");
+            if (r.allowed) allowed.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    // Most should succeed with fast refill
+    CHECK(allowed.load() >= 5);
+    // Queue depth should be back to 0
+    CHECK(waitable.current_queue_depth() == 0);
+}
+
+TEST_CASE("WaitableRateLimiter: config parsed from TOML", "[waitable_rl][config]") {
+    std::string toml = R"(
+[rate_limiting]
+global_tokens_per_second = 50000
+
+[rate_limiting.queue]
+enabled = true
+timeout_ms = 3000
+max_depth = 500
+)";
+
+    auto result = ConfigLoader::load_from_string(toml);
+    REQUIRE(result.success);
+    REQUIRE(result.config.rate_limiting.queue_enabled);
+    REQUIRE(result.config.rate_limiting.queue_timeout_ms == 3000);
+    REQUIRE(result.config.rate_limiting.max_queue_depth == 500);
 }
 
 TEST_CASE("WaitableRateLimiter: delegates set/reset to inner", "[waitable_rl]") {

@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include "audit/audit_emitter.hpp"
+#include "config/config_loader.hpp"
 #include "core/types.hpp"
 #include "core/utils.hpp"
 
 #include <chrono>
+#include <memory>
 #include <thread>
 
 using namespace sqlproxy;
@@ -14,7 +16,8 @@ TEST_CASE("Audit hash chain - records have hashes", "[audit][integrity]") {
     config.batch_flush_interval = std::chrono::milliseconds(50);
     config.integrity_enabled = true;
 
-    AuditEmitter emitter(config);
+    // Heap-allocate: AuditEmitter contains a 65536-slot ring buffer (~32MB)
+    auto emitter = std::make_unique<AuditEmitter>(config);
 
     // Emit a few records
     for (int i = 0; i < 5; ++i) {
@@ -27,14 +30,14 @@ TEST_CASE("Audit hash chain - records have hashes", "[audit][integrity]") {
         record.decision = Decision::ALLOW;
         record.database_name = "testdb";
         record.execution_success = true;
-        emitter.emit(std::move(record));
+        emitter->emit(std::move(record));
     }
 
     // Wait for writer thread to process
-    emitter.flush();
+    emitter->flush();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto stats = emitter.get_stats();
+    auto stats = emitter->get_stats();
     REQUIRE(stats.total_emitted == 5);
     REQUIRE(stats.total_written == 5);
 }
