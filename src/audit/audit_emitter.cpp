@@ -4,6 +4,8 @@
 #include "audit/syslog_sink.hpp"
 #include "core/utils.hpp"
 
+#include <openssl/evp.h>
+
 #include <format>
 #include <thread>
 
@@ -14,7 +16,8 @@ namespace sqlproxy {
 // ============================================================================
 
 AuditEmitter::AuditEmitter(const AuditConfig& config)
-    : batch_flush_interval_(config.batch_flush_interval) {
+    : batch_flush_interval_(config.batch_flush_interval),
+      integrity_enabled_(config.integrity_enabled) {
 
     // Always create a FileSink with rotation settings
     FileSink::Config file_cfg;
@@ -176,6 +179,15 @@ void AuditEmitter::writer_thread_func() {
 
             did_work = true;
 
+            // Compute hash chain (single-threaded, safe without locks)
+            if (integrity_enabled_) {
+                for (auto& record : batch) {
+                    record.previous_hash = previous_hash_;
+                    record.record_hash = compute_record_hash(record, previous_hash_);
+                    previous_hash_ = record.record_hash;
+                }
+            }
+
             // Build a single string for the entire batch
             std::string output;
             output.reserve(drained * 512);
@@ -332,12 +344,71 @@ std::string AuditEmitter::to_json(const AuditRecord& record) {
                           record.proxy_overhead.count());
 
     // Operational flags
-    result += std::format("\"rate_limited\":{},\"cache_hit\":{},\"circuit_breaker_tripped\":{}}}",
+    result += std::format("\"rate_limited\":{},\"cache_hit\":{},\"circuit_breaker_tripped\":{},",
                           record.rate_limited ? "true" : "false",
                           record.cache_hit ? "true" : "false",
                           record.circuit_breaker_tripped ? "true" : "false");
 
+    // Shadow mode
+    if (record.shadow_blocked) {
+        result += std::format("\"shadow_blocked\":true,\"shadow_policy\":\"{}\",",
+                              record.shadow_policy);
+    }
+
+    // Integrity (hash chain)
+    if (!record.record_hash.empty()) {
+        result += std::format("\"record_hash\":\"{}\",\"previous_hash\":\"{}\"",
+                              record.record_hash, record.previous_hash);
+    } else {
+        // Remove trailing comma
+        if (!result.empty() && result.back() == ',') {
+            result.pop_back();
+        }
+    }
+
+    result += "}";
     return result;
+}
+
+std::string AuditEmitter::compute_record_hash(
+    const AuditRecord& record, const std::string& prev_hash) {
+
+    // Hash: sequence_num|timestamp|user|sql|decision|previous_hash
+    std::string input;
+    input.reserve(256);
+    input += std::to_string(record.sequence_num);
+    input += '|';
+    input += utils::format_timestamp(record.timestamp);
+    input += '|';
+    input += record.user;
+    input += '|';
+    input += record.sql;
+    input += '|';
+    input += decision_to_string(record.decision);
+    input += '|';
+    input += prev_hash;
+
+    // SHA-256 via OpenSSL EVP
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) return "";
+
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hash_len = 0;
+
+    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
+    EVP_DigestUpdate(ctx, input.data(), input.size());
+    EVP_DigestFinal_ex(ctx, hash, &hash_len);
+    EVP_MD_CTX_free(ctx);
+
+    // Convert to hex string
+    static constexpr char hex_chars[] = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(hash_len * 2);
+    for (unsigned int i = 0; i < hash_len; ++i) {
+        hex += hex_chars[(hash[i] >> 4) & 0x0F];
+        hex += hex_chars[hash[i] & 0x0F];
+    }
+    return hex;
 }
 
 } // namespace sqlproxy

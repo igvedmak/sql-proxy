@@ -55,22 +55,37 @@ PolicyEvaluationResult PolicyEngine::evaluate(
     }
 
     // Multi-table evaluation: ALL must be allowed, ANY denied = entire query denied
+    // Track shadow results across all tables
+    bool any_shadow_blocked = false;
+    std::string shadow_policy_name;
+
     for (const auto& table : all_tables) {
         auto result = evaluate_table(user, roles, database, table,
                                      analysis.statement_type, *store);
 
+        // Track shadow results
+        if (result.shadow_blocked && !any_shadow_blocked) {
+            any_shadow_blocked = true;
+            shadow_policy_name = result.shadow_policy;
+        }
+
         if (result.decision == Decision::BLOCK) {
-            // First denied table blocks entire query
+            // Propagate shadow info to blocked result
+            result.shadow_blocked = any_shadow_blocked;
+            result.shadow_policy = shadow_policy_name;
             return result;
         }
     }
 
     // All tables allowed
-    return PolicyEvaluationResult(
+    PolicyEvaluationResult allow_result(
         Decision::ALLOW,
         "multi_table_allow",
         "All tables authorized"
     );
+    allow_result.shadow_blocked = any_shadow_blocked;
+    allow_result.shadow_policy = shadow_policy_name;
+    return allow_result;
 }
 
 std::vector<ColumnPolicyDecision> PolicyEngine::evaluate_columns(
@@ -262,26 +277,42 @@ PolicyEvaluationResult PolicyEngine::evaluate_table(
                             wildcard_matches.begin(), wildcard_matches.end());
 
     // Filter by user/role match, skipping column-level policies
-    // (column policies are evaluated separately by evaluate_columns())
-    std::vector<const Policy*> user_matched_policies;
+    // Partition into enforcement vs shadow policies
+    std::vector<const Policy*> enforcement_policies;
+    std::vector<const Policy*> shadow_policies;
     for (const auto* policy : matching_policies) {
         if (!policy->scope.columns.empty()) continue;
-        if (matches_user(*policy, user, roles)) {
-            user_matched_policies.push_back(policy);
+        if (!matches_user(*policy, user, roles)) continue;
+
+        if (policy->shadow) {
+            shadow_policies.push_back(policy);
+        } else {
+            enforcement_policies.push_back(policy);
         }
     }
 
-    // No matching policies → DEFAULT DENY
-    if (user_matched_policies.empty()) {
-        return PolicyEvaluationResult(
+    // Resolve enforcement decision
+    PolicyEvaluationResult result;
+    if (enforcement_policies.empty()) {
+        result = PolicyEvaluationResult(
             Decision::BLOCK,
             "default_deny",
             "No matching policy for table: " + table.full_name()
         );
+    } else {
+        result = resolve_specificity(enforcement_policies);
     }
 
-    // Resolve with specificity
-    return resolve_specificity(user_matched_policies);
+    // Evaluate shadow policies (log-only, never changes actual decision)
+    if (!shadow_policies.empty()) {
+        auto shadow_result = resolve_specificity(shadow_policies);
+        if (shadow_result.decision == Decision::BLOCK) {
+            result.shadow_blocked = true;
+            result.shadow_policy = shadow_result.matched_policy;
+        }
+    }
+
+    return result;
 }
 
 PolicyEvaluationResult PolicyEngine::resolve_specificity(

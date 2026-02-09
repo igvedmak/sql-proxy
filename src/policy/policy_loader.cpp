@@ -170,6 +170,11 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             // Optional: reason (for audit logs)
             policy.reason = node.value("reason", std::string(""));
 
+            // Optional: shadow mode (log-only, don't enforce)
+            if (node.contains("shadow") && node["shadow"].is_boolean()) {
+                policy.shadow = node["shadow"].get<bool>();
+            }
+
             // Validate policy
             std::string error_msg;
             if (!validate_policy(policy, error_msg)) {

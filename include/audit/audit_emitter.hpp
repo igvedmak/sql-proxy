@@ -121,6 +121,12 @@ private:
     std::atomic<uint64_t> flush_count_{0};
     std::atomic<uint64_t> sink_write_failures_{0};
     std::atomic<uint64_t> sequence_counter_{0};
+
+    // -- Hash chain (writer thread only, no sync needed) --
+    bool integrity_enabled_{true};
+    std::string previous_hash_;
+
+    static std::string compute_record_hash(const AuditRecord& record, const std::string& prev_hash);
 };
 
 } // namespace sqlproxy

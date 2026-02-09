@@ -82,6 +82,9 @@ struct RequestContext {
     // Schema management (Tier 5)
     bool ddl_requires_approval = false;
 
+    // Dry-run mode (evaluate policy but skip execution)
+    bool dry_run = false;
+
     RequestContext()
         : request_id(utils::generate_uuid()),
           received_at(std::chrono::system_clock::now()),

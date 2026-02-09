@@ -21,6 +21,8 @@
 #include "security/lineage_tracker.hpp"
 #include "security/column_encryptor.hpp"
 #include "security/local_key_manager.hpp"
+#include "security/vault_key_manager.hpp"
+#include "security/env_key_manager.hpp"
 #include "security/compliance_reporter.hpp"
 #include "schema/schema_manager.hpp"
 #include "tenant/tenant_manager.hpp"
@@ -335,14 +337,33 @@ int main(int argc, char* argv[]) {
         utils::log::info(std::format("Lineage tracker: {}",
             lineage_config.enabled ? "enabled" : "disabled"));
 
-        // Column Encryptor
+        // Column Encryptor (with pluggable key manager)
         std::shared_ptr<ColumnEncryptor> column_encryptor;
         if (config_result.success && config_result.config.encryption.enabled) {
-            auto key_manager = std::make_shared<LocalKeyManager>(
-                config_result.config.encryption.key_file);
+            const auto& enc_cfg = config_result.config.encryption;
+
+            // Key manager factory
+            std::shared_ptr<IKeyManager> key_manager;
+            if (enc_cfg.key_manager_provider == "vault") {
+                VaultKeyManagerConfig vault_cfg;
+                vault_cfg.vault_addr = enc_cfg.vault_addr;
+                vault_cfg.vault_token = enc_cfg.vault_token;
+                vault_cfg.key_name = enc_cfg.vault_key_name;
+                vault_cfg.mount = enc_cfg.vault_mount;
+                vault_cfg.cache_ttl_seconds = enc_cfg.vault_cache_ttl_seconds;
+                key_manager = std::make_shared<VaultKeyManager>(std::move(vault_cfg));
+                utils::log::info("Key manager: Vault Transit");
+            } else if (enc_cfg.key_manager_provider == "env") {
+                key_manager = std::make_shared<EnvKeyManager>(enc_cfg.env_key_var);
+                utils::log::info(std::format("Key manager: env var '{}'", enc_cfg.env_key_var));
+            } else {
+                key_manager = std::make_shared<LocalKeyManager>(enc_cfg.key_file);
+                utils::log::info("Key manager: local file");
+            }
+
             ColumnEncryptor::Config enc_config;
             enc_config.enabled = true;
-            for (const auto& c : config_result.config.encryption.columns) {
+            for (const auto& c : enc_cfg.columns) {
                 enc_config.columns.push_back({c.database, c.table, c.column});
             }
             column_encryptor = std::make_shared<ColumnEncryptor>(key_manager, enc_config);
@@ -465,7 +486,7 @@ int main(int argc, char* argv[]) {
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
             config_result.config.server.admin_token, max_sql_length,
             compliance_reporter, lineage_tracker, schema_manager, graphql_handler,
-            dashboard_handler);
+            dashboard_handler, config_result.config.server.tls);
 
         // Wire Protocol Server (PostgreSQL v3)
         if (config_result.success && config_result.config.wire_protocol.enabled) {

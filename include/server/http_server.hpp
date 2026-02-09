@@ -58,6 +58,7 @@ public:
      * @param users User registry for authentication (optional)
      * @param admin_token Bearer token for admin endpoints (empty = no auth required)
      * @param max_sql_length Max SQL query size in bytes (default: 100KB)
+     * @param tls_config TLS/mTLS configuration (default: disabled)
      */
     explicit HttpServer(
         std::shared_ptr<Pipeline> pipeline,
@@ -70,7 +71,8 @@ public:
         std::shared_ptr<LineageTracker> lineage_tracker = nullptr,
         std::shared_ptr<SchemaManager> schema_manager = nullptr,
         std::shared_ptr<GraphQLHandler> graphql_handler = nullptr,
-        std::shared_ptr<DashboardHandler> dashboard_handler = nullptr
+        std::shared_ptr<DashboardHandler> dashboard_handler = nullptr,
+        TlsConfig tls_config = {}
     );
 
     /**
@@ -116,6 +118,7 @@ private:
     const std::string host_;
     const int port_;
     const std::string admin_token_;
+    const TlsConfig tls_config_;
 
     // Hot-reloadable state
     std::unordered_map<std::string, UserInfo> users_;

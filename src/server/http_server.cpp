@@ -127,11 +127,13 @@ HttpServer::HttpServer(
     std::shared_ptr<LineageTracker> lineage_tracker,
     std::shared_ptr<SchemaManager> schema_manager,
     std::shared_ptr<GraphQLHandler> graphql_handler,
-    std::shared_ptr<DashboardHandler> dashboard_handler)
+    std::shared_ptr<DashboardHandler> dashboard_handler,
+    TlsConfig tls_config)
     : pipeline_(std::move(pipeline)),
       host_(std::move(host)),
       port_(port),
       admin_token_(std::move(admin_token)),
+      tls_config_(std::move(tls_config)),
       users_(std::move(users)),
       max_sql_length_(max_sql_length),
       compliance_reporter_(std::move(compliance_reporter)),
@@ -190,7 +192,21 @@ void HttpServer::update_users(std::unordered_map<std::string, UserInfo> new_user
 }
 
 void HttpServer::start() {
-    httplib::Server svr;
+    // Create server: TLS-enabled (SSLServer) or plain (Server)
+    std::unique_ptr<httplib::Server> svr_ptr;
+    if (tls_config_.enabled && !tls_config_.cert_file.empty() && !tls_config_.key_file.empty()) {
+        const char* ca_cert_path = (tls_config_.require_client_cert && !tls_config_.ca_file.empty())
+            ? tls_config_.ca_file.c_str() : nullptr;
+        auto ssl_svr = std::make_unique<httplib::SSLServer>(
+            tls_config_.cert_file.c_str(), tls_config_.key_file.c_str(), ca_cert_path);
+        utils::log::info(std::format("TLS enabled: cert={}, key={}, mTLS={}",
+            tls_config_.cert_file, tls_config_.key_file,
+            tls_config_.require_client_cert ? "required" : "off"));
+        svr_ptr = std::move(ssl_svr);
+    } else {
+        svr_ptr = std::make_unique<httplib::Server>();
+    }
+    auto& svr = *svr_ptr;
 
     // POST /api/v1/query - Execute SELECT queries
     svr.Post("/api/v1/query", [this](const httplib::Request& req, httplib::Response& res) {
@@ -687,13 +703,63 @@ void HttpServer::start() {
         });
     }
 
+    // POST /api/v1/query/dry-run - Dry-run query evaluation (no execution)
+    svr.Post("/api/v1/query/dry-run", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto sql_sv = parse_json_field(req.body, "sql");
+            auto user_sv = parse_json_field(req.body, "user");
+            auto db_sv = parse_json_field(req.body, "database");
+
+            if (sql_sv.empty()) {
+                res.status = httplib::StatusCode::BadRequest_400;
+                res.set_content(R"({"success":false,"error":"Missing field: sql"})", kJsonContentType);
+                return;
+            }
+
+            std::string user = user_sv.empty() ? "anonymous" : std::string(user_sv);
+            std::string database = db_sv.empty() ? "testdb" : std::string(db_sv);
+
+            auto user_info = validate_user(user);
+            std::vector<std::string> roles;
+            if (user_info) roles = user_info->roles;
+
+            // Build request but execute with dry_run=true
+            ProxyRequest proxy_req;
+            proxy_req.user = user;
+            proxy_req.roles = roles;
+            proxy_req.sql = std::string(sql_sv);
+            proxy_req.database = database;
+            proxy_req.dry_run = true;
+
+            auto response = pipeline_->execute(proxy_req);
+
+            std::string json = std::format(
+                R"({{"dry_run":true,"would_succeed":{},"policy_decision":"{}","matched_policy":"{}","shadow_blocked":{}{}}})",
+                response.success ? "true" : "false",
+                decision_to_string(response.policy_decision),
+                response.matched_policy,
+                response.shadow_blocked ? "true" : "false",
+                response.shadow_blocked
+                    ? std::format(",\"shadow_policy\":\"{}\"", response.shadow_policy)
+                    : "");
+
+            res.set_content(json, kJsonContentType);
+        } catch (const std::exception& e) {
+            res.status = httplib::StatusCode::InternalServerError_500;
+            res.set_content(
+                std::format(R"({{"success":false,"error":"{}"}})", e.what()),
+                "application/json");
+        }
+    });
+
     // Register dashboard routes
     if (dashboard_handler_) {
         dashboard_handler_->register_routes(svr, admin_token_);
     }
 
-    utils::log::info(std::format("Starting SQL Proxy Server on {}:{}", host_, port_));
-    utils::log::info("Endpoints: POST /api/v1/query, GET /health, GET /metrics, POST /policies/reload, GET /api/v1/compliance/*, POST /api/v1/graphql, GET /api/v1/schema/*, GET /dashboard");
+    utils::log::info(std::format("Starting SQL Proxy Server on {}:{} ({})",
+        host_, port_, tls_config_.enabled ? "HTTPS" : "HTTP"));
+    utils::log::info("Endpoints: POST /api/v1/query, POST /api/v1/query/dry-run, GET /health, GET /metrics, POST /policies/reload, GET /api/v1/compliance/*, POST /api/v1/graphql, GET /api/v1/schema/*, GET /dashboard");
 
     if (!svr.listen(host_.c_str(), port_)) {
         throw std::runtime_error("Failed to start HTTP server");

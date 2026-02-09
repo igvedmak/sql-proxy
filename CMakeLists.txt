@@ -21,6 +21,7 @@ find_package(Threads REQUIRED)
 
 option(ENABLE_POSTGRESQL "Enable PostgreSQL backend" ON)
 option(ENABLE_MYSQL "Enable MySQL/MariaDB backend" OFF)
+option(ENABLE_LDAP "Enable LDAP authentication provider" OFF)
 
 # ============================================================================
 # Find Required System Libraries
@@ -96,6 +97,7 @@ file(GLOB_RECURSE PLUGIN_SOURCES     src/plugin/*.cpp)
 file(GLOB_RECURSE TENANT_SOURCES     src/tenant/*.cpp)
 file(GLOB_RECURSE TRACING_SOURCES    src/tracing/*.cpp)
 file(GLOB_RECURSE ALERTING_SOURCES   src/alerting/*.cpp)
+file(GLOB_RECURSE AUTH_SOURCES       src/auth/*.cpp)
 
 # Exclude disabled database backends
 if(NOT ENABLE_POSTGRESQL)
@@ -122,6 +124,7 @@ set(LIB_SOURCES
     ${TENANT_SOURCES}
     ${TRACING_SOURCES}
     ${ALERTING_SOURCES}
+    ${AUTH_SOURCES}
 )
 
 set(ALL_SOURCES
@@ -187,6 +190,13 @@ endif()
 if(ENABLE_MYSQL)
     target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${MYSQL_LIBRARIES})
     target_compile_definitions(${PROJECT_NAME}_lib PUBLIC ENABLE_MYSQL=1)
+endif()
+
+# LDAP library (conditional)
+if(ENABLE_LDAP)
+    find_library(LDAP_LIBRARY ldap REQUIRED)
+    target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${LDAP_LIBRARY})
+    target_compile_definitions(${PROJECT_NAME}_lib PUBLIC ENABLE_LDAP=1)
 endif()
 
 target_compile_definitions(${PROJECT_NAME}_lib PUBLIC

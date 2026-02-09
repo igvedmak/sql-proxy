@@ -631,6 +631,17 @@ ServerConfig ConfigLoader::extract_server(const JsonValue& root) {
         json_int(s, "request_timeout_ms", 30000));
     cfg.admin_token = json_string(s, "admin_token", "");
     cfg.max_sql_length = json_size(s, "max_sql_length", 102400);
+
+    // TLS/mTLS
+    if (s.contains("tls") && s["tls"].is_object()) {
+        const auto t = s["tls"];
+        cfg.tls.enabled = json_bool(t, kEnabled, false);
+        cfg.tls.cert_file = json_string(t, "cert_file", "");
+        cfg.tls.key_file = json_string(t, "key_file", "");
+        cfg.tls.ca_file = json_string(t, "ca_file", "");
+        cfg.tls.require_client_cert = json_bool(t, "require_client_cert", false);
+    }
+
     return cfg;
 }
 
@@ -812,6 +823,9 @@ std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
         // Optional: reason
         policy.reason = json_string(p, "reason", "");
 
+        // Optional: shadow mode (log-only, don't enforce)
+        policy.shadow = json_bool(p, "shadow", false);
+
         result.push_back(std::move(policy));
     }
 
@@ -970,6 +984,13 @@ AuditConfig ConfigLoader::extract_audit(const JsonValue& root) {
         cfg.syslog_ident = json_string(s, "ident", "sql-proxy");
     }
 
+    // Integrity (hash chain) settings
+    if (a.contains("integrity") && a["integrity"].is_object()) {
+        const auto i = a["integrity"];
+        cfg.integrity_enabled = json_bool(i, kEnabled, true);
+        cfg.integrity_algorithm = json_string(i, "algorithm", "sha256");
+    }
+
     return cfg;
 }
 
@@ -1080,6 +1101,18 @@ EncryptionConfig ConfigLoader::extract_encryption(const JsonValue& root) {
                 cfg.columns.push_back(std::move(entry));
             }
         }
+    }
+
+    // Key manager provider
+    if (e.contains("key_manager") && e["key_manager"].is_object()) {
+        const auto km = e["key_manager"];
+        cfg.key_manager_provider = json_string(km, "provider", "local");
+        cfg.vault_addr = json_string(km, "vault_addr", "");
+        cfg.vault_token = json_string(km, "vault_token", "");
+        cfg.vault_key_name = json_string(km, "vault_key_name", "sql-proxy");
+        cfg.vault_mount = json_string(km, "vault_mount", "transit");
+        cfg.vault_cache_ttl_seconds = json_int(km, "vault_cache_ttl_seconds", 300);
+        cfg.env_key_var = json_string(km, "env_key_var", "ENCRYPTION_KEY");
     }
 
     return cfg;
@@ -1245,6 +1278,37 @@ AlertingConfig ConfigLoader::extract_alerting(const JsonValue& root) {
     return cfg;
 }
 
+AuthConfig ConfigLoader::extract_auth(const JsonValue& root) {
+    AuthConfig cfg;
+    if (!root.contains("auth")) {
+        return cfg;
+    }
+    const auto a = root["auth"];
+    cfg.provider = json_string(a, "provider", "api_key");
+
+    // JWT sub-section
+    if (a.contains("jwt") && a["jwt"].is_object()) {
+        const auto j = a["jwt"];
+        cfg.jwt_issuer = json_string(j, "issuer", "");
+        cfg.jwt_audience = json_string(j, "audience", "");
+        cfg.jwt_secret = json_string(j, "secret", "");
+        cfg.jwt_roles_claim = json_string(j, "roles_claim", "roles");
+    }
+
+    // LDAP sub-section
+    if (a.contains("ldap") && a["ldap"].is_object()) {
+        const auto l = a["ldap"];
+        cfg.ldap_url = json_string(l, "url", "");
+        cfg.ldap_base_dn = json_string(l, "base_dn", "");
+        cfg.ldap_bind_dn = json_string(l, "bind_dn", "");
+        cfg.ldap_bind_password = json_string(l, "bind_password", "");
+        cfg.ldap_user_filter = json_string(l, "user_filter", "(uid={})");
+        cfg.ldap_group_attribute = json_string(l, "group_attribute", "memberOf");
+    }
+
+    return cfg;
+}
+
 // ---- Public API ------------------------------------------------------------
 
 ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_path) {
@@ -1275,6 +1339,7 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.graphql = extract_graphql(json);
         config.binary_rpc = extract_binary_rpc(json);
         config.alerting = extract_alerting(json);
+        config.auth = extract_auth(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));
@@ -1303,6 +1368,7 @@ ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_
         config.security = extract_security(json);
         config.encryption = extract_encryption(json);
         config.alerting = extract_alerting(json);
+        config.auth = extract_auth(json);
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to parse config: {}", e.what()));

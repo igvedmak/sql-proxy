@@ -256,6 +256,9 @@ struct Policy {
     int masking_prefix_len = 3;             // For PARTIAL: chars to show at start
     int masking_suffix_len = 3;             // For PARTIAL: chars to show at end
 
+    // Shadow mode: log decision but don't enforce
+    bool shadow = false;
+
     Policy() : priority(0), action(Decision::BLOCK) {}
 
     bool matches_user(const std::string& user) const {
@@ -269,6 +272,10 @@ struct PolicyEvaluationResult {
     Decision decision;
     std::string matched_policy;     // Policy name that made the decision
     std::string reason;             // Human-readable reason
+
+    // Shadow mode: a shadow policy would have blocked, but didn't enforce
+    bool shadow_blocked = false;
+    std::string shadow_policy;
 
     PolicyEvaluationResult() : decision(Decision::BLOCK) {}
     PolicyEvaluationResult(Decision d, std::string p, std::string r)
@@ -488,6 +495,14 @@ struct AuditRecord {
     double anomaly_score = 0.0;
     std::vector<std::string> anomalies;
 
+    // Integrity (hash chain)
+    std::string record_hash;        // SHA-256 of this record's content
+    std::string previous_hash;      // Hash of previous record (chain link)
+
+    // Shadow mode
+    bool shadow_blocked = false;
+    std::string shadow_policy;
+
     AuditRecord()
         : sequence_num(0),
           statement_type(StatementType::UNKNOWN),
@@ -526,6 +541,7 @@ struct ProxyRequest {
     std::string traceparent;        // W3C traceparent header (incoming)
     std::string tracestate;         // W3C tracestate header (propagated as-is)
     std::chrono::system_clock::time_point received_at;
+    bool dry_run = false;           // Dry-run mode: evaluate but don't execute
 
     ProxyRequest()
         : request_id(utils::generate_uuid()),
@@ -556,6 +572,10 @@ struct ProxyResponse {
     std::vector<std::string> masked_columns;
     std::vector<std::string> blocked_columns;
 
+    // Shadow mode
+    bool shadow_blocked = false;
+    std::string shadow_policy;
+
     // Distributed tracing
     std::string traceparent;        // W3C traceparent header (outgoing)
 
@@ -570,6 +590,14 @@ struct ProxyResponse {
 // Configuration Types
 // ============================================================================
 
+struct TlsConfig {
+    bool enabled = false;
+    std::string cert_file;            // Server certificate (PEM)
+    std::string key_file;             // Server private key (PEM)
+    std::string ca_file;              // CA cert for client verification (mTLS)
+    bool require_client_cert = false; // mTLS mode
+};
+
 struct ServerConfig {
     std::string host;
     uint16_t port;
@@ -577,6 +605,7 @@ struct ServerConfig {
     std::chrono::milliseconds request_timeout;
     std::string admin_token;  // Bearer token for admin endpoints (empty = no auth)
     size_t max_sql_length;    // Max SQL query size in bytes
+    TlsConfig tls;            // TLS/mTLS configuration
 
     ServerConfig()
         : host("0.0.0.0"),
@@ -660,6 +689,10 @@ struct AuditConfig {
     // Syslog sink
     bool syslog_enabled = false;
     std::string syslog_ident = "sql-proxy";
+
+    // Integrity (hash chain)
+    bool integrity_enabled = true;
+    std::string integrity_algorithm = "sha256";
 
     AuditConfig()
         : output_file("audit.jsonl"),

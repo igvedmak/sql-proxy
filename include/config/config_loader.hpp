@@ -148,6 +148,37 @@ struct EncryptionConfig {
     bool enabled = false;
     std::string key_file = "config/encryption_keys.json";
     std::vector<EncryptionColumnConfigEntry> columns;
+
+    // Key manager provider selection
+    std::string key_manager_provider = "local";  // "local" | "vault" | "env"
+    // Vault
+    std::string vault_addr;
+    std::string vault_token;
+    std::string vault_key_name = "sql-proxy";
+    std::string vault_mount = "transit";
+    int vault_cache_ttl_seconds = 300;
+    // Env
+    std::string env_key_var = "ENCRYPTION_KEY";
+};
+
+// ============================================================================
+// Auth Config (Tier A)
+// ============================================================================
+
+struct AuthConfig {
+    std::string provider = "api_key";  // "api_key" | "jwt" | "ldap"
+    // JWT
+    std::string jwt_issuer;
+    std::string jwt_audience;
+    std::string jwt_secret;
+    std::string jwt_roles_claim = "roles";
+    // LDAP
+    std::string ldap_url;
+    std::string ldap_base_dn;
+    std::string ldap_bind_dn;
+    std::string ldap_bind_password;
+    std::string ldap_user_filter = "(uid={})";
+    std::string ldap_group_attribute = "memberOf";
 };
 
 // ============================================================================
@@ -228,6 +259,9 @@ struct ProxyConfig {
     // Tier 2 (Operational Maturity)
     AlertingConfig alerting;
     bool dashboard_enabled = true;
+
+    // Tier A (Trust & Safety)
+    AuthConfig auth;
 };
 
 // ============================================================================
@@ -337,6 +371,9 @@ private:
 
     // Tier 2 extractors
     static AlertingConfig extract_alerting(const JsonValue& root);
+
+    // Tier A extractors
+    static AuthConfig extract_auth(const JsonValue& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

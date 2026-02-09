@@ -59,6 +59,7 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     ctx.source_ip = request.source_ip;
     ctx.user_attributes = request.user_attributes;
     ctx.tenant_id = request.tenant_id;
+    ctx.dry_run = request.dry_run;
 
     // Distributed tracing: parse incoming traceparent or generate new context
     if (!request.traceparent.empty()) {
@@ -131,6 +132,13 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
     // Layer 4.5: Query rewriting (RLS + enforce_limit)
     rewrite_query(ctx);
+
+    // Dry-run mode: skip execution and everything after
+    if (ctx.dry_run) {
+        ctx.query_result.success = true;
+        emit_audit(ctx);
+        return build_response(ctx);
+    }
 
     // Layer 5: Execute
     if (!execute_query(ctx)) {
@@ -408,6 +416,10 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
     record.matched_policy = ctx.policy_result.matched_policy;
     record.block_reason = ctx.policy_result.reason;
 
+    // Shadow mode
+    record.shadow_blocked = ctx.policy_result.shadow_blocked;
+    record.shadow_policy = ctx.policy_result.shadow_policy;
+
     record.execution_success = ctx.query_result.success;
     record.error_code = ctx.query_result.error_code;
     record.error_message = ctx.query_result.error_message;
@@ -471,6 +483,8 @@ ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
 
     response.policy_decision = ctx.policy_result.decision;
     response.matched_policy = ctx.policy_result.matched_policy;
+    response.shadow_blocked = ctx.policy_result.shadow_blocked;
+    response.shadow_policy = ctx.policy_result.shadow_policy;
 
     // Column-level metadata
     for (const auto& m : ctx.masking_applied) {
