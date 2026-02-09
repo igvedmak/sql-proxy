@@ -32,14 +32,15 @@ public:
     // Resolve symbol from the shared library
     [[nodiscard]] void* resolve(const char* symbol) const;
 
-    // Plugin instances (owned, destroyed on unload)
-    ClassifierPlugin* classifier = nullptr;
-    AuditSinkPlugin* audit_sink = nullptr;
-
 private:
     std::string path_;
     std::string type_;
     void* handle_;
+
+public:
+    // Plugin instances (owned, destroyed on unload)
+    ClassifierPlugin* classifier = nullptr;
+    AuditSinkPlugin* audit_sink = nullptr;
 };
 
 class PluginRegistry {

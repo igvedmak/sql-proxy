@@ -46,6 +46,8 @@ size_t find_keyword(const std::string& sql, const char* keyword) {
     size_t kw_len = 0;
     while (keyword[kw_len]) ++kw_len;
 
+    if (kw_len > sql.size()) return std::string::npos;
+
     for (size_t i = 0; i <= sql.size() - kw_len; ++i) {
         bool match = true;
         for (size_t j = 0; j < kw_len; ++j) {
@@ -263,14 +265,12 @@ void SqlInjectionDetector::check_stacked_queries(const std::string& raw_sql,
 
     if (semicolon_count > 0) {
         // Check if there's a second statement after the semicolon
-        size_t semi_pos = 0;
         bool found_statement = false;
         for (size_t i = 0; i < raw_sql.size(); ++i) {
             char c = raw_sql[i];
             if (c == '\'' && !in_double) in_single = !in_single;
             else if (c == '"' && !in_single) in_double = !in_double;
             else if (c == ';' && !in_single && !in_double) {
-                semi_pos = i;
                 // Check if there's meaningful content after
                 for (size_t j = i + 1; j < raw_sql.size(); ++j) {
                     if (!std::isspace(static_cast<unsigned char>(raw_sql[j]))) {

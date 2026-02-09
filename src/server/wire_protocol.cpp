@@ -1,4 +1,11 @@
 #include "server/wire_protocol.hpp"
+
+// GCC 14 false positive: -Wfree-nonheap-object in std::vector<uint8_t>::push_back
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfree-nonheap-object"
+#endif
+
 #include <cstring>
 
 namespace sqlproxy {
@@ -212,3 +219,7 @@ std::string parse_query_message(const WireFrame& frame) {
 }
 
 } // namespace sqlproxy
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
