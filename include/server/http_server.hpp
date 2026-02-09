@@ -18,6 +18,7 @@ class SchemaManager;
 class GraphQLHandler;
 class DashboardHandler;
 class AlertEvaluator;
+class BruteForceProtector;
 class ShutdownCoordinator;
 
 /**
@@ -29,6 +30,7 @@ struct UserInfo {
     std::string api_key;                                            // Bearer token (empty = no API key)
     std::unordered_map<std::string, std::string> attributes;        // User attributes for RLS
     std::string default_database;                                   // Default database for routing
+    std::vector<std::string> allowed_ips;                           // CIDR ranges (empty = allow all)
 
     UserInfo() = default;
     UserInfo(std::string n, std::vector<std::string> r)
@@ -103,6 +105,10 @@ public:
         shutdown_coordinator_ = std::move(sc);
     }
 
+    void set_brute_force_protector(std::shared_ptr<BruteForceProtector> bfp) {
+        brute_force_protector_ = std::move(bfp);
+    }
+
 private:
     /**
      * @brief Validate user exists and resolve roles
@@ -143,6 +149,9 @@ private:
     // Tier B: Shutdown + Compression
     std::shared_ptr<ShutdownCoordinator> shutdown_coordinator_;
     ResponseCompressor compressor_;
+
+    // Tier E: Brute force protection
+    std::shared_ptr<BruteForceProtector> brute_force_protector_;
 };
 
 } // namespace sqlproxy

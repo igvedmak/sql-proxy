@@ -2,10 +2,12 @@
 #include "core/utils.hpp"
 
 #include <cstdlib>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <stdexcept>
 #include <algorithm>
+#include <unordered_set>
 
 namespace sqlproxy {
 
@@ -465,6 +467,83 @@ JsonValue parse_string(const std::string& content) {
     return JsonValue(std::move(root));
 }
 
+void merge_values(JsonValue& base, const JsonValue& overlay) {
+    if (overlay.is_object() && base.is_object()) {
+        auto& base_obj = base.raw().get_object();
+        for (const auto& [key, val] : overlay.items()) {
+            if (base.contains(key)) {
+                auto child = base[key];
+                merge_values(child, val);
+                base_obj[key] = child.raw();
+            } else {
+                base_obj[key] = val.raw();
+            }
+        }
+    } else if (overlay.is_array() && base.is_array()) {
+        auto& base_arr = base.raw().get_array();
+        for (const auto& item : overlay) {
+            base_arr.push_back(item.raw());
+        }
+    } else {
+        base = overlay;
+    }
+}
+
+namespace {
+
+void resolve_includes(JsonValue& root, const std::string& base_dir,
+                      std::unordered_set<std::string>& visited, int depth) {
+    if (depth > 10) {
+        throw std::runtime_error("Config include depth exceeds 10 — possible circular include");
+    }
+    if (!root.contains("include")) return;
+
+    const auto include_val = root["include"];
+    std::vector<std::string> paths;
+
+    if (include_val.is_string()) {
+        paths.push_back(include_val.get<std::string>());
+    } else if (include_val.is_array()) {
+        for (const auto& item : include_val) {
+            if (item.is_string()) {
+                paths.push_back(item.get<std::string>());
+            }
+        }
+    }
+
+    // Remove the include key from root before merging
+    root.raw().get_object().erase("include");
+
+    for (const auto& rel_path : paths) {
+        namespace fs = std::filesystem;
+        const std::string abs_path = fs::canonical(fs::path(base_dir) / rel_path).string();
+
+        if (!visited.insert(abs_path).second) {
+            throw std::runtime_error(
+                std::format("Circular config include detected: {}", abs_path));
+        }
+
+        std::ifstream file(abs_path);
+        if (!file.is_open()) {
+            throw std::runtime_error(
+                std::format("Cannot open included TOML file: {}", abs_path));
+        }
+        const std::string buffer((std::istreambuf_iterator<char>(file)),
+                           std::istreambuf_iterator<char>());
+        auto included = parse_string(buffer);  // NOLINT(misc-const-correctness)
+
+        // Recurse into included file's own includes
+        const std::string inc_dir = fs::path(abs_path).parent_path().string();
+        resolve_includes(included, inc_dir, visited, depth + 1);
+
+        // Merge: included is base, root is overlay (main wins)
+        merge_values(included, root);
+        root = std::move(included);
+    }
+}
+
+} // anonymous namespace
+
 JsonValue parse_file(const std::string& file_path) {
     std::ifstream file(file_path);
     if (!file.is_open()) {
@@ -474,7 +553,16 @@ JsonValue parse_file(const std::string& file_path) {
 
     std::string buffer((std::istreambuf_iterator<char>(file)),
                        std::istreambuf_iterator<char>());
-    return parse_string(buffer);
+    auto root = parse_string(buffer);
+
+    // Resolve includes
+    namespace fs = std::filesystem;
+    const std::string base_dir = fs::path(file_path).parent_path().string();
+    std::unordered_set<std::string> visited;
+    visited.insert(fs::canonical(file_path).string());
+    resolve_includes(root, base_dir, visited, 0);
+
+    return root;
 }
 
 } // namespace toml
@@ -759,6 +847,9 @@ std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const Json
         std::string api_key = json_string(u, "api_key", "");
 
         UserInfo info(std::move(name), std::move(roles), std::move(api_key));
+
+        // Parse allowed_ips (CIDR allowlist)
+        info.allowed_ips = json_string_array(u, "allowed_ips");
 
         // Parse default_database
         std::string default_db = json_string(u, "default_database", "");
@@ -1116,6 +1207,16 @@ SecurityConfig ConfigLoader::extract_security(const JsonValue& root) {
     cfg.injection_detection_enabled = json_bool(s, "injection_detection", true);
     cfg.anomaly_detection_enabled = json_bool(s, "anomaly_detection", true);
     cfg.lineage_tracking_enabled = json_bool(s, "lineage_tracking", true);
+
+    // Brute force protection: [security.brute_force]
+    if (s.contains("brute_force")) {
+        const auto bf = s["brute_force"];
+        cfg.brute_force_enabled = json_bool(bf, kEnabled, false);
+        cfg.brute_force_max_attempts = json_uint32(bf, "max_attempts", 5);
+        cfg.brute_force_window_seconds = json_uint32(bf, "window_seconds", 60);
+        cfg.brute_force_lockout_seconds = json_uint32(bf, "lockout_seconds", 300);
+        cfg.brute_force_max_lockout_seconds = json_uint32(bf, "max_lockout_seconds", 3600);
+    }
     return cfg;
 }
 

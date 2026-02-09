@@ -426,6 +426,63 @@ sql_proxy_circuit_breaker_transitions_total{to="half_open"} N
 sql_proxy_circuit_breaker_transitions_total{to="closed"} N
 ```
 
+## Brute Force Protection
+
+Per-IP and per-username lockout with exponential backoff. Configure in `proxy.toml`:
+
+```toml
+[security.brute_force]
+enabled = true
+max_attempts = 5
+window_seconds = 60
+lockout_seconds = 300
+max_lockout_seconds = 3600
+```
+
+When an IP or username exceeds `max_attempts` failures within `window_seconds`, requests return HTTP 429 with a `Retry-After` header. Lockout duration doubles on each subsequent lockout, up to `max_lockout_seconds`. A successful login resets the counter.
+
+Metrics: `sql_proxy_auth_failures_total`, `sql_proxy_auth_blocks_total`
+
+## IP Allowlisting Per User
+
+Restrict user access by source IP or CIDR range:
+
+```toml
+[[users]]
+name = "admin"
+roles = ["admin"]
+api_key = "secret"
+allowed_ips = ["10.0.0.0/8", "192.168.1.100"]
+```
+
+Empty `allowed_ips` (or omitted) allows all IPs. The proxy checks `X-Forwarded-For` first, then `remote_addr`.
+
+Metric: `sql_proxy_ip_blocked_total`
+
+## Encoding Bypass Detection
+
+The SQL injection detector normalizes encoded SQL before pattern matching:
+- URL decoding (`%27` → `'`)
+- Double URL decoding (`%2527` → `%27` → `'`)
+- HTML entity decoding (`&#39;` → `'`, `&lt;` → `<`)
+
+If decoded SQL differs from raw, an `ENCODING_BYPASS` pattern is flagged and all 6 injection checks are re-run on the decoded version.
+
+## Config File Includes
+
+Split config across multiple TOML files using the `include` directive:
+
+```toml
+# proxy.toml
+include = ["users.toml", "policies.toml"]
+
+[server]
+host = "0.0.0.0"
+port = 8080
+```
+
+Merge semantics: arrays concatenate (included + main), objects deep-merge (main wins for scalar conflicts). Relative paths resolve from the including file's directory. Circular includes are detected and rejected. Max include depth is 10.
+
 ## Production Deployment
 
 For production, update `docker-compose.yml`:

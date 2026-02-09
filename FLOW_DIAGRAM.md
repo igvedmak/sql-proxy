@@ -29,8 +29,10 @@
 │  ├─ "user" field present? ─────────────── NO ──→ 400 Missing user            │
 │  ├─ "sql" field present? ──────────────── NO ──→ 400 Missing sql             │
 │  ├─ SQL length < 100KB? ──────────────── NO ──→ 400 SQL too long             │
-│  └─ User authenticated? ──────────────── NO ──→ 401 Unknown user             │
-│     (lookup in users_ map)                                                   │
+│  ├─ Brute force check (IP/user)? ─────── BLOCKED → 429 + Retry-After        │
+│  ├─ User authenticated? ──────────────── NO ──→ 401 (+ record_failure)       │
+│  ├─ IP allowlist check? ─────────────── BLOCKED → 403 IP not allowed         │
+│  └─ record_success on auth pass                                              │
 │                                                                              │
 │  Build ProxyRequest:                                                         │
 │  ├─ request_id  = UUID                                                       │
@@ -328,6 +330,13 @@
 │  │  │ 6. ERROR-BASED (MEDIUM)                              │           │     │
 │  │  │    EXTRACTVALUE, UPDATEXML, CONVERT(                  │           │     │
 │  │  │    Score: 0.4                                         │           │     │
+│  │  └──────────────────────────────────────────────────────┘           │     │
+│  │                                                                     │     │
+│  │  ┌──────────────────────────────────────────────────────┐           │     │
+│  │  │ 7. ENCODING BYPASS (MEDIUM, then re-run 1-6)       │           │     │
+│  │  │    URL decode (%27→'), HTML entity (&#39;→')         │           │     │
+│  │  │    Double URL decode (%2527→%27→')                   │           │     │
+│  │  │    If decoded ≠ raw → flag + re-run all 6 checks    │           │     │
 │  │  └──────────────────────────────────────────────────────┘           │     │
 │  │                                                                     │     │
 │  │  ThreatLevel: NONE < LOW < MEDIUM < HIGH < CRITICAL               │     │
@@ -856,6 +865,10 @@
 │  ├─ sql_proxy_rate_limiter_buckets_evicted_total                             │
 │  ├─ sql_proxy_circuit_breaker_transitions_total{to="open|half_open|closed"}  │
 │  ├─ sql_proxy_pool_connections_recycled_total                                │
+│  ├─ sql_proxy_pool_acquire_duration_seconds{le=...} (histogram)             │
+│  ├─ sql_proxy_auth_failures_total                                            │
+│  ├─ sql_proxy_auth_blocks_total                                              │
+│  ├─ sql_proxy_ip_blocked_total                                               │
 │  └─ sql_proxy_cache_ddl_invalidations_total                                  │
 │                                                                              │
 │  POST /policies/reload                                                       │
@@ -892,9 +905,12 @@
 │  STARTUP (10 phases)                                                         │
 │                                                                              │
 │  [1/10] Load configuration from config/proxy.toml (ConfigLoader)             │
+│         ├─ Resolve `include` directives (recursive, max depth 10)           │
+│         ├─ Deep-merge included files (arrays concat, main wins scalars)     │
 │         ├─ Parse users, roles, policies, rate limits                         │
-│         ├─ Parse [security] section (injection, anomaly, lineage)            │
+│         ├─ Parse [security] section (injection, anomaly, lineage, brute_force)│
 │         ├─ Parse [encryption] section (columns, key_file)                    │
+│         ├─ Parse users.allowed_ips for IP allowlisting                       │
 │         └─ Fallback: 2 hardcoded policies + 4 users if config fails          │
 │                                                                              │
 │  [2/10] Initialize Parse Cache (10K entries, 16 shards)                      │

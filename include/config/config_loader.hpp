@@ -132,6 +132,13 @@ struct SecurityConfig {
     bool injection_detection_enabled = true;
     bool anomaly_detection_enabled = true;
     bool lineage_tracking_enabled = true;
+
+    // Brute force protection
+    bool brute_force_enabled = false;
+    uint32_t brute_force_max_attempts = 5;
+    uint32_t brute_force_window_seconds = 60;
+    uint32_t brute_force_lockout_seconds = 300;
+    uint32_t brute_force_max_lockout_seconds = 3600;
 };
 
 // ============================================================================
@@ -327,6 +334,14 @@ namespace toml {
  * @throws std::runtime_error on file I/O or parse failure
  */
 [[nodiscard]] JsonValue parse_file(const std::string& file_path);
+
+/**
+ * @brief Deep-merge two JSON objects
+ * Objects: recursively merge, overlay wins for scalar conflicts
+ * Arrays: concatenate overlay onto base
+ * Scalars: overlay wins
+ */
+void merge_values(JsonValue& base, const JsonValue& overlay);
 
 } // namespace toml
 

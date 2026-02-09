@@ -38,6 +38,8 @@ GenericConnectionPool::~GenericConnectionPool() {
 std::unique_ptr<PooledConnection> GenericConnectionPool::acquire(
     std::chrono::milliseconds timeout) {
 
+    const auto acquire_start = std::chrono::steady_clock::now();
+
     if (shutdown_.load(std::memory_order_acquire)) {
         return nullptr;
     }
@@ -129,6 +131,24 @@ std::unique_ptr<PooledConnection> GenericConnectionPool::acquire(
         created_at_[conn.get()] = std::chrono::steady_clock::now();
     }
 
+    // Record acquire time histogram
+    {
+        const auto elapsed = std::chrono::steady_clock::now() - acquire_start;
+        const auto us = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count());
+        acquire_time_sum_us_.fetch_add(us, std::memory_order_relaxed);
+        acquire_time_count_.fetch_add(1, std::memory_order_relaxed);
+
+        // Buckets: ≤100μs, ≤500μs, ≤1ms, ≤5ms, ≤50ms, +Inf
+        size_t bucket = 5;  // +Inf
+        if (us <= 100)       bucket = 0;
+        else if (us <= 500)  bucket = 1;
+        else if (us <= 1000) bucket = 2;
+        else if (us <= 5000) bucket = 3;
+        else if (us <= 50000) bucket = 4;
+        acquire_time_buckets_[bucket].fetch_add(1, std::memory_order_relaxed);
+    }
+
     // Create RAII handle with return callback
     auto return_fn = [this](std::unique_ptr<IDbConnection> c) {
         this->return_connection(std::move(c));
@@ -149,6 +169,12 @@ PoolStats GenericConnectionPool::get_stats() const {
     stats.failed_acquires = failed_acquires_.load(std::memory_order_relaxed);
     stats.health_check_failures = health_check_failures_.load(std::memory_order_relaxed);
     stats.connections_recycled = connections_recycled_.load(std::memory_order_relaxed);
+
+    stats.acquire_time_sum_us = acquire_time_sum_us_.load(std::memory_order_relaxed);
+    stats.acquire_time_count = acquire_time_count_.load(std::memory_order_relaxed);
+    for (size_t i = 0; i < acquire_time_buckets_.size(); ++i) {
+        stats.acquire_time_buckets[i] = acquire_time_buckets_[i].load(std::memory_order_relaxed);
+    }
 
     return stats;
 }

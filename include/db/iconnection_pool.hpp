@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -35,6 +36,12 @@ struct PoolStats {
     size_t failed_acquires = 0;
     size_t health_check_failures = 0;
     size_t connections_recycled = 0;
+
+    // Acquire time histogram (microseconds)
+    // Buckets: ≤100μs, ≤500μs, ≤1ms, ≤5ms, ≤50ms, +Inf
+    uint64_t acquire_time_sum_us = 0;
+    uint64_t acquire_time_count = 0;
+    std::array<uint64_t, 6> acquire_time_buckets = {};
 };
 
 /**

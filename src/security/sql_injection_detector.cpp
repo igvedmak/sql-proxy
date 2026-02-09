@@ -113,6 +113,14 @@ SqlInjectionDetector::DetectionResult SqlInjectionDetector::analyze(
     check_time_based_blind(normalized_sql, result);
     check_error_based(normalized_sql, result);
 
+    // Encoding bypass detection: decode and re-check
+    if (config_.encoding_detection_enabled) {
+        const std::string decoded = decode_encodings(raw_sql);
+        if (decoded != raw_sql) {
+            check_encoding_bypass(raw_sql, decoded, parsed, result);
+        }
+    }
+
     // Build description
     if (!result.patterns_matched.empty()) {
         result.description = "SQL injection patterns detected: ";
@@ -330,6 +338,114 @@ void SqlInjectionDetector::check_error_based(std::string_view sql,
             }
         }
     }
+}
+
+std::string SqlInjectionDetector::decode_encodings(std::string_view sql) const {
+    std::string result;
+    result.reserve(sql.size());
+
+    auto hex_val = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+        if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+        return -1;
+    };
+
+    for (size_t i = 0; i < sql.size(); ++i) {
+        // URL decode: %XX
+        if (sql[i] == '%' && i + 2 < sql.size()) {
+            const int h = hex_val(sql[i + 1]);
+            const int l = hex_val(sql[i + 2]);
+            if (h >= 0 && l >= 0) {
+                result += static_cast<char>((h << 4) | l);
+                i += 2;
+                continue;
+            }
+        }
+        // HTML numeric entity: &#NN; or &#xHH;
+        if (sql[i] == '&' && i + 2 < sql.size() && sql[i + 1] == '#') {
+            size_t j = i + 2;
+            bool is_hex = false;
+            if (j < sql.size() && (sql[j] == 'x' || sql[j] == 'X')) {
+                is_hex = true;
+                ++j;
+            }
+            size_t start = j;
+            int val = 0;
+            while (j < sql.size() && j < start + 4) {
+                if (is_hex) {
+                    const int d = hex_val(sql[j]);
+                    if (d < 0) break;
+                    val = val * 16 + d;
+                } else {
+                    if (sql[j] < '0' || sql[j] > '9') break;
+                    val = val * 10 + (sql[j] - '0');
+                }
+                ++j;
+            }
+            if (j > start && j < sql.size() && sql[j] == ';' && val > 0 && val < 128) {
+                result += static_cast<char>(val);
+                i = j;
+                continue;
+            }
+        }
+        // HTML named entities
+        if (sql[i] == '&') {
+            struct Entity { const char* name; size_t len; char ch; };
+            static const Entity entities[] = {
+                {"&lt;", 4, '<'}, {"&gt;", 4, '>'},
+                {"&amp;", 5, '&'}, {"&quot;", 6, '"'}, {"&apos;", 6, '\''},
+            };
+            bool matched = false;
+            for (const auto& e : entities) {
+                if (i + e.len <= sql.size() && sql.substr(i, e.len) == e.name) {
+                    result += e.ch;
+                    i += e.len - 1;
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) continue;
+        }
+        result += sql[i];
+    }
+
+    // Second pass: decode again (double-encoding like %2531 → %31 → 1)
+    if (result != sql) {
+        std::string second;
+        second.reserve(result.size());
+        for (size_t i = 0; i < result.size(); ++i) {
+            if (result[i] == '%' && i + 2 < result.size()) {
+                const int h = hex_val(result[i + 1]);
+                const int l = hex_val(result[i + 2]);
+                if (h >= 0 && l >= 0) {
+                    second += static_cast<char>((h << 4) | l);
+                    i += 2;
+                    continue;
+                }
+            }
+            second += result[i];
+        }
+        return second;
+    }
+    return result;
+}
+
+void SqlInjectionDetector::check_encoding_bypass(
+    std::string_view raw, std::string_view decoded,
+    const ParsedQuery& parsed, DetectionResult& result) const {
+
+    // The fact that decoded differs from raw is suspicious — flag it
+    result.patterns_matched.push_back("ENCODING_BYPASS");
+    elevate_threat(result, ThreatLevel::MEDIUM);
+
+    // Re-run all 6 checks on the decoded version to catch hidden attacks
+    check_tautologies(decoded, result);
+    check_union_injection(decoded, parsed, result);
+    check_comment_bypass(decoded, result);
+    check_stacked_queries(decoded, result);
+    check_time_based_blind(decoded, result);
+    check_error_based(decoded, result);
 }
 
 } // namespace sqlproxy

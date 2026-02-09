@@ -15,7 +15,9 @@
 #include "db/iconnection_pool.hpp"
 #include "parser/parse_cache.hpp"
 #include "policy/policy_loader.hpp"
+#include "security/brute_force_protector.hpp"
 #include "security/compliance_reporter.hpp"
+#include "security/ip_allowlist.hpp"
 #include "security/lineage_tracker.hpp"
 #include "schema/schema_manager.hpp"
 
@@ -60,6 +62,8 @@ namespace {
         }
         return "";
     }
+
+    std::atomic<uint64_t> s_ip_blocks{0};
 
     std::string build_json_response(const ProxyResponse& response) {
         std::string result_str;
@@ -269,6 +273,13 @@ void HttpServer::start() {
                 return;
             }
 
+            // Extract source IP for brute force and allowlist checks
+            std::string source_ip = req.get_header_value("X-Forwarded-For");
+            if (source_ip.empty()) source_ip = req.remote_addr;
+            if (const auto comma = source_ip.find(','); comma != std::string::npos) {
+                source_ip = source_ip.substr(0, comma);
+            }
+
             // Authentication: Bearer token first, fallback to JSON body "user" field
             std::optional<UserInfo> user_info;
             std::string user;
@@ -277,12 +288,26 @@ void HttpServer::start() {
                 if (auth_header.size() > http::kBearerPrefix.size() &&
                 std::string_view(auth_header).substr(0, http::kBearerPrefix.size()) == http::kBearerPrefix) {
                 const std::string api_key(std::string_view(auth_header).substr(http::kBearerPrefix.size()));
+
+                // Brute force check (before attempting auth)
+                if (brute_force_protector_) {
+                    const auto block = brute_force_protector_->is_blocked(source_ip, "");
+                    if (block.blocked) {
+                        res.status = 429;
+                        res.set_header("Retry-After", std::format("{}", block.retry_after_seconds));
+                        res.set_content(std::format(R"({{"success":false,"error":"{}"}})", block.reason), http::kJsonContentType);
+                        return;
+                    }
+                }
+
                 user_info = authenticate_api_key(api_key);
                 if (!user_info) {
+                    if (brute_force_protector_) brute_force_protector_->record_failure(source_ip, "");
                     res.status = httplib::StatusCode::Unauthorized_401;
                     res.set_content(R"({"success":false,"error":"Invalid API key"})", http::kJsonContentType);
                     return;
                 }
+                if (brute_force_protector_) brute_force_protector_->record_success(source_ip, user_info->name);
                 user = user_info->name;
             } else {
                 // Fallback: user from JSON body
@@ -293,12 +318,36 @@ void HttpServer::start() {
                     return;
                 }
                 user = std::string(user_sv);
+
+                // Brute force check
+                if (brute_force_protector_) {
+                    const auto block = brute_force_protector_->is_blocked(source_ip, user);
+                    if (block.blocked) {
+                        res.status = httplib::StatusCode::TooManyRequests_429;
+                        res.set_header("Retry-After", std::format("{}", block.retry_after_seconds));
+                        res.set_content(std::format(R"({{"success":false,"error":"{}"}})", block.reason), http::kJsonContentType);
+                        return;
+                    }
+                }
+
                 user_info = validate_user(user);
                 if (!user_info) {
+                    if (brute_force_protector_) brute_force_protector_->record_failure(source_ip, user);
                     res.status = httplib::StatusCode::Unauthorized_401;
                     res.set_content(
                         std::format(R"({{"success":false,"error":"Unknown user: {}"}})", user),
                         http::kJsonContentType);
+                    return;
+                }
+                if (brute_force_protector_) brute_force_protector_->record_success(source_ip, user);
+            }
+
+            // IP allowlist check
+            if (user_info && !user_info->allowed_ips.empty()) {
+                if (!IpAllowlist::is_allowed(source_ip, user_info->allowed_ips)) {
+                    s_ip_blocks.fetch_add(1, std::memory_order_relaxed);
+                    res.status = httplib::StatusCode::Forbidden_403;
+                    res.set_content(R"({"success":false,"error":"IP address not allowed for this user"})", http::kJsonContentType);
                     return;
                 }
             }
@@ -618,6 +667,28 @@ void HttpServer::start() {
                 "# TYPE sql_proxy_pool_connections_recycled_total counter\n"
                 "sql_proxy_pool_connections_recycled_total {}\n\n",
                 pool_stats.connections_recycled);
+
+            // Acquire time histogram (cumulative buckets)
+            const auto& b = pool_stats.acquire_time_buckets;
+            const uint64_t c0 = b[0];
+            const uint64_t c1 = c0 + b[1];
+            const uint64_t c2 = c1 + b[2];
+            const uint64_t c3 = c2 + b[3];
+            const uint64_t c4 = c3 + b[4];
+            const uint64_t c5 = c4 + b[5];
+            const double sum_sec = static_cast<double>(pool_stats.acquire_time_sum_us) / 1e6;
+            output += std::format(
+                "# HELP sql_proxy_pool_acquire_duration_seconds Connection pool acquire time\n"
+                "# TYPE sql_proxy_pool_acquire_duration_seconds histogram\n"
+                "sql_proxy_pool_acquire_duration_seconds_bucket{{le=\"0.0001\"}} {}\n"
+                "sql_proxy_pool_acquire_duration_seconds_bucket{{le=\"0.0005\"}} {}\n"
+                "sql_proxy_pool_acquire_duration_seconds_bucket{{le=\"0.001\"}} {}\n"
+                "sql_proxy_pool_acquire_duration_seconds_bucket{{le=\"0.005\"}} {}\n"
+                "sql_proxy_pool_acquire_duration_seconds_bucket{{le=\"0.05\"}} {}\n"
+                "sql_proxy_pool_acquire_duration_seconds_bucket{{le=\"+Inf\"}} {}\n"
+                "sql_proxy_pool_acquire_duration_seconds_sum {:.6f}\n"
+                "sql_proxy_pool_acquire_duration_seconds_count {}\n\n",
+                c0, c1, c2, c3, c4, c5, sum_sec, pool_stats.acquire_time_count);
         }
 
         // --- Parse cache DDL invalidation stats ---
@@ -630,6 +701,26 @@ void HttpServer::start() {
                 "sql_proxy_cache_ddl_invalidations_total {}\n\n",
                 pc_stats.ddl_invalidations);
         }
+
+        // --- Brute force stats ---
+        if (brute_force_protector_) {
+            output += std::format(
+                "# HELP sql_proxy_auth_failures_total Authentication failures tracked by brute force protector\n"
+                "# TYPE sql_proxy_auth_failures_total counter\n"
+                "sql_proxy_auth_failures_total {}\n\n"
+                "# HELP sql_proxy_auth_blocks_total Requests blocked by brute force protector\n"
+                "# TYPE sql_proxy_auth_blocks_total counter\n"
+                "sql_proxy_auth_blocks_total {}\n\n",
+                brute_force_protector_->total_failures(),
+                brute_force_protector_->total_blocks());
+        }
+
+        // --- IP allowlist blocks ---
+        output += std::format(
+            "# HELP sql_proxy_ip_blocked_total Requests blocked by IP allowlist\n"
+            "# TYPE sql_proxy_ip_blocked_total counter\n"
+            "sql_proxy_ip_blocked_total {}\n\n",
+            s_ip_blocks.load(std::memory_order_relaxed));
 
         // --- Build info ---
         output += "# HELP sql_proxy_info Build information\n"

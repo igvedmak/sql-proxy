@@ -93,6 +93,11 @@ private:
     // Connection lifetime tracking
     std::unordered_map<IDbConnection*, std::chrono::steady_clock::time_point> created_at_;
     std::atomic<size_t> connections_recycled_{0};
+
+    // Acquire time histogram (lock-free)
+    std::atomic<uint64_t> acquire_time_sum_us_{0};
+    std::atomic<uint64_t> acquire_time_count_{0};
+    std::array<std::atomic<uint64_t>, 6> acquire_time_buckets_{};
 };
 
 } // namespace sqlproxy

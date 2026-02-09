@@ -77,54 +77,6 @@ This document outlines potential features and improvements for the SQL Proxy sys
 
 ---
 
-### 9. Brute Force Protection
-**Problem:** No rate limiting on authentication attempts — vulnerable to credential stuffing.
-
-**Solution:**
-- Add per-IP and per-username failed auth counters
-- After 5 failures in 60 seconds → block source for 5 minutes
-- Exponential backoff: 1 min, 5 min, 15 min, 1 hour
-- Audit all failed auth attempts with source IP
-- Add `/admin/unblock-ip` endpoint for manual override
-
-**Impact:** Prevents automated password attacks
-
----
-
-### 10. IP Allowlisting Per User
-**Problem:** Any IP can authenticate as any user if they have the API key. Admin users should be restricted to internal networks.
-
-**Solution:**
-- Add `allowed_ips` array to UserInfo config:
-  ```toml
-  [[users]]
-  name = "admin"
-  allowed_ips = ["10.0.0.0/8", "192.168.1.100"]
-  ```
-- Check source IP during authentication
-- Block requests from non-allowed IPs with 403
-- Works with X-Forwarded-For header
-
-**Impact:** Defense-in-depth for privileged accounts
-
----
-
-### 11. Encoding Bypass Detection
-**Problem:** SQL injection detector checks raw SQL text but attackers use URL encoding (`%27`), Unicode normalization (`ʻ`), or hex to bypass.
-
-**Solution:**
-- Add normalization step before pattern matching:
-  - URL decode
-  - HTML entity decode
-  - Unicode normalization (NFC)
-  - Hex decode (`0x27` → `'`)
-- Run all 6 pattern checks on both raw and normalized SQL
-- Flag queries that differ after normalization
-
-**Impact:** Catches obfuscated injection attempts
-
----
-
 ### 12. Wire Protocol TLS
 **Problem:** HTTP has TLS but PostgreSQL wire protocol connections are cleartext — exposes credentials and query data.
 
@@ -191,23 +143,6 @@ This document outlines potential features and improvements for the SQL Proxy sys
 
 ---
 
-### 21. Connection Pool Wait Time Metrics
-**Problem:** Can't tell if connection pool is undersized without code instrumentation.
-
-**Solution:**
-- Measure wait time from `acquire()` call to connection ready
-- Emit Prometheus histogram:
-  ```
-  sql_proxy_pool_wait_duration_seconds{database="testdb"}
-  sql_proxy_pool_queue_depth{database="testdb"}
-  ```
-- Alert if P95 wait time exceeds 100ms
-- Dashboard shows pool saturation
-
-**Impact:** Data-driven pool sizing decisions
-
----
-
 ## Compliance & Governance
 
 ### 25. Audit Record Encryption at Rest
@@ -253,26 +188,6 @@ This document outlines potential features and improvements for the SQL Proxy sys
 ---
 
 ## Operations Features
-
-### 29. Multiple Config File Includes
-**Problem:** Single 598-line TOML file is hard to manage. Different teams need to own policies, users, databases independently.
-
-**Solution:**
-- Add `include` directive:
-  ```toml
-  include = [
-    "policies.toml",
-    "users.toml",
-    "databases.toml"
-  ]
-  ```
-- Merge semantics: arrays concatenate, objects deep-merge
-- Relative paths resolve from main config location
-- Validate no circular includes
-
-**Impact:** Team-specific config ownership without merge conflicts
-
----
 
 ### 30. Plugin Hot-Reload
 **Problem:** Adding a classifier or audit sink plugin requires full proxy restart. Lost in-flight requests.

@@ -16,6 +16,7 @@
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
 #include "core/query_rewriter.hpp"
+#include "security/brute_force_protector.hpp"
 #include "security/sql_injection_detector.hpp"
 #include "security/anomaly_detector.hpp"
 #include "security/lineage_tracker.hpp"
@@ -602,6 +603,18 @@ int main(int argc, char* argv[]) {
         }
         g_shutdown = std::make_shared<ShutdownCoordinator>(shutdown_cfg);
         g_server->set_shutdown_coordinator(g_shutdown);
+
+        // Tier E: Brute force protection
+        if (config_result.success && config_result.config.security.brute_force_enabled) {
+            BruteForceProtector::Config bf_cfg;
+            bf_cfg.enabled = true;
+            bf_cfg.max_attempts = config_result.config.security.brute_force_max_attempts;
+            bf_cfg.window_seconds = config_result.config.security.brute_force_window_seconds;
+            bf_cfg.lockout_seconds = config_result.config.security.brute_force_lockout_seconds;
+            bf_cfg.max_lockout_seconds = config_result.config.security.brute_force_max_lockout_seconds;
+            g_server->set_brute_force_protector(
+                std::make_shared<BruteForceProtector>(bf_cfg));
+        }
 
         // Wire Protocol Server (PostgreSQL v3)
         if (config_result.success && config_result.config.wire_protocol.enabled) {
