@@ -102,6 +102,20 @@ HierarchicalRateLimiter::HierarchicalRateLimiter(const Config& config)
         config_.global_tokens_per_second,
         config_.global_burst_capacity
     );
+
+    // Start cleanup thread if idle timeout is configured
+    if (config_.bucket_idle_timeout_seconds > 0) {
+        cleanup_running_.store(true, std::memory_order_release);
+        cleanup_thread_ = std::thread([this]() { cleanup_loop(); });
+    }
+}
+
+HierarchicalRateLimiter::~HierarchicalRateLimiter() {
+    cleanup_running_.store(false, std::memory_order_release);
+    cleanup_cv_.notify_all();
+    if (cleanup_thread_.joinable()) {
+        cleanup_thread_.join();
+    }
 }
 
 RateLimitResult HierarchicalRateLimiter::check(
@@ -230,12 +244,27 @@ void HierarchicalRateLimiter::reset_all() {
 }
 
 HierarchicalRateLimiter::Stats HierarchicalRateLimiter::get_stats() const {
+    size_t ub = 0, db = 0, udb = 0;
+    {
+        std::shared_lock<std::shared_mutex> lock(user_buckets_mutex_);
+        ub = user_buckets_.size();
+    }
+    {
+        std::shared_lock<std::shared_mutex> lock(db_buckets_mutex_);
+        db = db_buckets_.size();
+    }
+    {
+        std::shared_lock<std::shared_mutex> lock(user_db_buckets_mutex_);
+        udb = user_db_buckets_.size();
+    }
     return Stats{
         total_checks_.load(std::memory_order_relaxed),
         global_rejects_.load(std::memory_order_relaxed),
         user_rejects_.load(std::memory_order_relaxed),
         database_rejects_.load(std::memory_order_relaxed),
-        user_database_rejects_.load(std::memory_order_relaxed)
+        user_database_rejects_.load(std::memory_order_relaxed),
+        buckets_evicted_.load(std::memory_order_relaxed),
+        ub, db, udb
     };
 }
 
@@ -339,6 +368,70 @@ std::shared_ptr<TokenBucket> HierarchicalRateLimiter::get_user_database_bucket(
     }
 
     return it->second;
+}
+
+void HierarchicalRateLimiter::cleanup_loop() {
+    const auto idle_timeout_ns = static_cast<int64_t>(config_.bucket_idle_timeout_seconds) * 1'000'000'000LL;
+
+    while (cleanup_running_.load(std::memory_order_acquire)) {
+        // Wait for cleanup interval or shutdown signal
+        {
+            std::unique_lock<std::mutex> lock(cleanup_mutex_);
+            cleanup_cv_.wait_for(lock,
+                std::chrono::seconds(config_.cleanup_interval_seconds),
+                [this]() { return !cleanup_running_.load(std::memory_order_acquire); });
+        }
+
+        if (!cleanup_running_.load(std::memory_order_acquire)) break;
+
+        const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+
+        uint64_t evicted = 0;
+
+        // Sweep user buckets
+        {
+            std::unique_lock<std::shared_mutex> lock(user_buckets_mutex_);
+            for (auto it = user_buckets_.begin(); it != user_buckets_.end(); ) {
+                if (now_ns - it->second->last_access_ns() > idle_timeout_ns) {
+                    it = user_buckets_.erase(it);
+                    ++evicted;
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        // Sweep database buckets
+        {
+            std::unique_lock<std::shared_mutex> lock(db_buckets_mutex_);
+            for (auto it = db_buckets_.begin(); it != db_buckets_.end(); ) {
+                if (now_ns - it->second->last_access_ns() > idle_timeout_ns) {
+                    it = db_buckets_.erase(it);
+                    ++evicted;
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        // Sweep user-database buckets
+        {
+            std::unique_lock<std::shared_mutex> lock(user_db_buckets_mutex_);
+            for (auto it = user_db_buckets_.begin(); it != user_db_buckets_.end(); ) {
+                if (now_ns - it->second->last_access_ns() > idle_timeout_ns) {
+                    it = user_db_buckets_.erase(it);
+                    ++evicted;
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        if (evicted > 0) {
+            buckets_evicted_.fetch_add(evicted, std::memory_order_relaxed);
+        }
+    }
 }
 
 } // namespace sqlproxy

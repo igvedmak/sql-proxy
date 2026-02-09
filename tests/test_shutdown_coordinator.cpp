@@ -122,9 +122,9 @@ TEST_CASE("ShutdownCoordinator: in_flight_count tracking", "[shutdown]") {
     ShutdownCoordinator sc;
 
     CHECK(sc.in_flight_count() == 0);
-    sc.try_enter_request();
+    (void)sc.try_enter_request();
     CHECK(sc.in_flight_count() == 1);
-    sc.try_enter_request();
+    (void)sc.try_enter_request();
     CHECK(sc.in_flight_count() == 2);
     sc.leave_request();
     CHECK(sc.in_flight_count() == 1);

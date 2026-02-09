@@ -91,6 +91,7 @@ public:
         size_t hits;
         size_t misses;
         size_t evictions;
+        size_t ddl_invalidations;
 
         double hit_rate() const {
             size_t total = hits + misses;
@@ -99,6 +100,13 @@ public:
     };
 
     Stats get_stats() const;
+
+    /**
+     * @brief Invalidate all cache entries referencing a table
+     * @param table_name Table name to invalidate
+     * @return Number of entries invalidated
+     */
+    size_t invalidate_table(const std::string& table_name);
 
 private:
     /**
@@ -117,6 +125,7 @@ private:
         std::optional<std::shared_ptr<StatementInfo>> get(const QueryFingerprint& fingerprint);
         void put(std::shared_ptr<StatementInfo> info);
         void clear();
+        size_t invalidate_table(const std::string& table_name);
 
         size_t size() const;
         size_t eviction_count() const { return evictions_; }
@@ -147,6 +156,7 @@ private:
     // Statistics (atomic for thread-safety)
     mutable std::atomic<uint64_t> hits_;
     mutable std::atomic<uint64_t> misses_;
+    std::atomic<uint64_t> ddl_invalidations_{0};
 };
 
 } // namespace sqlproxy

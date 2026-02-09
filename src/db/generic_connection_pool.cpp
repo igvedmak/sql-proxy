@@ -20,6 +20,7 @@ GenericConnectionPool::GenericConnectionPool(
         auto conn = create_connection();
         if (conn) {
             std::lock_guard<std::mutex> lock(mutex_);
+            created_at_[conn.get()] = std::chrono::steady_clock::now();
             idle_connections_.push_back(std::move(conn));
         } else {
             utils::log::warn(std::format("Failed to create connection {} during pool initialization for database '{}'", i + 1, db_name_));
@@ -74,11 +75,47 @@ std::unique_ptr<PooledConnection> GenericConnectionPool::acquire(
             failed_acquires_.fetch_add(1, std::memory_order_relaxed);
             return nullptr;
         }
+        std::lock_guard<std::mutex> lock(mutex_);
+        created_at_[conn.get()] = std::chrono::steady_clock::now();
+    }
+
+    // Check max_lifetime: recycle if connection is too old
+    if (config_.max_lifetime.count() > 0) {
+        std::chrono::steady_clock::time_point birth;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto it = created_at_.find(conn.get());
+            if (it != created_at_.end()) birth = it->second;
+        }
+        const auto age = std::chrono::steady_clock::now() - birth;
+        if (age > config_.max_lifetime) {
+            // Recycle: close old, create new
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                created_at_.erase(conn.get());
+            }
+            conn->close();
+            total_connections_.fetch_sub(1, std::memory_order_relaxed);
+            connections_recycled_.fetch_add(1, std::memory_order_relaxed);
+
+            conn = create_connection();
+            if (!conn) {
+                semaphore_.release();
+                failed_acquires_.fetch_add(1, std::memory_order_relaxed);
+                return nullptr;
+            }
+            std::lock_guard<std::mutex> lock(mutex_);
+            created_at_[conn.get()] = std::chrono::steady_clock::now();
+        }
     }
 
     // Validate connection health
     if (!conn->is_healthy(config_.health_check_query)) {
         health_check_failures_.fetch_add(1, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            created_at_.erase(conn.get());
+        }
         conn->close();
         total_connections_.fetch_sub(1, std::memory_order_relaxed);
 
@@ -88,6 +125,8 @@ std::unique_ptr<PooledConnection> GenericConnectionPool::acquire(
             failed_acquires_.fetch_add(1, std::memory_order_relaxed);
             return nullptr;
         }
+        std::lock_guard<std::mutex> lock(mutex_);
+        created_at_[conn.get()] = std::chrono::steady_clock::now();
     }
 
     // Create RAII handle with return callback
@@ -109,6 +148,7 @@ PoolStats GenericConnectionPool::get_stats() const {
     stats.total_releases = total_releases_.load(std::memory_order_relaxed);
     stats.failed_acquires = failed_acquires_.load(std::memory_order_relaxed);
     stats.health_check_failures = health_check_failures_.load(std::memory_order_relaxed);
+    stats.connections_recycled = connections_recycled_.load(std::memory_order_relaxed);
 
     return stats;
 }
@@ -126,6 +166,7 @@ void GenericConnectionPool::drain() {
     }
 
     idle_connections_.clear();
+    created_at_.clear();
 
     utils::log::info(std::format("ConnectionPool drained for database '{}'", db_name_));
 }
@@ -148,6 +189,10 @@ void GenericConnectionPool::return_connection(std::unique_ptr<IDbConnection> con
     // If shutdown or connection unhealthy, close it
     if (shutdown_.load(std::memory_order_acquire) ||
         !conn->is_healthy(config_.health_check_query)) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            created_at_.erase(conn.get());
+        }
         conn->close();
         total_connections_.fetch_sub(1, std::memory_order_relaxed);
         semaphore_.release();

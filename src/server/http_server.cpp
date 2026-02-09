@@ -11,6 +11,9 @@
 #include "config/config_loader.hpp"
 #include "core/slow_query_tracker.hpp"
 #include "core/utils.hpp"
+#include "executor/circuit_breaker.hpp"
+#include "db/iconnection_pool.hpp"
+#include "parser/parse_cache.hpp"
 #include "policy/policy_loader.hpp"
 #include "security/compliance_reporter.hpp"
 #include "security/lineage_tracker.hpp"
@@ -391,10 +394,78 @@ void HttpServer::start() {
         }
     });
 
-    // GET /health - Health check
-    svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
-        const std::string health_json = R"({"status":"healthy","service":"sql-proxy"})";
-        res.set_content(health_json, http::kJsonContentType);
+    // GET /health - Health check with depth levels
+    svr.Get("/health", [this](const httplib::Request& req, httplib::Response& res) {
+        const std::string level = req.get_param_value("level");
+
+        // Shallow (default): process alive
+        if (level.empty() || level == "shallow") {
+            res.set_content(R"({"status":"healthy","service":"sql-proxy"})",
+                http::kJsonContentType);
+            return;
+        }
+
+        // Deep & readiness: check component health
+        bool all_ok = true;
+        std::string checks;
+
+        // Circuit breaker check
+        const auto cb = pipeline_->get_circuit_breaker();
+        if (cb) {
+            const auto state = cb->get_state();
+            const bool cb_ok = (state == CircuitState::CLOSED);
+            if (!cb_ok) all_ok = false;
+            const char* state_str = (state == CircuitState::CLOSED) ? "closed" :
+                                    (state == CircuitState::OPEN) ? "open" : "half_open";
+            checks += std::format(R"("circuit_breaker":"{}")", cb_ok ? "ok" : state_str);
+        } else {
+            checks += R"("circuit_breaker":"ok")";
+        }
+
+        // Connection pool check
+        const auto pool = pipeline_->get_connection_pool();
+        if (pool) {
+            const auto ps = pool->get_stats();
+            const bool pool_ok = (ps.idle_connections > 0 || ps.active_connections < ps.total_connections);
+            if (!pool_ok) all_ok = false;
+            checks += std::format(R"(,"connection_pool":"{}")", pool_ok ? "ok" : "exhausted");
+        } else {
+            checks += R"(,"connection_pool":"ok")";
+        }
+
+        // Audit emitter check
+        const auto audit = pipeline_->get_audit_emitter();
+        if (audit) {
+            const auto as = audit->get_stats();
+            const bool audit_ok = (as.overflow_dropped == 0);
+            if (!audit_ok) all_ok = false;
+            checks += std::format(R"(,"audit":"{}")", audit_ok ? "ok" : "dropping");
+        } else {
+            checks += R"(,"audit":"ok")";
+        }
+
+        // Readiness: additional checks
+        if (level == "readiness") {
+            const auto rl = pipeline_->get_rate_limiter();
+            const auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(rl.get());
+            if (hierarchical_rl) {
+                const auto rs = hierarchical_rl->get_stats();
+                const uint64_t total_rejects = rs.global_rejects + rs.user_rejects +
+                    rs.database_rejects + rs.user_database_rejects;
+                const bool rl_ok = (rs.total_checks == 0 || total_rejects * 2 < rs.total_checks);
+                if (!rl_ok) all_ok = false;
+                checks += std::format(R"(,"rate_limiter":"{}")", rl_ok ? "ok" : "overloaded");
+            } else {
+                checks += R"(,"rate_limiter":"ok")";
+            }
+        }
+
+        const auto status = all_ok ? "healthy" : "unhealthy";
+        const auto body = std::format(
+            R"({{"status":"{}","service":"sql-proxy","checks":{{{}}}}})", status, checks);
+
+        res.status = all_ok ? httplib::StatusCode::OK_200 : httplib::StatusCode::ServiceUnavailable_503;
+        res.set_content(body, http::kJsonContentType);
     });
 
     // GET /metrics - Prometheus metrics endpoint
@@ -503,6 +574,61 @@ void HttpServer::start() {
                 "# TYPE sql_proxy_slow_queries_total counter\n"
                 "sql_proxy_slow_queries_total {}\n\n",
                 slow_tracker->total_slow_queries());
+        }
+
+        // --- Circuit breaker transition stats ---
+        const auto cb = pipeline_->get_circuit_breaker();
+        if (cb) {
+            const auto events = cb->get_recent_events();
+            uint64_t to_open = 0, to_half_open = 0, to_closed = 0;
+            for (const auto& e : events) {
+                if (e.to == CircuitState::OPEN) ++to_open;
+                else if (e.to == CircuitState::HALF_OPEN) ++to_half_open;
+                else if (e.to == CircuitState::CLOSED) ++to_closed;
+            }
+            output += std::format(
+                "# HELP sql_proxy_circuit_breaker_transitions_total Circuit breaker state transitions\n"
+                "# TYPE sql_proxy_circuit_breaker_transitions_total counter\n"
+                "sql_proxy_circuit_breaker_transitions_total{{to=\"open\"}} {}\n"
+                "sql_proxy_circuit_breaker_transitions_total{{to=\"half_open\"}} {}\n"
+                "sql_proxy_circuit_breaker_transitions_total{{to=\"closed\"}} {}\n\n",
+                to_open, to_half_open, to_closed);
+        }
+
+        // --- Rate limiter bucket stats ---
+        if (hierarchical_rl) {
+            const auto rl_stats = hierarchical_rl->get_stats();
+            output += std::format(
+                "# HELP sql_proxy_rate_limiter_buckets_active Active rate limiter buckets\n"
+                "# TYPE sql_proxy_rate_limiter_buckets_active gauge\n"
+                "sql_proxy_rate_limiter_buckets_active {}\n\n"
+                "# HELP sql_proxy_rate_limiter_buckets_evicted_total Evicted idle buckets\n"
+                "# TYPE sql_proxy_rate_limiter_buckets_evicted_total counter\n"
+                "sql_proxy_rate_limiter_buckets_evicted_total {}\n\n",
+                rl_stats.user_bucket_count + rl_stats.db_bucket_count + rl_stats.user_db_bucket_count,
+                rl_stats.buckets_evicted);
+        }
+
+        // --- Connection pool recycled stats ---
+        const auto pool = pipeline_->get_connection_pool();
+        if (pool) {
+            const auto pool_stats = pool->get_stats();
+            output += std::format(
+                "# HELP sql_proxy_pool_connections_recycled_total Connections recycled due to max lifetime\n"
+                "# TYPE sql_proxy_pool_connections_recycled_total counter\n"
+                "sql_proxy_pool_connections_recycled_total {}\n\n",
+                pool_stats.connections_recycled);
+        }
+
+        // --- Parse cache DDL invalidation stats ---
+        const auto parse_cache = pipeline_->get_parse_cache();
+        if (parse_cache) {
+            const auto pc_stats = parse_cache->get_stats();
+            output += std::format(
+                "# HELP sql_proxy_cache_ddl_invalidations_total Cache entries invalidated by DDL\n"
+                "# TYPE sql_proxy_cache_ddl_invalidations_total counter\n"
+                "sql_proxy_cache_ddl_invalidations_total {}\n\n",
+                pc_stats.ddl_invalidations);
         }
 
         // --- Build info ---
@@ -807,6 +933,50 @@ void HttpServer::start() {
         }
         json += std::format("],\"total_slow_queries\":{},\"threshold_ms\":{},\"enabled\":true}}",
             tracker->total_slow_queries(), tracker->threshold_ms());
+        res.set_content(json, http::kJsonContentType);
+    });
+
+    // GET /api/v1/circuit-breakers - Circuit breaker state and events (admin only)
+    svr.Get("/api/v1/circuit-breakers", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!admin_token_.empty()) {
+            const auto auth = req.get_header_value(http::kAuthorizationHeader);
+            if (auth.size() <= http::kBearerPrefix.size() ||
+                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+                res.status = httplib::StatusCode::Unauthorized_401;
+                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
+                return;
+            }
+        }
+        const auto cb = pipeline_->get_circuit_breaker();
+        if (!cb) {
+            res.set_content(R"({"breakers":[]})", http::kJsonContentType);
+            return;
+        }
+        const auto stats = cb->get_stats();
+        const auto events = cb->get_recent_events();
+        const char* state_str = (stats.state == CircuitState::CLOSED) ? "closed" :
+                                (stats.state == CircuitState::OPEN) ? "open" : "half_open";
+
+        std::string events_json = "[";
+        for (size_t i = 0; i < events.size(); ++i) {
+            if (i > 0) events_json += ",";
+            const auto& e = events[i];
+            const char* from_str = (e.from == CircuitState::CLOSED) ? "closed" :
+                                   (e.from == CircuitState::OPEN) ? "open" : "half_open";
+            const char* to_str = (e.to == CircuitState::CLOSED) ? "closed" :
+                                 (e.to == CircuitState::OPEN) ? "open" : "half_open";
+            events_json += std::format(
+                R"({{"from":"{}","to":"{}","breaker":"{}"}})",
+                from_str, to_str, e.breaker_name);
+        }
+        events_json += "]";
+
+        const auto json = std::format(
+            R"({{"breakers":[{{"name":"{}","state":"{}","failure_count":{},"success_count":{},"infrastructure_failures":{},"application_failures":{},"transient_failures":{},"recent_events":{}}}]}})",
+            cb->name(), state_str, stats.failure_count, stats.success_count,
+            stats.infrastructure_failure_count, stats.application_failure_count,
+            stats.transient_failure_count, events_json);
         res.set_content(json, http::kJsonContentType);
     });
 

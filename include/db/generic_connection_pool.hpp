@@ -5,11 +5,13 @@
 #include "db/pooled_connection.hpp"
 #include "executor/circuit_breaker.hpp"
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <semaphore>
 #include <string>
+#include <unordered_map>
 
 namespace sqlproxy {
 
@@ -87,6 +89,10 @@ private:
 
     // Shutdown flag
     std::atomic<bool> shutdown_{false};
+
+    // Connection lifetime tracking
+    std::unordered_map<IDbConnection*, std::chrono::steady_clock::time_point> created_at_;
+    std::atomic<size_t> connections_recycled_{0};
 };
 
 } // namespace sqlproxy

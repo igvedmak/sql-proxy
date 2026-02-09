@@ -172,8 +172,8 @@ TEST_CASE("ResultCache: stats tracking", "[cache]") {
     auto r = make_result({"id"}, {{"1"}});
     cache.put(42, "user", "db", r);
 
-    cache.get(42, "user", "db");  // hit
-    cache.get(99, "user", "db");  // miss
+    (void)cache.get(42, "user", "db");  // hit
+    (void)cache.get(99, "user", "db");  // miss
 
     auto stats = cache.get_stats();
     CHECK(stats.hits == 1);

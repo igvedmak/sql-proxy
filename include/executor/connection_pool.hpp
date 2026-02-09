@@ -21,29 +21,29 @@ namespace sqlproxy {
  * Automatically returns connection to pool on destruction.
  * Move-only to prevent accidental copying.
  */
-class PooledConnection {
+class PgPooledConnection {
 public:
     /**
      * @brief Construct pooled connection with return callback
      * @param conn PostgreSQL connection handle
      * @param return_fn Function to call on destruction (returns to pool)
      */
-    PooledConnection(PGconn* conn, std::function<void(PGconn*)> return_fn);
+    PgPooledConnection(PGconn* conn, std::function<void(PGconn*)> return_fn);
 
     /**
      * @brief Destructor - automatically returns connection to pool
      */
-    ~PooledConnection();
+    ~PgPooledConnection();
 
     // Move constructor
-    PooledConnection(PooledConnection&& other) noexcept;
+    PgPooledConnection(PgPooledConnection&& other) noexcept;
 
     // Move assignment
-    PooledConnection& operator=(PooledConnection&& other) noexcept;
+    PgPooledConnection& operator=(PgPooledConnection&& other) noexcept;
 
     // Delete copy constructor and copy assignment
-    PooledConnection(const PooledConnection&) = delete;
-    PooledConnection& operator=(const PooledConnection&) = delete;
+    PgPooledConnection(const PgPooledConnection&) = delete;
+    PgPooledConnection& operator=(const PgPooledConnection&) = delete;
 
     /**
      * @brief Get raw PostgreSQL connection pointer
@@ -136,7 +136,7 @@ public:
      * @param timeout Max wait time for acquisition
      * @return RAII connection handle or nullptr on timeout/error
      */
-    std::unique_ptr<PooledConnection> acquire(
+    std::unique_ptr<PgPooledConnection> acquire(
         std::chrono::milliseconds timeout = std::chrono::milliseconds{5000}
     );
 

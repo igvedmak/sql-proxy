@@ -4,7 +4,10 @@
 #include "server/irate_limiter.hpp"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <shared_mutex>  // C++17 reader-writer locks
 #include <string>
@@ -46,6 +49,13 @@ public:
      * @brief Reset bucket to full capacity
      */
     void reset();
+
+    /**
+     * @brief Get last access time (nanoseconds since steady_clock epoch)
+     */
+    [[nodiscard]] int64_t last_access_ns() const {
+        return last_refill_ns_.load(std::memory_order_relaxed);
+    }
 
 private:
     /**
@@ -97,6 +107,10 @@ public:
         // Level 4: Per-User-Per-Database (default)
         uint32_t default_user_db_tokens_per_second = 100;
         uint32_t default_user_db_burst_capacity = 20;
+
+        // Bucket cleanup
+        uint32_t bucket_idle_timeout_seconds = 3600;   // 0 = disabled
+        uint32_t cleanup_interval_seconds = 60;
     };
 
     /**
@@ -137,9 +151,15 @@ public:
         uint64_t user_rejects;
         uint64_t database_rejects;
         uint64_t user_database_rejects;
+        uint64_t buckets_evicted;
+        size_t user_bucket_count;
+        size_t db_bucket_count;
+        size_t user_db_bucket_count;
     };
 
     Stats get_stats() const;
+
+    ~HierarchicalRateLimiter();
 
 private:
     /**
@@ -181,6 +201,14 @@ private:
     std::atomic<uint64_t> user_rejects_;
     std::atomic<uint64_t> database_rejects_;
     std::atomic<uint64_t> user_database_rejects_;
+
+    // Bucket cleanup
+    void cleanup_loop();
+    std::thread cleanup_thread_;
+    std::atomic<bool> cleanup_running_{false};
+    std::mutex cleanup_mutex_;
+    std::condition_variable cleanup_cv_;
+    std::atomic<uint64_t> buckets_evicted_{0};
 };
 
 } // namespace sqlproxy

@@ -167,6 +167,18 @@
 │  │   1. shared_lock → lookup → miss                                    │     │
 │  │   2. unique_lock → try_emplace → create if needed                   │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Bucket Cleanup (background thread):                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ Cleanup thread runs every cleanup_interval_seconds (default: 60)    │     │
+│  │                                                                     │     │
+│  │ For each bucket map (user, db, user_db):                            │     │
+│  │   unique_lock → erase_if:                                           │     │
+│  │     now_ns - bucket.last_access_ns() > idle_timeout_ns              │     │
+│  │                                                                     │     │
+│  │ Metrics: buckets_active, buckets_evicted_total                      │     │
+│  │ Config: bucket_idle_timeout_seconds (default: 3600)                 │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -211,6 +223,11 @@
 │  │                                                                     │     │
 │  │ HIT  → Return cached StatementInfo (skip libpg_query)              │     │
 │  │ MISS → Continue to Step 3                                           │     │
+│  │                                                                     │     │
+│  │ DDL Invalidation:                                                   │     │
+│  │   On successful DDL → invalidate_table(ddl_object_name)             │     │
+│  │   Scans all shards, removes entries referencing affected table       │     │
+│  │   Metric: sql_proxy_cache_ddl_invalidations_total                   │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  Step 3: libpg_query PARSE (~50μs on miss)                                   │
@@ -461,6 +478,12 @@
 │  │                                                                     │     │
 │  │  OPEN state → reject immediately (ErrorCode::CIRCUIT_OPEN)         │     │
 │  │  HALF_OPEN  → allow 1 probe request                                │     │
+│  │                                                                     │     │
+│  │  State Change Events:                                               │     │
+│  │  ├─ Emits StateChangeEvent on every transition (from, to, time)    │     │
+│  │  ├─ Stored in bounded deque (max 100 recent events)                │     │
+│  │  ├─ Optional callback for alerting integrations                    │     │
+│  │  └─ Exposed via GET /api/v1/circuit-breakers                       │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  CONNECTION POOL (per database):                                             │
@@ -485,6 +508,15 @@
 │  │  │ Health Check: PQexec(conn, "SELECT 1")           │               │     │
 │  │  │  ├─ Healthy → use this connection                │               │     │
 │  │  │  └─ Unhealthy → PQfinish + create new            │               │     │
+│  │  └──────────────────────────────────────────────────┘               │     │
+│  │                       │                                             │     │
+│  │                       ▼                                             │     │
+│  │  ┌──────────────────────────────────────────────────┐               │     │
+│  │  │ Max Lifetime Check:                              │               │     │
+│  │  │  now - created_at > max_lifetime (default: 1hr)? │               │     │
+│  │  │  ├─ Within lifetime → use connection             │               │     │
+│  │  │  └─ Exceeded → close + create new (recycled)     │               │     │
+│  │  │  Metric: pool_connections_recycled_total          │               │     │
 │  │  └──────────────────────────────────────────────────┘               │     │
 │  │                       │                                             │     │
 │  │                       ▼                                             │     │
@@ -806,9 +838,10 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  GET /health                                                                 │
-│  └─ Returns: {"status":"healthy","service":"sql-proxy"}                      │
-│  └─ Always 200 (basic liveness check)                                        │
+│  GET /health?level=shallow|deep|readiness                                    │
+│  ├─ shallow (default): {"status":"healthy","service":"sql-proxy"} (200)      │
+│  ├─ deep: checks circuit breaker, connection pool, audit emitter (200/503)   │
+│  └─ readiness: deep + rate limiter reject ratio check (200/503)              │
 │                                                                              │
 │  GET /metrics (Prometheus format)                                            │
 │  ├─ sql_proxy_requests_total{status="allowed|blocked"}                       │
@@ -818,13 +851,22 @@
 │  ├─ sql_proxy_audit_written_total                                            │
 │  ├─ sql_proxy_audit_dropped_total                                            │
 │  ├─ sql_proxy_audit_flushes_total                                            │
-│  └─ sql_proxy_info{version="1.0.0"}                                          │
+│  ├─ sql_proxy_info{version="1.0.0"}                                          │
+│  ├─ sql_proxy_rate_limiter_buckets_active{level}                             │
+│  ├─ sql_proxy_rate_limiter_buckets_evicted_total                             │
+│  ├─ sql_proxy_circuit_breaker_transitions_total{to="open|half_open|closed"}  │
+│  ├─ sql_proxy_pool_connections_recycled_total                                │
+│  └─ sql_proxy_cache_ddl_invalidations_total                                  │
 │                                                                              │
 │  POST /policies/reload                                                       │
 │  ├─ Reads config/proxy.toml                                                  │
 │  ├─ Parses policies via PolicyLoader                                         │
 │  ├─ Hot-reloads via RCU (atomic pointer swap)                                │
 │  └─ Returns: {"success":true,"policies_loaded":20}                           │
+│                                                                              │
+│  GET /api/v1/circuit-breakers (Admin)                                        │
+│  ├─ Returns current state, stats, and recent state change events             │
+│  └─ Returns: { state, stats, recent_events[] }                               │
 │                                                                              │
 │  GET /api/v1/compliance/pii-report (Tier 4)                                  │
 │  ├─ Aggregates lineage data into PII access report                           │
@@ -976,6 +1018,15 @@
 │  │  ├─ Anomaly profiles: shared_mutex (double-checked locking) │             │
 │  │  ├─ Lineage tracker: shared_mutex (reads) / unique (writes) │             │
 │  │  └─ Key manager: shared_mutex (reads) / unique (rotation)   │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Rate Limiter Cleanup Thread (single, background)            │             │
+│  │                                                             │             │
+│  │  loop:                                                      │             │
+│  │    wait(cleanup_interval_seconds) or shutdown signal         │             │
+│  │    for each bucket map (user, db, user_db):                 │             │
+│  │      unique_lock → erase idle buckets (> idle_timeout)      │             │
 │  └─────────────────────────────────────────────────────────────┘             │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────┐             │

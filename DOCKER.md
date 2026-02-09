@@ -148,7 +148,7 @@ curl -X POST http://localhost:8080/policies/reload
 |--------|------|-------------|
 | `POST` | `/api/v1/query` | Execute SQL through the proxy pipeline |
 | `POST` | `/api/v1/query/dry-run` | Dry-run query evaluation (no execution) |
-| `GET` | `/health` | Health check (`{"status":"healthy"}`) |
+| `GET` | `/health` | Health check (supports `?level=shallow\|deep\|readiness`) |
 | `GET` | `/metrics` | Prometheus-format metrics |
 | `POST` | `/policies/reload` | Hot-reload policies from config |
 
@@ -158,6 +158,7 @@ curl -X POST http://localhost:8080/policies/reload
 |--------|------|-------------|
 | `POST` | `/api/v1/config/validate` | Validate TOML config without applying |
 | `GET` | `/api/v1/slow-queries` | Recent slow queries (threshold + buffer) |
+| `GET` | `/api/v1/circuit-breakers` | Circuit breaker state + recent events |
 
 ### Compliance (Admin)
 
@@ -376,6 +377,53 @@ Query recent slow queries:
 ```bash
 curl -H "Authorization: Bearer admin-secret-token" \
   http://localhost:8080/api/v1/slow-queries
+```
+
+## Health Check Depth Levels
+
+The `/health` endpoint supports three depth levels via query parameter:
+
+```bash
+# Shallow (default) — process alive
+curl http://localhost:8080/health
+curl http://localhost:8080/health?level=shallow
+
+# Deep — checks circuit breaker, connection pool, audit emitter
+curl http://localhost:8080/health?level=deep
+
+# Readiness — deep checks + rate limiter reject ratio
+curl http://localhost:8080/health?level=readiness
+```
+
+Returns 200 when healthy, 503 when unhealthy, with per-component detail:
+```json
+{
+  "status": "healthy",
+  "level": "deep",
+  "checks": {
+    "circuit_breaker": "ok",
+    "connection_pool": "ok",
+    "audit_emitter": "ok"
+  }
+}
+```
+
+Use `?level=deep` for Kubernetes liveness probes and `?level=readiness` for readiness probes.
+
+## Circuit Breaker Events
+
+The circuit breaker emits structured events on state transitions (CLOSED/OPEN/HALF_OPEN). View recent events via the API:
+
+```bash
+curl -H "Authorization: Bearer admin-secret-token" \
+  http://localhost:8080/api/v1/circuit-breakers
+```
+
+Transition counters are also exposed in `/metrics`:
+```
+sql_proxy_circuit_breaker_transitions_total{to="open"} N
+sql_proxy_circuit_breaker_transitions_total{to="half_open"} N
+sql_proxy_circuit_breaker_transitions_total{to="closed"} N
 ```
 
 ## Production Deployment

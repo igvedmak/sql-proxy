@@ -20,6 +20,7 @@ struct PoolConfig {
     std::chrono::milliseconds connection_timeout{5000};
     std::chrono::milliseconds idle_timeout{300000};
     std::string health_check_query{"SELECT 1"};
+    std::chrono::seconds max_lifetime{3600};  // 0 = disabled
 };
 
 /**
@@ -33,6 +34,7 @@ struct PoolStats {
     size_t total_releases = 0;
     size_t failed_acquires = 0;
     size_t health_check_failures = 0;
+    size_t connections_recycled = 0;
 };
 
 /**

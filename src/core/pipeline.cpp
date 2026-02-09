@@ -15,6 +15,9 @@
 #include "audit/audit_sampler.hpp"
 #include "cache/result_cache.hpp"
 #include "core/slow_query_tracker.hpp"
+#include "executor/circuit_breaker.hpp"
+#include "db/iconnection_pool.hpp"
+#include "parser/parse_cache.hpp"
 
 #include <unordered_set>
 
@@ -38,7 +41,10 @@ Pipeline::Pipeline(
     std::shared_ptr<TenantManager> tenant_manager,
     std::shared_ptr<AuditSampler> audit_sampler,
     std::shared_ptr<ResultCache> result_cache,
-    std::shared_ptr<SlowQueryTracker> slow_query_tracker)
+    std::shared_ptr<SlowQueryTracker> slow_query_tracker,
+    std::shared_ptr<CircuitBreaker> circuit_breaker,
+    std::shared_ptr<IConnectionPool> connection_pool,
+    std::shared_ptr<ParseCache> parse_cache)
     : parser_(std::move(parser)),
       policy_engine_(std::move(policy_engine)),
       rate_limiter_(std::move(rate_limiter)),
@@ -56,7 +62,10 @@ Pipeline::Pipeline(
       tenant_manager_(std::move(tenant_manager)),
       audit_sampler_(std::move(audit_sampler)),
       result_cache_(std::move(result_cache)),
-      slow_query_tracker_(std::move(slow_query_tracker)) {}
+      slow_query_tracker_(std::move(slow_query_tracker)),
+      circuit_breaker_(std::move(circuit_breaker)),
+      connection_pool_(std::move(connection_pool)),
+      parse_cache_(std::move(parse_cache)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -187,6 +196,14 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
             sq.fingerprint = ctx.fingerprint->normalized;
         }
         slow_query_tracker_->record_if_slow(sq);
+    }
+
+    // Layer 5.02: Parse cache DDL invalidation
+    if (parse_cache_ && ctx.query_result.success &&
+        stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL) &&
+        ctx.statement_info &&
+        ctx.statement_info->parsed.ddl_object_name.has_value()) {
+        parse_cache_->invalidate_table(*ctx.statement_info->parsed.ddl_object_name);
     }
 
     // Layer 5.05: Cache result (only for successful SELECTs)

@@ -26,6 +26,9 @@ class TenantManager;
 class AuditSampler;
 class ResultCache;
 class SlowQueryTracker;
+class CircuitBreaker;
+class IConnectionPool;
+class ParseCache;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -65,7 +68,10 @@ public:
         std::shared_ptr<TenantManager> tenant_manager = nullptr,
         std::shared_ptr<AuditSampler> audit_sampler = nullptr,
         std::shared_ptr<ResultCache> result_cache = nullptr,
-        std::shared_ptr<SlowQueryTracker> slow_query_tracker = nullptr
+        std::shared_ptr<SlowQueryTracker> slow_query_tracker = nullptr,
+        std::shared_ptr<CircuitBreaker> circuit_breaker = nullptr,
+        std::shared_ptr<IConnectionPool> connection_pool = nullptr,
+        std::shared_ptr<ParseCache> parse_cache = nullptr
     );
 
     /**
@@ -99,6 +105,21 @@ public:
      * @brief Get slow query tracker (for metrics/API)
      */
     std::shared_ptr<SlowQueryTracker> get_slow_query_tracker() const { return slow_query_tracker_; }
+
+    /**
+     * @brief Get circuit breaker (for health checks/metrics)
+     */
+    std::shared_ptr<CircuitBreaker> get_circuit_breaker() const { return circuit_breaker_; }
+
+    /**
+     * @brief Get connection pool (for health checks/metrics)
+     */
+    std::shared_ptr<IConnectionPool> get_connection_pool() const { return connection_pool_; }
+
+    /**
+     * @brief Get parse cache (for DDL invalidation/metrics)
+     */
+    std::shared_ptr<ParseCache> get_parse_cache() const { return parse_cache_; }
 
     struct Stats {
         uint64_t total_requests;
@@ -226,6 +247,9 @@ private:
     const std::shared_ptr<AuditSampler> audit_sampler_;
     const std::shared_ptr<ResultCache> result_cache_;
     const std::shared_ptr<SlowQueryTracker> slow_query_tracker_;
+    const std::shared_ptr<CircuitBreaker> circuit_breaker_;
+    const std::shared_ptr<IConnectionPool> connection_pool_;
+    const std::shared_ptr<ParseCache> parse_cache_;
 
     mutable std::atomic<uint64_t> total_requests_{0};
     mutable std::atomic<uint64_t> requests_blocked_{0};

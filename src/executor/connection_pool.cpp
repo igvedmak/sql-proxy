@@ -7,24 +7,24 @@
 namespace sqlproxy {
 
 // ============================================================================
-// PooledConnection Implementation
+// PgPooledConnection Implementation
 // ============================================================================
 
-PooledConnection::PooledConnection(PGconn* conn, std::function<void(PGconn*)> return_fn)
+PgPooledConnection::PgPooledConnection(PGconn* conn, std::function<void(PGconn*)> return_fn)
     : conn_(conn), return_fn_(std::move(return_fn)) {}
 
-PooledConnection::~PooledConnection() {
+PgPooledConnection::~PgPooledConnection() {
     if (conn_ && return_fn_) {
         return_fn_(conn_);
     }
 }
 
-PooledConnection::PooledConnection(PooledConnection&& other) noexcept
+PgPooledConnection::PgPooledConnection(PgPooledConnection&& other) noexcept
     : conn_(other.conn_), return_fn_(std::move(other.return_fn_)) {
     other.conn_ = nullptr;
 }
 
-PooledConnection& PooledConnection::operator=(PooledConnection&& other) noexcept {
+PgPooledConnection& PgPooledConnection::operator=(PgPooledConnection&& other) noexcept {
     if (this != &other) {
         // Return current connection before taking new one
         if (conn_ && return_fn_) {
@@ -72,7 +72,7 @@ ConnectionPool::~ConnectionPool() {
     drain();
 }
 
-std::unique_ptr<PooledConnection> ConnectionPool::acquire(std::chrono::milliseconds timeout) {
+std::unique_ptr<PgPooledConnection> ConnectionPool::acquire(std::chrono::milliseconds timeout) {
     if (shutdown_.load(std::memory_order_acquire)) {
         return nullptr;
     }
@@ -134,7 +134,7 @@ std::unique_ptr<PooledConnection> ConnectionPool::acquire(std::chrono::milliseco
         this->return_connection(c);
     };
 
-    return std::make_unique<PooledConnection>(conn, return_fn);
+    return std::make_unique<PgPooledConnection>(conn, return_fn);
 }
 
 ConnectionPool::Stats ConnectionPool::get_stats() const {

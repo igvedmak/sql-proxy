@@ -3,8 +3,12 @@
 #include "core/types.hpp"
 #include <atomic>
 #include <chrono>
+#include <deque>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace sqlproxy {
 
@@ -30,6 +34,16 @@ namespace sqlproxy {
  *
  * Performance: ~50ns to check state (atomic load)
  */
+/**
+ * @brief Structured event emitted on circuit breaker state transitions
+ */
+struct StateChangeEvent {
+    CircuitState from;
+    CircuitState to;
+    std::chrono::system_clock::time_point timestamp;
+    std::string breaker_name;
+};
+
 class CircuitBreaker {
 public:
     /**
@@ -97,6 +111,16 @@ public:
      */
     const std::string& name() const { return name_; }
 
+    /**
+     * @brief Register callback for state transitions
+     */
+    void set_on_state_change(std::function<void(const StateChangeEvent&)> cb);
+
+    /**
+     * @brief Get recent state change events (most recent last)
+     */
+    [[nodiscard]] std::vector<StateChangeEvent> get_recent_events() const;
+
 private:
     /**
      * @brief Attempt state transition
@@ -135,6 +159,16 @@ private:
     // Timestamps
     std::atomic<std::chrono::system_clock::time_point::rep> last_failure_time_;
     std::atomic<std::chrono::system_clock::time_point::rep> opened_time_;
+
+    // State change events
+    void emit_transition(CircuitState from, CircuitState to);
+    std::function<void(const StateChangeEvent&)> on_state_change_;
+    std::deque<StateChangeEvent> recent_events_;
+    mutable std::mutex events_mutex_;
+    static constexpr size_t kMaxRecentEvents = 100;
+    std::atomic<uint64_t> transitions_to_open_{0};
+    std::atomic<uint64_t> transitions_to_half_open_{0};
+    std::atomic<uint64_t> transitions_to_closed_{0};
 };
 
 } // namespace sqlproxy

@@ -165,6 +165,13 @@ void CircuitBreaker::reset() {
     transient_failure_count_.store(0, std::memory_order_relaxed);
     last_failure_time_.store(0, std::memory_order_relaxed);
     opened_time_.store(0, std::memory_order_relaxed);
+    transitions_to_open_.store(0, std::memory_order_relaxed);
+    transitions_to_half_open_.store(0, std::memory_order_relaxed);
+    transitions_to_closed_.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(events_mutex_);
+        recent_events_.clear();
+    }
 }
 
 void CircuitBreaker::trip() {
@@ -175,6 +182,7 @@ void CircuitBreaker::trip() {
                                        std::memory_order_acquire)) {
         const auto now = std::chrono::system_clock::now();
         opened_time_.store(now.time_since_epoch().count(), std::memory_order_release);
+        emit_transition(CircuitState::CLOSED, CircuitState::OPEN);
         return;  // Early return - skip HALF_OPEN path
     }
 
@@ -185,6 +193,7 @@ void CircuitBreaker::trip() {
                                        std::memory_order_acquire)) {
         const auto now = std::chrono::system_clock::now();
         opened_time_.store(now.time_since_epoch().count(), std::memory_order_release);
+        emit_transition(CircuitState::HALF_OPEN, CircuitState::OPEN);
     }
 }
 
@@ -197,6 +206,7 @@ void CircuitBreaker::attempt_reset() {
         success_count_.store(0, std::memory_order_relaxed);
         failure_count_.store(0, std::memory_order_relaxed);
         half_open_calls_.store(0, std::memory_order_relaxed);
+        emit_transition(CircuitState::OPEN, CircuitState::HALF_OPEN);
     }
 }
 
@@ -209,7 +219,43 @@ void CircuitBreaker::close_circuit() {
         success_count_.store(0, std::memory_order_relaxed);
         failure_count_.store(0, std::memory_order_relaxed);
         half_open_calls_.store(0, std::memory_order_relaxed);
+        emit_transition(CircuitState::HALF_OPEN, CircuitState::CLOSED);
     }
+}
+
+void CircuitBreaker::emit_transition(CircuitState from, CircuitState to) {
+    // Update transition counters
+    if (to == CircuitState::OPEN)
+        transitions_to_open_.fetch_add(1, std::memory_order_relaxed);
+    else if (to == CircuitState::HALF_OPEN)
+        transitions_to_half_open_.fetch_add(1, std::memory_order_relaxed);
+    else if (to == CircuitState::CLOSED)
+        transitions_to_closed_.fetch_add(1, std::memory_order_relaxed);
+
+    StateChangeEvent event{from, to, std::chrono::system_clock::now(), name_};
+
+    // Store in bounded deque
+    {
+        std::lock_guard<std::mutex> lock(events_mutex_);
+        recent_events_.push_back(event);
+        while (recent_events_.size() > kMaxRecentEvents) {
+            recent_events_.pop_front();
+        }
+    }
+
+    // Invoke callback if set
+    if (on_state_change_) {
+        on_state_change_(event);
+    }
+}
+
+void CircuitBreaker::set_on_state_change(std::function<void(const StateChangeEvent&)> cb) {
+    on_state_change_ = std::move(cb);
+}
+
+std::vector<StateChangeEvent> CircuitBreaker::get_recent_events() const {
+    std::lock_guard<std::mutex> lock(events_mutex_);
+    return {recent_events_.begin(), recent_events_.end()};
 }
 
 } // namespace sqlproxy

@@ -511,7 +511,7 @@ int main(int argc, char* argv[]) {
                 sq_cfg.threshold_ms, sq_cfg.max_entries));
         }
 
-        // Create pipeline (with Tier 5 + Tier B + Tier C components)
+        // Create pipeline (with Tier 5 + Tier B + Tier C + Tier D components)
         auto pipeline = std::make_shared<Pipeline>(
             parser,
             policy_engine,
@@ -530,7 +530,10 @@ int main(int argc, char* argv[]) {
             tenant_manager,
             audit_sampler,
             result_cache,
-            slow_query_tracker
+            slow_query_tracker,
+            circuit_breaker,
+            pool,
+            parse_cache
         );
 
         // GraphQL Handler

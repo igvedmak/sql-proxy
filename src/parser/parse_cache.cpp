@@ -65,8 +65,20 @@ ParseCache::Stats ParseCache::get_stats() const {
     stats.hits = hits_.load(std::memory_order_relaxed);
     stats.misses = misses_.load(std::memory_order_relaxed);
     stats.evictions = total_evictions;
+    stats.ddl_invalidations = ddl_invalidations_.load(std::memory_order_relaxed);
 
     return stats;
+}
+
+size_t ParseCache::invalidate_table(const std::string& table_name) {
+    size_t total = 0;
+    for (auto& shard : shards_) {
+        total += shard->invalidate_table(table_name);
+    }
+    if (total > 0) {
+        ddl_invalidations_.fetch_add(total, std::memory_order_relaxed);
+    }
+    return total;
 }
 
 // ============================================================================
@@ -135,6 +147,37 @@ void ParseCache::Shard::clear() {
 size_t ParseCache::Shard::size() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return lru_list_.size();
+}
+
+size_t ParseCache::Shard::invalidate_table(const std::string& table_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t count = 0;
+
+    for (auto it = lru_list_.begin(); it != lru_list_.end(); ) {
+        bool references_table = false;
+        const auto& tables = (*it)->parsed.tables;
+        for (const auto& tref : tables) {
+            // Case-insensitive comparison
+            if (tref.table.size() == table_name.size() &&
+                std::equal(tref.table.begin(), tref.table.end(),
+                           table_name.begin(), table_name.end(),
+                           [](char a, char b) {
+                               return std::tolower(static_cast<unsigned char>(a)) ==
+                                      std::tolower(static_cast<unsigned char>(b));
+                           })) {
+                references_table = true;
+                break;
+            }
+        }
+        if (references_table) {
+            cache_map_.erase((*it)->fingerprint.hash);
+            it = lru_list_.erase(it);
+            ++count;
+        } else {
+            ++it;
+        }
+    }
+    return count;
 }
 
 void ParseCache::Shard::evict_lru() {
