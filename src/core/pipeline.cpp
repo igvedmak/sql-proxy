@@ -14,6 +14,7 @@
 #include "tracing/trace_context.hpp"
 #include "audit/audit_sampler.hpp"
 #include "cache/result_cache.hpp"
+#include "core/slow_query_tracker.hpp"
 
 #include <unordered_set>
 
@@ -36,7 +37,8 @@ Pipeline::Pipeline(
     std::shared_ptr<SchemaManager> schema_manager,
     std::shared_ptr<TenantManager> tenant_manager,
     std::shared_ptr<AuditSampler> audit_sampler,
-    std::shared_ptr<ResultCache> result_cache)
+    std::shared_ptr<ResultCache> result_cache,
+    std::shared_ptr<SlowQueryTracker> slow_query_tracker)
     : parser_(std::move(parser)),
       policy_engine_(std::move(policy_engine)),
       rate_limiter_(std::move(rate_limiter)),
@@ -53,7 +55,8 @@ Pipeline::Pipeline(
       schema_manager_(std::move(schema_manager)),
       tenant_manager_(std::move(tenant_manager)),
       audit_sampler_(std::move(audit_sampler)),
-      result_cache_(std::move(result_cache)) {}
+      result_cache_(std::move(result_cache)),
+      slow_query_tracker_(std::move(slow_query_tracker)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -69,7 +72,7 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
     // Distributed tracing: parse incoming traceparent or generate new context
     if (!request.traceparent.empty()) {
-        auto parsed = TraceContext::parse_traceparent(request.traceparent);
+        const auto parsed = TraceContext::parse_traceparent(request.traceparent);
         if (parsed) {
             ctx.trace_context = *parsed;
         } else {
@@ -89,7 +92,7 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     std::shared_ptr<AuditEmitter> active_audit_emitter = audit_emitter_;
 
     if (tenant_manager_ && !ctx.tenant_id.empty()) {
-        auto tenant_ctx = tenant_manager_->resolve(ctx.tenant_id);
+        const auto tenant_ctx = tenant_manager_->resolve(ctx.tenant_id);
         if (tenant_ctx) {
             if (tenant_ctx->policy_engine) active_policy_engine = tenant_ctx->policy_engine;
             if (tenant_ctx->rate_limiter) active_rate_limiter = tenant_ctx->rate_limiter;
@@ -125,7 +128,7 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     if (result_cache_ && result_cache_->is_enabled() &&
         ctx.analysis.statement_type == StatementType::SELECT &&
         ctx.fingerprint.has_value()) {
-        auto cached = result_cache_->get(
+        const auto cached = result_cache_->get(
             ctx.fingerprint->hash, ctx.user, ctx.database);
         if (cached) {
             ctx.query_result = std::move(*cached);
@@ -169,6 +172,21 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     if (!execute_query(ctx)) {
         emit_audit(ctx);
         return build_response(ctx);
+    }
+
+    // Layer 5.01: Slow query tracking
+    if (slow_query_tracker_ && slow_query_tracker_->is_enabled()) {
+        SlowQueryRecord sq;
+        sq.user = ctx.user;
+        sq.database = ctx.database;
+        sq.sql = ctx.sql;
+        sq.execution_time = ctx.execution_time;
+        sq.timestamp = ctx.received_at;
+        sq.statement_type = ctx.analysis.statement_type;
+        if (ctx.fingerprint.has_value()) {
+            sq.fingerprint = ctx.fingerprint->normalized;
+        }
+        slow_query_tracker_->record_if_slow(sq);
     }
 
     // Layer 5.05: Cache result (only for successful SELECTs)
@@ -220,7 +238,8 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 }
 
 bool Pipeline::check_rate_limit(RequestContext& ctx) {
-    auto result = rate_limiter_->check(ctx.user, ctx.database);
+    const auto result = rate_limiter_->check(ctx.user, ctx.database);
+    ctx.rate_limit_result = result;  // Always store for response headers
     if (!result.allowed) {
         ctx.rate_limited = true;
         ctx.query_result.success = false;
@@ -245,11 +264,11 @@ bool Pipeline::parse_query(RequestContext& ctx) {
     // Resolve parser via router (per-database), fallback to default
     ISqlParser* active_parser = parser_.get();
     if (router_) {
-        auto routed = router_->get_parser(ctx.database);
+        const auto routed = router_->get_parser(ctx.database);
         if (routed) active_parser = routed.get();
     }
 
-    auto parse_result = active_parser->parse(ctx.sql);
+    const auto parse_result = active_parser->parse(ctx.sql);
     ctx.parse_time = timer.elapsed_us();
 
     if (!parse_result.success) {
@@ -317,7 +336,7 @@ bool Pipeline::execute_query(RequestContext& ctx) {
     // Resolve executor via router (per-database), fallback to default
     IQueryExecutor* exec = nullptr;
     if (router_) {
-        auto routed = router_->get_executor(ctx.database);
+        const auto routed = router_->get_executor(ctx.database);
         if (routed) exec = routed.get();
     }
     if (!exec) exec = executor_.get();
@@ -433,7 +452,7 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
 
     // Audit sampling check (before building the record)
     if (audit_sampler_ && audit_sampler_->is_enabled()) {
-        uint64_t fp = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
+        const uint64_t fp = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
         StatementType st = ctx.statement_info
             ? ctx.statement_info->parsed.type : StatementType::UNKNOWN;
         Decision decision = ctx.rate_limited ? Decision::BLOCK : ctx.policy_result.decision;
@@ -481,7 +500,7 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
     record.execution_time = ctx.execution_time;
     record.classification_time = ctx.classification_time;
 
-    auto elapsed = std::chrono::steady_clock::now() - ctx.started_at;
+    const auto elapsed = std::chrono::steady_clock::now() - ctx.started_at;
     record.total_duration = std::chrono::duration_cast<std::chrono::microseconds>(elapsed);
 
     record.rate_limited = ctx.rate_limited;
@@ -523,7 +542,7 @@ ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
         response.classifications[col] = cls.type_string();
     }
 
-    auto elapsed = std::chrono::steady_clock::now() - ctx.started_at;
+    const auto elapsed = std::chrono::steady_clock::now() - ctx.started_at;
     response.execution_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(elapsed);
 
     // Propagate trace context
@@ -533,6 +552,9 @@ ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
     response.matched_policy = ctx.policy_result.matched_policy;
     response.shadow_blocked = ctx.policy_result.shadow_blocked;
     response.shadow_policy = ctx.policy_result.shadow_policy;
+
+    // Rate limit info for response headers
+    response.rate_limit_info = ctx.rate_limit_result;
 
     // Column-level metadata
     for (const auto& m : ctx.masking_applied) {
@@ -581,7 +603,7 @@ void Pipeline::check_anomaly(RequestContext& ctx) {
         tables.push_back(t.table);
     }
 
-    uint64_t fp_hash = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
+    const uint64_t fp_hash = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
 
     // Check for anomalies (read-only scoring)
     ctx.anomaly_result = anomaly_detector_->check(ctx.user, tables, fp_hash);
@@ -641,7 +663,7 @@ bool Pipeline::intercept_ddl(RequestContext& ctx) {
     // Only intercept DDL statements
     if (!stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL)) return true;
 
-    bool allowed = schema_manager_->intercept_ddl(
+    const bool allowed = schema_manager_->intercept_ddl(
         ctx.user, ctx.database, ctx.sql, ctx.analysis.statement_type);
 
     if (!allowed) {

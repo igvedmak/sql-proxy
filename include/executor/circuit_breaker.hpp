@@ -67,9 +67,15 @@ public:
     void record_success();
 
     /**
-     * @brief Record failed operation
+     * @brief Record failed operation (all errors count toward threshold)
      */
     void record_failure();
+
+    /**
+     * @brief Record failed operation with error classification
+     * @param category Only INFRASTRUCTURE errors count toward threshold
+     */
+    void record_failure(FailureCategory category);
 
     /**
      * @brief Get current state
@@ -120,6 +126,11 @@ private:
     std::atomic<uint64_t> success_count_;
     std::atomic<uint64_t> failure_count_;
     std::atomic<uint64_t> half_open_calls_;
+
+    // Per-category failure counters
+    std::atomic<uint64_t> infrastructure_failure_count_{0};
+    std::atomic<uint64_t> application_failure_count_{0};
+    std::atomic<uint64_t> transient_failure_count_{0};
 
     // Timestamps
     std::atomic<std::chrono::system_clock::time_point::rep> last_failure_time_;

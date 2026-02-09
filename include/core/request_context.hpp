@@ -54,6 +54,7 @@ struct RequestContext {
     bool cache_hit = false;
     bool rate_limited = false;
     bool circuit_breaker_open = false;
+    RateLimitResult rate_limit_result;  // Full result for response headers
 
     // Column policy + masking
     std::vector<ColumnPolicyDecision> column_decisions;

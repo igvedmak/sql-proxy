@@ -25,6 +25,7 @@ class SchemaManager;
 class TenantManager;
 class AuditSampler;
 class ResultCache;
+class SlowQueryTracker;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -63,7 +64,8 @@ public:
         std::shared_ptr<SchemaManager> schema_manager = nullptr,
         std::shared_ptr<TenantManager> tenant_manager = nullptr,
         std::shared_ptr<AuditSampler> audit_sampler = nullptr,
-        std::shared_ptr<ResultCache> result_cache = nullptr
+        std::shared_ptr<ResultCache> result_cache = nullptr,
+        std::shared_ptr<SlowQueryTracker> slow_query_tracker = nullptr
     );
 
     /**
@@ -92,6 +94,11 @@ public:
      * @brief Get result cache (for metrics)
      */
     std::shared_ptr<ResultCache> get_result_cache() const { return result_cache_; }
+
+    /**
+     * @brief Get slow query tracker (for metrics/API)
+     */
+    std::shared_ptr<SlowQueryTracker> get_slow_query_tracker() const { return slow_query_tracker_; }
 
     struct Stats {
         uint64_t total_requests;
@@ -218,6 +225,7 @@ private:
     const std::shared_ptr<TenantManager> tenant_manager_;
     const std::shared_ptr<AuditSampler> audit_sampler_;
     const std::shared_ptr<ResultCache> result_cache_;
+    const std::shared_ptr<SlowQueryTracker> slow_query_tracker_;
 
     mutable std::atomic<uint64_t> total_requests_{0};
     mutable std::atomic<uint64_t> requests_blocked_{0};

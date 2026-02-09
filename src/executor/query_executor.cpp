@@ -1,10 +1,49 @@
 #include "executor/query_executor.hpp"
 #include "core/utils.hpp"
 #include <libpq-fe.h>
+#include <algorithm>
 #include <cstring>
 #include <format>
 
 namespace sqlproxy {
+
+namespace {
+
+/**
+ * @brief Classify a database error message into an error category.
+ *
+ * Infrastructure: connection-level failures that indicate the DB is unavailable.
+ * Transient: temporary lock/serialization issues that may resolve on retry.
+ * Application: everything else (syntax errors, constraint violations, etc.)
+ */
+FailureCategory classify_db_error(const std::string& error_msg) {
+    std::string lower = error_msg;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+    // Infrastructure patterns (connection-level failures)
+    static const std::vector<std::string> infra_patterns = {
+        "connection refused", "could not connect", "server closed",
+        "timeout", "host not found", "no route", "connection reset",
+        "broken pipe", "could not send", "could not receive",
+        "failed to acquire database connection"
+    };
+    for (const auto& p : infra_patterns) {
+        if (lower.find(p) != std::string::npos) return FailureCategory::INFRASTRUCTURE;
+    }
+
+    // Transient patterns (retryable)
+    static const std::vector<std::string> transient_patterns = {
+        "deadlock", "lock timeout", "serialization failure", "could not obtain lock"
+    };
+    for (const auto& p : transient_patterns) {
+        if (lower.find(p) != std::string::npos) return FailureCategory::TRANSIENT;
+    }
+
+    // Default: application errors (syntax, constraint, permission, etc.)
+    return FailureCategory::APPLICATION;
+}
+
+} // anonymous namespace
 
 QueryExecutor::QueryExecutor(
     std::shared_ptr<ConnectionPool> pool,
@@ -54,7 +93,8 @@ QueryResult QueryExecutor::execute(const std::string& sql, StatementType stmt_ty
             if (result.success) {
                 circuit_breaker_->record_success();
             } else {
-                circuit_breaker_->record_failure();
+                circuit_breaker_->record_failure(
+                    classify_db_error(result.error_message));
             }
         }
 
@@ -65,7 +105,8 @@ QueryResult QueryExecutor::execute(const std::string& sql, StatementType stmt_ty
         result.execution_time = timer.elapsed_us();
 
         if (circuit_breaker_) {
-            circuit_breaker_->record_failure();
+            // Exceptions from execute are always infrastructure failures
+            circuit_breaker_->record_failure(FailureCategory::INFRASTRUCTURE);
         }
     }
 

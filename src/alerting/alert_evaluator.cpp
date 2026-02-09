@@ -286,7 +286,7 @@ std::string AlertEvaluator::alert_to_json(const Alert& alert) const {
         alert.severity, alert.current_value, alert.threshold,
         alert.message,
         utils::format_timestamp(alert.fired_at),
-        alert.resolved ? "true" : "false");
+        utils::booltostr(alert.resolved));
 }
 
 } // namespace sqlproxy

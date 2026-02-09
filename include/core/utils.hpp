@@ -57,6 +57,12 @@ inline std::chrono::system_clock::time_point now() {
 }
 
 // ============================================================================
+// Boolean Formatting
+// ============================================================================
+
+inline constexpr const char* booltostr(bool x) { return x ? "true" : "false"; }
+
+// ============================================================================
 // String Utilities
 // ============================================================================
 
@@ -69,11 +75,11 @@ inline std::string to_lower(const std::string& str) {
 }
 
 inline std::string trim(const std::string& str) {
-    auto start = str.find_first_not_of(" \t\n\r");
+    const auto start = str.find_first_not_of(" \t\n\r");
     if (start == std::string::npos) {
         return "";
     }
-    auto end = str.find_last_not_of(" \t\n\r");
+    const auto end = str.find_last_not_of(" \t\n\r");
     return str.substr(start, end - start + 1);
 }
 
@@ -101,7 +107,7 @@ public:
 
     template<typename Duration = std::chrono::microseconds>
     Duration elapsed() const {
-        auto end = std::chrono::steady_clock::now();
+        const auto end = std::chrono::steady_clock::now();
         return std::chrono::duration_cast<Duration>(end - start_);
     }
 
@@ -157,9 +163,9 @@ namespace detail {
             case Level::ERROR: tag = "ERROR"; break;
         }
 
-        auto now = std::chrono::system_clock::now();
+        const auto now = std::chrono::system_clock::now();
         auto time = std::chrono::system_clock::to_time_t(now);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()) % 1000;
 
         std::tm tm_buf;
@@ -168,7 +174,7 @@ namespace detail {
         char time_buf[16];
         std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm_buf);
 
-        auto formatted = std::format("{}.{:03d} [{}] {}\n",
+        const auto formatted = std::format("{}.{:03d} [{}] {}\n",
             time_buf, static_cast<int>(ms.count()), tag, msg);
 
         std::lock_guard<std::mutex> lock(log_mutex());

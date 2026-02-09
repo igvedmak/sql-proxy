@@ -281,6 +281,13 @@ struct ProxyConfig {
         int ttl_seconds = 60;
         size_t max_result_size_bytes = 1048576;  // 1MB
     } result_cache;
+
+    // Tier C (Roadmap features)
+    struct SlowQueryConfig {
+        bool enabled = false;
+        uint32_t threshold_ms = 500;
+        size_t max_entries = 1000;
+    } slow_query;
 };
 
 // ============================================================================
@@ -398,11 +405,17 @@ private:
     static ProxyConfig::AuditSamplingConfig extract_audit_sampling(const JsonValue& root);
     static ProxyConfig::ResultCacheConfig extract_result_cache(const JsonValue& root);
 
+    // Tier C extractors
+    static ProxyConfig::SlowQueryConfig extract_slow_query(const JsonValue& root);
+
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);
 
     // Helper: parse action string to Decision enum
     static std::optional<Decision> parse_action(const std::string& action_str);
+
+    // Semantic validation (called after parsing)
+    [[nodiscard]] static std::vector<std::string> validate_config(const ProxyConfig& config);
 };
 
 } // namespace sqlproxy

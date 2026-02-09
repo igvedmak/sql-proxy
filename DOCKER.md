@@ -147,9 +147,17 @@ curl -X POST http://localhost:8080/policies/reload
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/query` | Execute SQL through the proxy pipeline |
+| `POST` | `/api/v1/query/dry-run` | Dry-run query evaluation (no execution) |
 | `GET` | `/health` | Health check (`{"status":"healthy"}`) |
 | `GET` | `/metrics` | Prometheus-format metrics |
 | `POST` | `/policies/reload` | Hot-reload policies from config |
+
+### Operations (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/config/validate` | Validate TOML config without applying |
+| `GET` | `/api/v1/slow-queries` | Recent slow queries (threshold + buffer) |
 
 ### Compliance (Admin)
 
@@ -315,6 +323,61 @@ docker compose --profile e2e up --abort-on-container-exit
 ### Unit tests fail to build
 Ensure the test-builder Docker stage has `BUILD_TESTS=ON`. Check `Dockerfile` for the `test-builder` target.
 
+## Config Environment Variable Substitution
+
+Connection strings and secrets in `proxy.toml` support `${VAR_NAME}` substitution:
+
+```toml
+[[databases]]
+name = "production"
+type = "postgresql"
+connection_string = "host=${DB_HOST} port=${DB_PORT} user=${DB_USER} password=${DB_PASSWORD} dbname=proddb"
+```
+
+Pass env vars via `docker-compose.yml`:
+
+```yaml
+services:
+  proxy:
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=app
+      - DB_PASSWORD=s3cret
+```
+
+Missing env vars expand to empty string. Unclosed `${` is a parse error.
+
+## Config Validation
+
+The proxy validates config at load time (port ranges, TLS cert/key presence, connection strings, rate limit values, circuit breaker thresholds). Invalid config returns a clear error at startup.
+
+You can also validate config via API without applying it:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/config/validate \
+  -H "Authorization: Bearer admin-secret-token" \
+  --data-binary @config/proxy.toml
+```
+
+## Slow Query Tracking
+
+Enable slow query tracking in `proxy.toml`:
+
+```toml
+[slow_query]
+enabled = true
+threshold_ms = 500
+max_entries = 1000
+```
+
+Query recent slow queries:
+
+```bash
+curl -H "Authorization: Bearer admin-secret-token" \
+  http://localhost:8080/api/v1/slow-queries
+```
+
 ## Production Deployment
 
 For production, update `docker-compose.yml`:
@@ -325,3 +388,4 @@ For production, update `docker-compose.yml`:
 5. Configure external logging/monitoring
 6. Set `[encryption] enabled = true` with proper key management
 7. Review `[security]` settings in `proxy.toml`
+8. Use `${ENV_VARS}` in `proxy.toml` for secrets (never commit plaintext passwords)

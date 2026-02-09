@@ -37,6 +37,7 @@
 #include "server/response_compressor.hpp"
 #include "audit/audit_sampler.hpp"
 #include "cache/result_cache.hpp"
+#include "core/slow_query_tracker.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -498,7 +499,19 @@ int main(int argc, char* argv[]) {
                 rc_cfg.max_entries, config_result.config.result_cache.ttl_seconds, rc_cfg.num_shards));
         }
 
-        // Create pipeline (with Tier 5 + Tier B components)
+        // Tier C: Slow Query Tracker
+        std::shared_ptr<SlowQueryTracker> slow_query_tracker;
+        if (config_result.success && config_result.config.slow_query.enabled) {
+            SlowQueryTracker::Config sq_cfg;
+            sq_cfg.enabled = true;
+            sq_cfg.threshold_ms = config_result.config.slow_query.threshold_ms;
+            sq_cfg.max_entries = config_result.config.slow_query.max_entries;
+            slow_query_tracker = std::make_shared<SlowQueryTracker>(sq_cfg);
+            utils::log::info(std::format("Slow query tracker: enabled (threshold={}ms, max_entries={})",
+                sq_cfg.threshold_ms, sq_cfg.max_entries));
+        }
+
+        // Create pipeline (with Tier 5 + Tier B + Tier C components)
         auto pipeline = std::make_shared<Pipeline>(
             parser,
             policy_engine,
@@ -516,7 +529,8 @@ int main(int argc, char* argv[]) {
             schema_manager,
             tenant_manager,
             audit_sampler,
-            result_cache
+            result_cache,
+            slow_query_tracker
         );
 
         // GraphQL Handler

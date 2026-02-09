@@ -208,7 +208,7 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
             json += std::format(
                 "{{\"id\":\"{}\",\"rule_name\":\"{}\",\"severity\":\"{}\","
                 "\"resolved\":{}}}",
-                h.id, h.rule_name, h.severity, h.resolved ? "true" : "false");
+                h.id, h.rule_name, h.severity, utils::booltostr(h.resolved));
         }
         json += std::format("],\"total\":{}}}", active.size());
         res.set_content(json, http::kJsonContentType);

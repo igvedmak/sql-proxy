@@ -1,6 +1,7 @@
 #include "config/config_loader.hpp"
 #include "core/utils.hpp"
 
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <stdexcept>
@@ -32,6 +33,39 @@ void json_push(jt& arr, jt val) {
 
 jt& json_back(jt& arr) {
     return arr.get_array().back();
+}
+
+/**
+ * @brief Expand ${VAR_NAME} patterns in a string with environment variables.
+ *
+ * - ${VAR_NAME} is replaced with std::getenv("VAR_NAME")
+ * - If env var is not set, substitutes empty string
+ * - Throws std::runtime_error on unclosed ${
+ * - Literal '$' not followed by '{' passes through unchanged
+ */
+std::string expand_env_vars(const std::string& input) {
+    // Fast path: no substitution marker
+    if (input.find("${") == std::string::npos) return input;
+
+    std::string result;
+    result.reserve(input.size());
+    size_t i = 0;
+    while (i < input.size()) {
+        if (i + 1 < input.size() && input[i] == '$' && input[i + 1] == '{') {
+            const size_t close = input.find('}', i + 2);
+            if (close == std::string::npos) {
+                throw std::runtime_error(
+                    std::format("Unclosed env var substitution at position {}", i));
+            }
+            const std::string var_name = input.substr(i + 2, close - i - 2);
+            const char* env_val = std::getenv(var_name.c_str());
+            if (env_val) result += env_val;
+            i = close + 1;
+        } else {
+            result += input[i++];
+        }
+    }
+    return result;
 }
 
 // ---- Parsing helpers -------------------------------------------------------
@@ -101,7 +135,7 @@ jt parse_value(const std::string& raw) {
                 result += val[i];
             }
         }
-        jt j; j = std::move(result); return j;
+        jt j; j = expand_env_vars(result); return j;
     }
 
     // Inline table  {key = "value", key2 = "value2"}
@@ -1347,6 +1381,14 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.auth = extract_auth(json);
         config.audit_sampling = extract_audit_sampling(json);
         config.result_cache = extract_result_cache(json);
+        config.slow_query = extract_slow_query(json);
+
+        auto errors = validate_config(config);
+        if (!errors.empty()) {
+            std::string combined = "Config validation failed:";
+            for (const auto& err : errors) { combined += "\n  - "; combined += err; }
+            return LoadResult::error(std::move(combined));
+        }
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));
@@ -1378,6 +1420,14 @@ ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_
         config.auth = extract_auth(json);
         config.audit_sampling = extract_audit_sampling(json);
         config.result_cache = extract_result_cache(json);
+        config.slow_query = extract_slow_query(json);
+
+        auto errors = validate_config(config);
+        if (!errors.empty()) {
+            std::string combined = "Config validation failed:";
+            for (const auto& err : errors) { combined += "\n  - "; combined += err; }
+            return LoadResult::error(std::move(combined));
+        }
         return LoadResult::ok(std::move(config));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to parse config: {}", e.what()));
@@ -1416,6 +1466,87 @@ ProxyConfig::ResultCacheConfig ConfigLoader::extract_result_cache(const JsonValu
     cfg.ttl_seconds = json_int(c, "ttl_seconds", 60);
     cfg.max_result_size_bytes = json_size(c, "max_result_size_bytes", 1048576);
     return cfg;
+}
+
+// ============================================================================
+// Tier C extractors
+// ============================================================================
+
+ProxyConfig::SlowQueryConfig ConfigLoader::extract_slow_query(const JsonValue& root) {
+    ProxyConfig::SlowQueryConfig cfg;
+    if (!root.contains("slow_query")) return cfg;
+    const auto s = root["slow_query"];
+
+    cfg.enabled = json_bool(s, kEnabled, false);
+    cfg.threshold_ms = json_uint32(s, "threshold_ms", 500);
+    cfg.max_entries = json_size(s, "max_entries", 1000);
+    return cfg;
+}
+
+// ============================================================================
+// Config Validation
+// ============================================================================
+
+std::vector<std::string> ConfigLoader::validate_config(const ProxyConfig& config) {
+    std::vector<std::string> errors;
+
+    // Server
+    if (config.server.port < 1 || config.server.port > 65535) {
+        errors.push_back(std::format("server.port must be 1-65535, got {}", config.server.port));
+    }
+
+    // TLS
+    if (config.server.tls.enabled) {
+        if (config.server.tls.cert_file.empty()) {
+            errors.push_back("server.tls.cert_file required when TLS is enabled");
+        }
+        if (config.server.tls.key_file.empty()) {
+            errors.push_back("server.tls.key_file required when TLS is enabled");
+        }
+        if (config.server.tls.require_client_cert && config.server.tls.ca_file.empty()) {
+            errors.push_back("server.tls.ca_file required when require_client_cert is true");
+        }
+    }
+
+    // Databases
+    for (size_t i = 0; i < config.databases.size(); ++i) {
+        const auto& db = config.databases[i];
+        if (db.name.empty()) {
+            errors.push_back(std::format("databases[{}].name must not be empty", i));
+        }
+        if (db.connection_string.empty()) {
+            errors.push_back(std::format("databases[{}].connection_string must not be empty", i));
+        }
+        if (db.min_connections > db.max_connections) {
+            errors.push_back(std::format(
+                "databases[{}].min_connections ({}) > max_connections ({})",
+                i, db.min_connections, db.max_connections));
+        }
+    }
+
+    // Rate limiting
+    if (config.rate_limiting.enabled) {
+        if (config.rate_limiting.global_tokens_per_second == 0) {
+            errors.push_back("rate_limiting.global.tokens_per_second must be > 0 when enabled");
+        }
+    }
+
+    // Circuit breaker
+    if (config.circuit_breaker.enabled) {
+        if (config.circuit_breaker.failure_threshold <= 0) {
+            errors.push_back("circuit_breaker.failure_threshold must be > 0");
+        }
+        if (config.circuit_breaker.timeout_ms <= 0) {
+            errors.push_back("circuit_breaker.timeout_ms must be > 0");
+        }
+    }
+
+    // Audit webhook
+    if (config.audit.webhook_enabled && config.audit.webhook_url.empty()) {
+        errors.push_back("audit.webhook.url required when webhook is enabled");
+    }
+
+    return errors;
 }
 
 } // namespace sqlproxy

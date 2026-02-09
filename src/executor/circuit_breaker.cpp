@@ -106,6 +106,24 @@ void CircuitBreaker::record_failure() {
     }
 }
 
+void CircuitBreaker::record_failure(FailureCategory category) {
+    // Track per-category stats
+    switch (category) {
+        case FailureCategory::INFRASTRUCTURE:
+            infrastructure_failure_count_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case FailureCategory::APPLICATION:
+            application_failure_count_.fetch_add(1, std::memory_order_relaxed);
+            return;  // APPLICATION errors do NOT trip the circuit breaker
+        case FailureCategory::TRANSIENT:
+            transient_failure_count_.fetch_add(1, std::memory_order_relaxed);
+            return;  // TRANSIENT errors do NOT trip the circuit breaker
+    }
+
+    // Only INFRASTRUCTURE errors reach here — delegate to existing logic
+    record_failure();
+}
+
 CircuitState CircuitBreaker::get_state() const {
     return state_.load(std::memory_order_acquire);
 }
@@ -116,6 +134,9 @@ CircuitBreakerStats CircuitBreaker::get_stats() const {
     stats.state = state_.load(std::memory_order_acquire);
     stats.success_count = success_count_.load(std::memory_order_relaxed);
     stats.failure_count = failure_count_.load(std::memory_order_relaxed);
+    stats.infrastructure_failure_count = infrastructure_failure_count_.load(std::memory_order_relaxed);
+    stats.application_failure_count = application_failure_count_.load(std::memory_order_relaxed);
+    stats.transient_failure_count = transient_failure_count_.load(std::memory_order_relaxed);
 
     const auto last_failure_rep = last_failure_time_.load(std::memory_order_acquire);
     if (last_failure_rep > 0) {
@@ -139,6 +160,9 @@ void CircuitBreaker::reset() {
     success_count_.store(0, std::memory_order_relaxed);
     failure_count_.store(0, std::memory_order_relaxed);
     half_open_calls_.store(0, std::memory_order_relaxed);
+    infrastructure_failure_count_.store(0, std::memory_order_relaxed);
+    application_failure_count_.store(0, std::memory_order_relaxed);
+    transient_failure_count_.store(0, std::memory_order_relaxed);
     last_failure_time_.store(0, std::memory_order_relaxed);
     opened_time_.store(0, std::memory_order_relaxed);
 }

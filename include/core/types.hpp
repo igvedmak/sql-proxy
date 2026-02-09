@@ -84,6 +84,12 @@ enum class ErrorCode {
     SQLI_BLOCKED
 };
 
+enum class FailureCategory {
+    INFRASTRUCTURE,  // Connection refused, timeout, host unreachable
+    APPLICATION,     // Syntax error, constraint violation, permission denied
+    TRANSIENT        // Deadlock, lock timeout (may be retried)
+};
+
 enum class ClassificationType {
     NONE,
     PII_EMAIL,
@@ -336,11 +342,16 @@ struct CircuitBreakerStats {
     CircuitState state;
     uint64_t success_count;
     uint64_t failure_count;
+    uint64_t infrastructure_failure_count;
+    uint64_t application_failure_count;
+    uint64_t transient_failure_count;
     std::chrono::system_clock::time_point last_failure;
     std::chrono::system_clock::time_point opened_at;
 
     CircuitBreakerStats()
-        : state(CircuitState::CLOSED), success_count(0), failure_count(0) {}
+        : state(CircuitState::CLOSED), success_count(0), failure_count(0),
+          infrastructure_failure_count(0), application_failure_count(0),
+          transient_failure_count(0) {}
 };
 
 // ============================================================================
@@ -579,6 +590,9 @@ struct ProxyResponse {
 
     // Distributed tracing
     std::string traceparent;        // W3C traceparent header (outgoing)
+
+    // Rate limit info for response headers
+    RateLimitResult rate_limit_info;
 
     ProxyResponse()
         : audit_id(utils::generate_uuid()),

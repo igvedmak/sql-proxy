@@ -315,7 +315,7 @@ std::string AuditEmitter::to_json(const AuditRecord& record) {
 
     // Execution results
     result += std::format("\"execution_success\":{},\"error_code\":\"{}\",",
-                          record.execution_success ? "true" : "false",
+                          utils::booltostr(record.execution_success),
                           error_code_to_string(record.error_code));
 
     if (record.execution_success) {
@@ -332,7 +332,7 @@ std::string AuditEmitter::to_json(const AuditRecord& record) {
         result += std::format("\"{}\"", record.detected_classifications[i]);
     }
     result += std::format("],\"has_pii\":{},",
-                          !record.detected_classifications.empty() ? "true" : "false");
+                          utils::booltostr(!record.detected_classifications.empty()));
 
     // Performance
     result += std::format("\"total_duration_us\":{},\"parse_time_us\":{},\"policy_time_us\":{},\"execution_time_us\":{},\"classification_time_us\":{},\"proxy_overhead_us\":{},",
@@ -345,9 +345,9 @@ std::string AuditEmitter::to_json(const AuditRecord& record) {
 
     // Operational flags
     result += std::format("\"rate_limited\":{},\"cache_hit\":{},\"circuit_breaker_tripped\":{},",
-                          record.rate_limited ? "true" : "false",
-                          record.cache_hit ? "true" : "false",
-                          record.circuit_breaker_tripped ? "true" : "false");
+                          utils::booltostr(record.rate_limited),
+                          utils::booltostr(record.cache_hit),
+                          utils::booltostr(record.circuit_breaker_tripped));
 
     // Shadow mode
     if (record.shadow_blocked) {
