@@ -2,6 +2,7 @@
 
 #include "core/types.hpp"
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace sqlproxy {
@@ -26,20 +27,20 @@ public:
     explicit SqlInjectionDetector(const Config& config);
 
     [[nodiscard]] DetectionResult analyze(
-        const std::string& raw_sql,
-        const std::string& normalized_sql,
+        std::string_view raw_sql,
+        std::string_view normalized_sql,
         const ParsedQuery& parsed) const;
 
     [[nodiscard]] static const char* threat_level_to_string(ThreatLevel level);
 
 private:
-    void check_tautologies(const std::string& sql, DetectionResult& result) const;
-    void check_union_injection(const std::string& sql, const ParsedQuery& parsed,
+    void check_tautologies(std::string_view sql, DetectionResult& result) const;
+    void check_union_injection(std::string_view sql, const ParsedQuery& parsed,
                                DetectionResult& result) const;
-    void check_comment_bypass(const std::string& raw_sql, DetectionResult& result) const;
-    void check_stacked_queries(const std::string& raw_sql, DetectionResult& result) const;
-    void check_time_based_blind(const std::string& sql, DetectionResult& result) const;
-    void check_error_based(const std::string& sql, DetectionResult& result) const;
+    void check_comment_bypass(std::string_view raw_sql, DetectionResult& result) const;
+    void check_stacked_queries(std::string_view raw_sql, DetectionResult& result) const;
+    void check_time_based_blind(std::string_view sql, DetectionResult& result) const;
+    void check_error_based(std::string_view sql, DetectionResult& result) const;
 
     void elevate_threat(DetectionResult& result, ThreatLevel level) const;
 

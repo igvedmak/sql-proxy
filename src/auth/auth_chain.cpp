@@ -13,7 +13,7 @@ IAuthProvider::AuthResult AuthChain::authenticate(
     std::string combined_errors;
 
     for (const auto& provider : providers_) {
-        auto result = provider->authenticate(auth_header, body_user);
+        const auto result = provider->authenticate(auth_header, body_user);
         if (result.authenticated) {
             return result;
         }

@@ -55,7 +55,7 @@ void ConfigWatcher::watch_loop(std::stop_token stop) {
 
         // Check file modification time
         std::error_code ec;
-        auto current_mtime = std::filesystem::last_write_time(config_path_, ec);
+        const auto current_mtime = std::filesystem::last_write_time(config_path_, ec);
         if (ec) {
             utils::log::warn(std::format("Config watcher: cannot stat {}: {}",
                                           config_path_, ec.message()));

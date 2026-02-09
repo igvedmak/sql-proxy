@@ -112,7 +112,7 @@ QueryResult QueryExecutor::execute_select(const std::string& sql) {
     }
 
     // Extract rows
-    int nrows = PQntuples(res);
+    const int nrows = PQntuples(res);
 
     // Check max rows limit
     if (config_.max_result_rows > 0 && static_cast<uint32_t>(nrows) > config_.max_result_rows) {
@@ -218,14 +218,14 @@ bool QueryExecutor::set_query_timeout(void* conn_ptr) {
     PGconn* conn = static_cast<PGconn*>(conn_ptr);
 
     // Set statement_timeout in milliseconds
-    std::string timeout_sql = std::format("SET statement_timeout = {}", config_.query_timeout_ms);
+    const std::string timeout_sql = std::format("SET statement_timeout = {}", config_.query_timeout_ms);
 
     PGresult* res = PQexec(conn, timeout_sql.c_str());
     if (!res) {
         return false;
     }
 
-    bool success = (PQresultStatus(res) == PGRES_COMMAND_OK);
+    const bool success = (PQresultStatus(res) == PGRES_COMMAND_OK);
     PQclear(res);
 
     return success;

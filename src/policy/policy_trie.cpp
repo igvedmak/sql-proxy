@@ -1,9 +1,8 @@
 #include "policy/policy_trie.hpp"
+#include "policy/policy_constants.hpp"
 #include <algorithm>
 
 namespace sqlproxy {
-
-static const std::string kWildcardKey = "*";
 
 // ============================================================================
 // PolicyTrieNode Implementation
@@ -39,9 +38,9 @@ void PolicyTrie::insert(const Policy& policy) {
     // Build path: database → schema → table
     std::vector<std::string> path;
 
-    std::string db = policy.scope.database.value_or(kWildcardKey);
-    std::string schema = policy.scope.schema.value_or(kWildcardKey);
-    std::string table = policy.scope.table.value_or(kWildcardKey);
+    std::string db = policy.scope.database.value_or(policy::kWildcard);
+    std::string schema = policy.scope.schema.value_or(policy::kWildcard);
+    std::string table = policy.scope.table.value_or(policy::kWildcard);
 
     path.push_back(db);
     path.push_back(schema);
@@ -67,9 +66,9 @@ std::vector<const Policy*> PolicyTrie::find_matching(
 
     // Build path parts
     std::vector<std::string> path_parts = {
-        database.empty() ? kWildcardKey : database,
-        schema.empty() ? kWildcardKey : schema,
-        table.empty() ? kWildcardKey : table
+        database.empty() ? policy::kWildcard : database,
+        schema.empty() ? policy::kWildcard : schema,
+        table.empty() ? policy::kWildcard : table
     };
 
     // Recursively find all matching policies
@@ -113,8 +112,8 @@ void PolicyTrie::find_matching_recursive(
     }
 
     // Try wildcard match (if not already wildcard)
-    if (current_part != kWildcardKey) {
-        const PolicyTrieNode* wildcard_child = node->get_child(kWildcardKey);
+    if (current_part != policy::kWildcard) {
+        const PolicyTrieNode* wildcard_child = node->get_child(policy::kWildcard);
         if (wildcard_child) {
             find_matching_recursive(wildcard_child, path_parts, depth + 1, stmt_type, results);
         }

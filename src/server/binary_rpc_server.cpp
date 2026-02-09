@@ -83,7 +83,7 @@ void BinaryRpcServer::accept_loop() {
         struct sockaddr_in client_addr{};
         socklen_t addr_len = sizeof(client_addr);
 
-        int client_fd = accept(server_fd_,
+        const int client_fd = accept(server_fd_,
             reinterpret_cast<struct sockaddr*>(&client_addr), &addr_len);
 
         if (client_fd < 0) {
@@ -117,17 +117,17 @@ void BinaryRpcServer::handle_connection(int client_fd, std::string /*remote_addr
         }
 
         if (msg_type == rpc::MSG_QUERY_REQUEST) {
-            auto req = deserialize_request(payload);
+            const auto req = deserialize_request(payload);
             if (!req) {
-                auto err = serialize_error("Invalid request format");
+                const auto err = serialize_error("Invalid request format");
                 send_frame(client_fd, rpc::MSG_ERROR, err);
                 continue;
             }
 
             // Validate user
-            auto user_info = lookup_user(req->user);
+            const auto user_info = lookup_user(req->user);
             if (!user_info) {
-                auto err = serialize_error(std::format("Unknown user: {}", req->user));
+                const auto err = serialize_error(std::format("Unknown user: {}", req->user));
                 send_frame(client_fd, rpc::MSG_ERROR, err);
                 continue;
             }
@@ -139,9 +139,9 @@ void BinaryRpcServer::handle_connection(int client_fd, std::string /*remote_addr
             proxy_req.sql = req->sql;
             proxy_req.database = req->database;
 
-            auto response = pipeline_->execute(proxy_req);
+            const auto response = pipeline_->execute(proxy_req);
 
-            auto resp_data = serialize_response(response);
+            const auto resp_data = serialize_response(response);
             send_frame(client_fd, rpc::MSG_QUERY_RESPONSE, resp_data);
         }
     }
@@ -155,7 +155,7 @@ bool BinaryRpcServer::read_frame(int fd, uint8_t& msg_type, std::vector<uint8_t>
     ssize_t n = recv(fd, len_buf, 4, MSG_WAITALL);
     if (n != 4) return false;
 
-    uint32_t length = (static_cast<uint32_t>(len_buf[0]) << 24) |
+    const uint32_t length = (static_cast<uint32_t>(len_buf[0]) << 24) |
                       (static_cast<uint32_t>(len_buf[1]) << 16) |
                       (static_cast<uint32_t>(len_buf[2]) << 8) |
                        static_cast<uint32_t>(len_buf[3]);
@@ -167,7 +167,7 @@ bool BinaryRpcServer::read_frame(int fd, uint8_t& msg_type, std::vector<uint8_t>
     if (n != 1) return false;
 
     // Read payload
-    uint32_t payload_len = length - 1;
+    const uint32_t payload_len = length - 1;
     payload.resize(payload_len);
     if (payload_len > 0) {
         n = recv(fd, payload.data(), payload_len, MSG_WAITALL);
@@ -259,7 +259,7 @@ std::vector<uint8_t> BinaryRpcServer::serialize_response(const ProxyResponse& re
 }
 
 std::vector<uint8_t> BinaryRpcServer::serialize_error(const std::string& message) {
-    std::string json = std::format(R"({{"error":"{}"}})", message);
+    const std::string json = std::format(R"({{"error":"{}"}})", message);
     return std::vector<uint8_t>(json.begin(), json.end());
 }
 

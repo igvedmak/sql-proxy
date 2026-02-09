@@ -30,7 +30,7 @@ std::optional<std::string> ResponseCompressor::try_compress(std::string_view dat
     zs.next_out = reinterpret_cast<Bytef*>(compressed.data());
     zs.avail_out = static_cast<uInt>(compressed.size());
 
-    int ret = deflate(&zs, Z_FINISH);
+    const int ret = deflate(&zs, Z_FINISH);
     deflateEnd(&zs);
 
     if (ret != Z_STREAM_END) {

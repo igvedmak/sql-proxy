@@ -90,12 +90,12 @@ public:
     /**
      * @brief Get current policy count
      */
-    size_t policy_count() const;
+    [[nodiscard]] size_t policy_count() const;
 
     /**
      * @brief Get loaded policies (for dashboard/admin)
      */
-    const std::vector<Policy>& get_policies() const;
+    [[nodiscard]] const std::vector<Policy>& get_policies() const;
 
     /**
      * @brief Clear all policies

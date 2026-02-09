@@ -1,5 +1,4 @@
 #include "schema/schema_manager.hpp"
-#include "core/utils.hpp"
 
 #include <algorithm>
 
@@ -18,14 +17,12 @@ bool SchemaManager::intercept_ddl(const std::string& user, const std::string& db
 
     // Create pending DDL entry
     PendingDDL pending;
-    pending.id = utils::generate_uuid();
     pending.user = user;
     pending.database = db;
     pending.table = extract_table_from_type(type, sql);
     pending.sql = sql;
     pending.type = type;
-    pending.submitted_at = std::chrono::system_clock::now();
-    pending.status = "pending";
+    pending.status = std::string{ddl_status::kPending};
 
     std::unique_lock lock(mutex_);
     pending_.emplace(pending.id, std::move(pending));
@@ -38,14 +35,12 @@ void SchemaManager::record_change(const std::string& user, const std::string& db
     if (!config_.enabled) return;
 
     SchemaSnapshot snapshot;
-    snapshot.id = utils::generate_uuid();
     snapshot.user = user;
     snapshot.database = db;
     snapshot.table = table;
     snapshot.sql = sql;
     snapshot.type = type;
-    snapshot.timestamp = std::chrono::system_clock::now();
-    snapshot.status = "applied";
+    snapshot.status = std::string{ddl_status::kApplied};
 
     std::unique_lock lock(mutex_);
     history_.push_back(std::move(snapshot));
@@ -61,7 +56,7 @@ std::vector<PendingDDL> SchemaManager::get_pending() const {
     std::vector<PendingDDL> result;
     result.reserve(pending_.size());
     for (const auto& [id, ddl] : pending_) {
-        if (ddl.status == "pending") {
+        if (ddl.status == ddl_status::kPending) {
             result.push_back(ddl);
         }
     }
@@ -71,24 +66,22 @@ std::vector<PendingDDL> SchemaManager::get_pending() const {
 bool SchemaManager::approve(const std::string& id, const std::string& admin) {
     std::unique_lock lock(mutex_);
     auto it = pending_.find(id);
-    if (it == pending_.end() || it->second.status != "pending") {
+    if (it == pending_.end() || it->second.status != ddl_status::kPending) {
         return false;
     }
 
-    it->second.status = "approved";
+    it->second.status = std::string{ddl_status::kApproved};
     it->second.reviewed_by = admin;
     it->second.reviewed_at = std::chrono::system_clock::now();
 
     // Also record in history
     SchemaSnapshot snapshot;
-    snapshot.id = utils::generate_uuid();
     snapshot.user = it->second.user;
     snapshot.database = it->second.database;
     snapshot.table = it->second.table;
     snapshot.sql = it->second.sql;
     snapshot.type = it->second.type;
-    snapshot.timestamp = std::chrono::system_clock::now();
-    snapshot.status = "approved";
+    snapshot.status = std::string{ddl_status::kApproved};
 
     history_.push_back(std::move(snapshot));
     while (history_.size() > config_.max_history_entries) {
@@ -101,24 +94,22 @@ bool SchemaManager::approve(const std::string& id, const std::string& admin) {
 bool SchemaManager::reject(const std::string& id, const std::string& admin) {
     std::unique_lock lock(mutex_);
     auto it = pending_.find(id);
-    if (it == pending_.end() || it->second.status != "pending") {
+    if (it == pending_.end() || it->second.status != ddl_status::kPending) {
         return false;
     }
 
-    it->second.status = "rejected";
+    it->second.status = std::string{ddl_status::kRejected};
     it->second.reviewed_by = admin;
     it->second.reviewed_at = std::chrono::system_clock::now();
 
     // Record rejection in history
     SchemaSnapshot snapshot;
-    snapshot.id = utils::generate_uuid();
     snapshot.user = it->second.user;
     snapshot.database = it->second.database;
     snapshot.table = it->second.table;
     snapshot.sql = it->second.sql;
     snapshot.type = it->second.type;
-    snapshot.timestamp = std::chrono::system_clock::now();
-    snapshot.status = "rejected";
+    snapshot.status = std::string{ddl_status::kRejected};
 
     history_.push_back(std::move(snapshot));
     while (history_.size() > config_.max_history_entries) {
@@ -152,7 +143,7 @@ size_t SchemaManager::pending_count() const {
     std::shared_lock lock(mutex_);
     size_t count = 0;
     for (const auto& [id, ddl] : pending_) {
-        if (ddl.status == "pending") ++count;
+        if (ddl.status == ddl_status::kPending) ++count;
     }
     return count;
 }

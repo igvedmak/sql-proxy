@@ -2,10 +2,12 @@
 
 #include "db/idb_backend.hpp"
 #include "core/database_type.hpp"
-#include <memory>
-#include <unordered_map>
+#include <format>
 #include <functional>
+#include <memory>
 #include <stdexcept>
+#include <unordered_map>
+#include <utility>
 
 namespace sqlproxy {
 
@@ -37,13 +39,12 @@ public:
     }
 
     [[nodiscard]] std::unique_ptr<IDbBackend> create(DatabaseType type) const {
-        const auto it = factories_.find(type);
-        if (it == factories_.end()) {
-            throw std::runtime_error(
-                std::string("No backend registered for database type: ") +
-                database_type_to_string(type));
+        if (const auto it = factories_.find(type); it != factories_.end()) {
+            return it->second();
         }
-        return it->second();
+        throw std::runtime_error(
+            std::format("No backend registered for database type: {}",
+                database_type_to_string(type)));
     }
 
     [[nodiscard]] bool has_backend(DatabaseType type) const {
@@ -56,7 +57,7 @@ private:
     // Use a simple struct hash for DatabaseType
     struct DatabaseTypeHash {
         size_t operator()(DatabaseType t) const {
-            return std::hash<int>()(static_cast<int>(t));
+            return std::hash<int>()(std::to_underlying(t));
         }
     };
 

@@ -1,4 +1,5 @@
 #include "audit/webhook_sink.hpp"
+#include "server/http_constants.hpp"
 #include "core/utils.hpp"
 
 #include "../third_party/cpp-httplib/httplib.h"
@@ -85,15 +86,14 @@ void WebhookSink::send_batch() {
 
     for (int attempt = 0; attempt < config_.max_retries && !success; ++attempt) {
         try {
-            std::string scheme_host = (use_ssl_ ? "https://" : "http://") +
-                                       host_ + ":" + std::to_string(port_);
+            std::string scheme_host = std::format("{}{}:{}", use_ssl_ ? "https://" : "http://", host_, port_);
             httplib::Client client(scheme_host);
             client.set_connection_timeout(config_.timeout);
             client.set_read_timeout(config_.timeout);
 
             httplib::Headers headers;
             if (!config_.auth_header.empty()) {
-                headers.emplace("Authorization", config_.auth_header);
+                headers.emplace(http::kAuthorizationHeader, config_.auth_header);
             }
 
             auto res = client.Post(path_, headers, payload, config_.content_type);

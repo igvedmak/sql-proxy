@@ -1,5 +1,6 @@
 #include "db/postgresql/pg_schema_loader.hpp"
 #include "db/postgresql/pg_type_map.hpp"
+#include "db/schema_constants.hpp"
 #include "core/utils.hpp"
 #include <libpq-fe.h>
 #include <memory>
@@ -8,8 +9,6 @@
 namespace sqlproxy {
 
 static constexpr char kDot = '.';
-static constexpr std::string_view kYes    = "YES";
-static constexpr std::string_view kYesLow = "yes";
 
 // RAII wrappers for libpq resources
 struct PGConnDeleter {
@@ -85,7 +84,7 @@ std::shared_ptr<SchemaMap> PgSchemaLoader::load_schema(const std::string& conn_s
         std::string table_name  = utils::to_lower(table_raw  ? table_raw  : "");
         std::string column_name = utils::to_lower(column_raw ? column_raw : "");
         std::string data_type   = utils::to_lower(type_raw   ? type_raw   : "");
-        std::string nullable_str = nullable_raw ? nullable_raw : std::string(kYes);
+        std::string nullable_str = nullable_raw ? nullable_raw : std::string(db::kYes);
 
         // Construct the map key
         std::string key;
@@ -115,7 +114,7 @@ std::shared_ptr<SchemaMap> PgSchemaLoader::load_schema(const std::string& conn_s
 
         // Build ColumnMetadata for this row
         uint32_t type_oid = PgTypeMap::type_name_to_oid(data_type);
-        bool is_nullable = (nullable_str == kYes || nullable_str == kYesLow);
+        bool is_nullable = (nullable_str == db::kYes || nullable_str == db::kYesLow);
         ColumnMetadata col(std::move(column_name), std::move(data_type), type_oid, is_nullable, false);
 
         // Record the column index for fast name-based lookup

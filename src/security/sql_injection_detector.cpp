@@ -2,13 +2,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <utility>
 
 namespace sqlproxy {
 
 namespace {
 
 // Case-insensitive substring search
-bool contains_ci(const std::string& haystack, const char* needle, size_t needle_len) {
+bool contains_ci(std::string_view haystack, const char* needle, size_t needle_len) {
     if (needle_len > haystack.size()) return false;
     for (size_t i = 0; i <= haystack.size() - needle_len; ++i) {
         bool match = true;
@@ -24,14 +25,14 @@ bool contains_ci(const std::string& haystack, const char* needle, size_t needle_
     return false;
 }
 
-bool contains_ci(const std::string& haystack, const char* needle) {
+bool contains_ci(std::string_view haystack, const char* needle) {
     size_t len = 0;
     while (needle[len]) ++len;
     return contains_ci(haystack, needle, len);
 }
 
 // Check if position is inside a string literal
-bool in_string_literal(const std::string& sql, size_t pos) {
+bool in_string_literal(std::string_view sql, size_t pos) {
     bool in_single = false;
     bool in_double = false;
     for (size_t i = 0; i < pos && i < sql.size(); ++i) {
@@ -42,7 +43,7 @@ bool in_string_literal(const std::string& sql, size_t pos) {
 }
 
 // Find keyword not inside string literal (case-insensitive)
-size_t find_keyword(const std::string& sql, const char* keyword) {
+size_t find_keyword(std::string_view sql, const char* keyword) {
     size_t kw_len = 0;
     while (keyword[kw_len]) ++kw_len;
 
@@ -86,17 +87,17 @@ const char* SqlInjectionDetector::threat_level_to_string(ThreatLevel level) {
 }
 
 void SqlInjectionDetector::elevate_threat(DetectionResult& result, ThreatLevel level) const {
-    if (static_cast<int>(level) > static_cast<int>(result.threat_level)) {
+    if (std::to_underlying(level) > std::to_underlying(result.threat_level)) {
         result.threat_level = level;
     }
-    if (static_cast<int>(result.threat_level) >= static_cast<int>(config_.block_threshold)) {
+    if (std::to_underlying(result.threat_level) >= std::to_underlying(config_.block_threshold)) {
         result.should_block = true;
     }
 }
 
 SqlInjectionDetector::DetectionResult SqlInjectionDetector::analyze(
-    const std::string& raw_sql,
-    const std::string& normalized_sql,
+    std::string_view raw_sql,
+    std::string_view normalized_sql,
     const ParsedQuery& parsed) const {
 
     if (!config_.enabled) {
@@ -124,7 +125,7 @@ SqlInjectionDetector::DetectionResult SqlInjectionDetector::analyze(
     return result;
 }
 
-void SqlInjectionDetector::check_tautologies(const std::string& sql,
+void SqlInjectionDetector::check_tautologies(std::string_view sql,
                                              DetectionResult& result) const {
     // Check for common tautology patterns: 1=1, 'a'='a', 1<>2, OR true, OR 1
     // These are commonly injected to bypass WHERE clauses
@@ -135,7 +136,7 @@ void SqlInjectionDetector::check_tautologies(const std::string& sql,
     };
     for (const auto& pattern : numeric_tautologies) {
         if (contains_ci(sql, pattern)) {
-            size_t pos = sql.find(pattern);
+            const size_t pos = sql.find(pattern);
             if (pos != std::string::npos && !in_string_literal(sql, pos)) {
                 result.patterns_matched.push_back("TAUTOLOGY");
                 elevate_threat(result, ThreatLevel::HIGH);
@@ -167,7 +168,7 @@ void SqlInjectionDetector::check_tautologies(const std::string& sql,
     }
 }
 
-void SqlInjectionDetector::check_union_injection(const std::string& sql,
+void SqlInjectionDetector::check_union_injection(std::string_view sql,
                                                  const ParsedQuery& parsed,
                                                  DetectionResult& result) const {
     // UNION-based injection is one of the most dangerous patterns
@@ -184,7 +185,7 @@ void SqlInjectionDetector::check_union_injection(const std::string& sql,
     (void)parsed; // AST-level detection is additional context
 }
 
-void SqlInjectionDetector::check_comment_bypass(const std::string& raw_sql,
+void SqlInjectionDetector::check_comment_bypass(std::string_view raw_sql,
                                                 DetectionResult& result) const {
     // Comment-based injection: -- or /**/ used to truncate queries
     // Only flag if comments appear after WHERE clause or inside suspicious positions
@@ -195,7 +196,7 @@ void SqlInjectionDetector::check_comment_bypass(const std::string& raw_sql,
             if (!in_string_literal(raw_sql, i)) {
                 // Check if there's meaningful SQL before the comment
                 // (-- at the very end after WHERE is suspicious)
-                auto before = raw_sql.substr(0, i);
+                const auto before = raw_sql.substr(0, i);
                 if (find_keyword(before, "where") != std::string::npos ||
                     find_keyword(before, "and") != std::string::npos ||
                     find_keyword(before, "or") != std::string::npos) {
@@ -212,13 +213,13 @@ void SqlInjectionDetector::check_comment_bypass(const std::string& raw_sql,
     size_t block_start = 0;
     while ((block_start = raw_sql.find("/*", block_start)) != std::string::npos) {
         if (!in_string_literal(raw_sql, block_start)) {
-            size_t block_end = raw_sql.find("*/", block_start + 2);
+            const size_t block_end = raw_sql.find("*/", block_start + 2);
             if (block_end != std::string::npos) {
                 // Check if the comment is between SQL keywords (obfuscation)
-                auto before = raw_sql.substr(0, block_start);
-                auto after_pos = block_end + 2;
+                const auto before = raw_sql.substr(0, block_start);
+                const auto after_pos = block_end + 2;
                 if (after_pos < raw_sql.size()) {
-                    auto after = raw_sql.substr(after_pos);
+                    const auto after = raw_sql.substr(after_pos);
                     // Pattern: keyword /*...*/ keyword (e.g., UN/**/ION SE/**/LECT)
                     bool before_has_alpha = false;
                     for (auto it = before.rbegin(); it != before.rend(); ++it) {
@@ -227,7 +228,7 @@ void SqlInjectionDetector::check_comment_bypass(const std::string& raw_sql,
                         break;
                     }
                     bool after_has_alpha = false;
-                    for (char c : after) {
+                    for (const char c : after) {
                         if (std::isspace(static_cast<unsigned char>(c))) continue;
                         after_has_alpha = std::isalpha(static_cast<unsigned char>(c));
                         break;
@@ -244,7 +245,7 @@ void SqlInjectionDetector::check_comment_bypass(const std::string& raw_sql,
     }
 }
 
-void SqlInjectionDetector::check_stacked_queries(const std::string& raw_sql,
+void SqlInjectionDetector::check_stacked_queries(std::string_view raw_sql,
                                                  DetectionResult& result) const {
     // Stacked queries: multiple statements separated by semicolons
     // e.g., "SELECT 1; DROP TABLE users"
@@ -255,7 +256,7 @@ void SqlInjectionDetector::check_stacked_queries(const std::string& raw_sql,
     bool in_double = false;
 
     for (size_t i = 0; i < raw_sql.size(); ++i) {
-        char c = raw_sql[i];
+        const char c = raw_sql[i];
         if (c == '\'' && !in_double) in_single = !in_single;
         else if (c == '"' && !in_single) in_double = !in_double;
         else if (c == ';' && !in_single && !in_double) {
@@ -267,7 +268,7 @@ void SqlInjectionDetector::check_stacked_queries(const std::string& raw_sql,
         // Check if there's a second statement after the semicolon
         bool found_statement = false;
         for (size_t i = 0; i < raw_sql.size(); ++i) {
-            char c = raw_sql[i];
+            const char c = raw_sql[i];
             if (c == '\'' && !in_double) in_single = !in_single;
             else if (c == '"' && !in_single) in_double = !in_double;
             else if (c == ';' && !in_single && !in_double) {
@@ -288,7 +289,7 @@ void SqlInjectionDetector::check_stacked_queries(const std::string& raw_sql,
     }
 }
 
-void SqlInjectionDetector::check_time_based_blind(const std::string& sql,
+void SqlInjectionDetector::check_time_based_blind(std::string_view sql,
                                                    DetectionResult& result) const {
     // Time-based blind injection: SLEEP(), pg_sleep(), WAITFOR DELAY, BENCHMARK()
     static const char* time_functions[] = {
@@ -304,7 +305,7 @@ void SqlInjectionDetector::check_time_based_blind(const std::string& sql,
     }
 }
 
-void SqlInjectionDetector::check_error_based(const std::string& sql,
+void SqlInjectionDetector::check_error_based(std::string_view sql,
                                              DetectionResult& result) const {
     // Error-based injection: functions used to extract data via error messages
     static const char* error_functions[] = {
@@ -317,7 +318,7 @@ void SqlInjectionDetector::check_error_based(const std::string& sql,
             size_t pos = sql.find(func);
             if (pos == std::string::npos) {
                 // Try case-insensitive find
-                std::string lower_sql = sql;
+                std::string lower_sql{sql};
                 std::transform(lower_sql.begin(), lower_sql.end(), lower_sql.begin(),
                     [](unsigned char c) { return std::tolower(c); });
                 pos = lower_sql.find(func);

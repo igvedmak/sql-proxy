@@ -15,7 +15,7 @@ ParseCache::ParseCache(size_t max_entries, size_t num_shards)
     }
 
     // Distribute entries evenly across shards
-    size_t entries_per_shard = std::max<size_t>(1, max_entries / num_shards);
+    const size_t entries_per_shard = std::max<size_t>(1, max_entries / num_shards);
 
     // Use unique_ptr since Shard is not movable (contains mutex)
     for (size_t i = 0; i < num_shards; ++i) {
@@ -24,8 +24,8 @@ ParseCache::ParseCache(size_t max_entries, size_t num_shards)
 }
 
 std::optional<std::shared_ptr<StatementInfo>> ParseCache::get(const QueryFingerprint& fingerprint) {
-    size_t shard_idx = select_shard(fingerprint.hash);
-    auto result = shards_[shard_idx]->get(fingerprint);
+    const size_t shard_idx = select_shard(fingerprint.hash);
+    const auto result = shards_[shard_idx]->get(fingerprint);
 
     if (result.has_value()) {
         hits_.fetch_add(1, std::memory_order_relaxed);
@@ -37,7 +37,7 @@ std::optional<std::shared_ptr<StatementInfo>> ParseCache::get(const QueryFingerp
 }
 
 void ParseCache::put(std::shared_ptr<StatementInfo> info) {
-    size_t shard_idx = select_shard(info->fingerprint.hash);
+    const size_t shard_idx = select_shard(info->fingerprint.hash);
     shards_[shard_idx]->put(std::move(info));
 }
 
@@ -105,7 +105,7 @@ std::optional<std::shared_ptr<StatementInfo>> ParseCache::Shard::get(
 void ParseCache::Shard::put(std::shared_ptr<StatementInfo> info) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    uint64_t hash = info->fingerprint.hash;
+    const uint64_t hash = info->fingerprint.hash;
 
     // Check if already exists
     const auto it = cache_map_.find(hash);
@@ -122,7 +122,7 @@ void ParseCache::Shard::put(std::shared_ptr<StatementInfo> info) {
     }
 
     // Insert new entry at front
-    lru_list_.push_front(info);
+    lru_list_.push_front(std::move(info));
     cache_map_[hash] = lru_list_.begin();
 }
 

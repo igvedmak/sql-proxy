@@ -504,7 +504,8 @@ struct AuditRecord {
     std::string shadow_policy;
 
     AuditRecord()
-        : sequence_num(0),
+        : audit_id(utils::generate_uuid()),
+          sequence_num(0),
           statement_type(StatementType::UNKNOWN),
           decision(Decision::BLOCK),
           rule_specificity(0),
@@ -580,7 +581,8 @@ struct ProxyResponse {
     std::string traceparent;        // W3C traceparent header (outgoing)
 
     ProxyResponse()
-        : success(false),
+        : audit_id(utils::generate_uuid()),
+          success(false),
           error_code(ErrorCode::NONE),
           execution_time_ms(0),
           policy_decision(Decision::BLOCK) {}

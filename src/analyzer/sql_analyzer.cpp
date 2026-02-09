@@ -1,4 +1,5 @@
 #include "analyzer/sql_analyzer.hpp"
+#include "parser/ast_keys.hpp"
 
 // libpg_query C API
 extern "C" {
@@ -27,7 +28,6 @@ static constexpr std::string_view kUpdateStmt    = "UpdateStmt";
 static constexpr std::string_view kDeleteStmt    = "DeleteStmt";
 
 // Node types
-static constexpr std::string_view kRangeVar      = "RangeVar";
 static constexpr std::string_view kJoinExpr      = "JoinExpr";
 static constexpr std::string_view kSubLink       = "SubLink";
 static constexpr std::string_view kFuncCall      = "FuncCall";
@@ -35,7 +35,6 @@ static constexpr std::string_view kResTarget     = "ResTarget";
 static constexpr std::string_view kColumnRef     = "ColumnRef";
 static constexpr std::string_view kStringNode    = "String";
 static constexpr std::string_view kIntegerNode   = "Integer";
-static constexpr std::string_view kAlias         = "Alias";
 static constexpr std::string_view kCaseExpr      = "CaseExpr";
 static constexpr std::string_view kCaseWhen      = "CaseWhen";
 static constexpr std::string_view kCoalesceExpr  = "CoalesceExpr";
@@ -54,10 +53,6 @@ static constexpr std::string_view kCommonTableExpr = "CommonTableExpr";
 static constexpr std::string_view kArgs          = "args";
 static constexpr std::string_view kArg           = "arg";
 static constexpr std::string_view kFields        = "fields";
-static constexpr std::string_view kRelname       = "relname";
-static constexpr std::string_view kSchemaname    = "schemaname";
-static constexpr std::string_view kAliasname     = "aliasname";
-static constexpr std::string_view kAliasFld      = "alias";
 static constexpr std::string_view kFromClause    = "fromClause";
 static constexpr std::string_view kWhereClause   = "whereClause";
 static constexpr std::string_view kTargetList    = "targetList";
@@ -74,7 +69,6 @@ static constexpr std::string_view kFuncname      = "funcname";
 static constexpr std::string_view kAggStar       = "agg_star";
 static constexpr std::string_view kCols          = "cols";
 static constexpr std::string_view kVal           = "val";
-static constexpr std::string_view kSval          = "sval";
 static constexpr std::string_view kIval          = "ival";
 static constexpr std::string_view kFval          = "fval";
 static constexpr std::string_view kStmts         = "stmts";
@@ -91,7 +85,6 @@ static constexpr std::string_view kDefresult     = "defresult";
 static constexpr std::string_view kExpr          = "expr";
 static constexpr std::string_view kResult        = "result";
 static constexpr std::string_view kName          = "name";
-static constexpr std::string_view kStr           = "str";
 static constexpr char kDot = '.';
 static constexpr std::string_view kDotPrefix     = ".";
 
@@ -367,10 +360,10 @@ static void extract_column_refs_from_node(const json& col_ref,
     for (const auto& field : fields) {
         if (has_key(field, kStringNode)) {
             // libpg_query v17 uses "sval" inside String node
-            std::string val = get_string(field[kStringNode], kSval);
+            std::string val = get_string(field[kStringNode], ast::kSval);
             if (val.empty()) {
                 // Fallback: some versions use "str"
-                val = get_string(field[kStringNode], kStr);
+                val = get_string(field[kStringNode], ast::kStr);
             }
             if (!val.empty()) {
                 parts.push_back(std::move(val));
@@ -436,9 +429,9 @@ static void collect_column_names(const json& node, std::vector<std::string>& col
 
     const auto& last = funcname.back();
     if (has_key(last, kStringNode)) {
-        std::string name = get_string(last[kStringNode], kSval);
+        std::string name = get_string(last[kStringNode], ast::kSval);
         if (name.empty()) {
-            name = get_string(last[kStringNode], kStr);
+            name = get_string(last[kStringNode], ast::kStr);
         }
         return name;
     }
@@ -454,7 +447,7 @@ static void collect_column_names(const json& node, std::vector<std::string>& col
     // Convert to lowercase for case-insensitive comparison
     std::string lower;
     lower.reserve(name.size());
-    for (char c : name) {
+    for (const char c : name) {
         lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     return AGGREGATE_FUNCTIONS.count(lower) > 0;
@@ -490,18 +483,18 @@ static void walk_for_tables(const json& node,
     }
 
     // RangeVar: direct table reference
-    if (has_key(node, kRangeVar)) {
-        const auto& rv = node[kRangeVar];
-        std::string relname = get_string(rv, kRelname);
+    if (has_key(node, ast::kRangeVar)) {
+        const auto& rv = node[ast::kRangeVar];
+        std::string relname = get_string(rv, ast::kRelname);
         if (!relname.empty()) {
-            std::string schemaname = get_string(rv, kSchemaname);
+            std::string schemaname = get_string(rv, ast::kSchemaname);
             std::string alias_name;
 
             // Extract alias from Alias node
-            if (has_key(rv, kAliasFld) && has_key(rv[kAliasFld], kAlias)) {
-                alias_name = get_string(rv[kAliasFld][kAlias], kAliasname);
-            } else if (has_key(rv, kAliasFld) && rv[kAliasFld].is_object()) {
-                alias_name = get_string(rv[kAliasFld], kAliasname);
+            if (has_key(rv, ast::kAliasFld) && has_key(rv[ast::kAliasFld], ast::kAlias)) {
+                alias_name = get_string(rv[ast::kAliasFld][ast::kAlias], ast::kAliasname);
+            } else if (has_key(rv, ast::kAliasFld) && rv[ast::kAliasFld].is_object()) {
+                alias_name = get_string(rv[ast::kAliasFld], ast::kAliasname);
             }
 
             std::string key;
@@ -510,7 +503,7 @@ static void walk_for_tables(const json& node,
             key += kDot;
             key += relname;
 
-            if (seen.insert(key).second) {
+            if (seen.insert(std::move(key)).second) {
                 tables.emplace_back(std::move(schemaname), std::move(relname), std::move(alias_name));
             }
         }
@@ -574,7 +567,7 @@ static void walk_for_tables(const json& node,
     if (has_key(node, kInsertStmt)) {
         const auto& is = node[kInsertStmt];
         if (has_key(is, kRelation)) {
-            json wrapped = json::wrap(kRangeVar, is[kRelation]);
+            const json wrapped = json::wrap(ast::kRangeVar, is[kRelation]);
             walk_for_tables(wrapped, tables, seen);
         }
         if (has_key(is, kSelectStmtFld)) {
@@ -587,7 +580,7 @@ static void walk_for_tables(const json& node,
     if (has_key(node, kUpdateStmt)) {
         const auto& us = node[kUpdateStmt];
         if (has_key(us, kRelation)) {
-            json wrapped = json::wrap(kRangeVar, us[kRelation]);
+            const json wrapped = json::wrap(ast::kRangeVar, us[kRelation]);
             walk_for_tables(wrapped, tables, seen);
         }
         if (has_key(us, kFromClause)) {
@@ -603,7 +596,7 @@ static void walk_for_tables(const json& node,
     if (has_key(node, kDeleteStmt)) {
         const auto& ds = node[kDeleteStmt];
         if (has_key(ds, kRelation)) {
-            json wrapped = json::wrap(kRangeVar, ds[kRelation]);
+            const json wrapped = json::wrap(ast::kRangeVar, ds[kRelation]);
             walk_for_tables(wrapped, tables, seen);
         }
         if (has_key(ds, kWhereClause)) {
@@ -741,7 +734,7 @@ static bool walk_for_aggregation(const json& node) {
     // Check for FuncCall with aggregate function name
     if (has_key(node, kFuncCall)) {
         const auto& func = node[kFuncCall];
-        std::string name = extract_func_name(func);
+        const std::string name = extract_func_name(func);
         if (!name.empty() && is_aggregate_function(name)) {
             return true;
         }
@@ -797,7 +790,7 @@ AnalysisResult SQLAnalyzer::analyze(const ParsedQuery& parsed, void* parse_tree)
     }
 
     // Use tables from parser (already extracted via RangeVar nodes)
-    auto tables = parsed.tables;
+    const auto tables = parsed.tables;
 
     // Classify table usage based on statement type
     for (const auto& table : tables) {
@@ -865,12 +858,12 @@ AnalysisResult SQLAnalyzer::analyze(const ParsedQuery& parsed, void* parse_tree)
 std::vector<TableRef> SQLAnalyzer::extract_tables(void* parse_tree_ptr, StatementType /*type*/) {
     std::vector<TableRef> tables;
 
-    json root = parse_json_tree(parse_tree_ptr);
+    const json root = parse_json_tree(parse_tree_ptr);
     if (root.is_null()) {
         return tables;
     }
 
-    json stmt = get_first_stmt(root);
+    const json stmt = get_first_stmt(root);
     if (stmt.is_null()) {
         return tables;
     }
@@ -888,17 +881,17 @@ std::vector<TableRef> SQLAnalyzer::extract_tables(void* parse_tree_ptr, Statemen
 std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree) {
     std::vector<ProjectionColumn> projections;
 
-    json root = parse_json_tree(parse_tree);
+    const json root = parse_json_tree(parse_tree);
     if (root.is_null()) {
         return projections;
     }
 
-    json stmt = get_first_stmt(root);
+    const json stmt = get_first_stmt(root);
     if (stmt.is_null()) {
         return projections;
     }
 
-    auto [stmt_type, body] = get_stmt_body(stmt);
+    const auto [stmt_type, body] = get_stmt_body(stmt);
     if (stmt_type != kSelectStmt || body.is_null()) {
         return projections;
     }
@@ -949,9 +942,9 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
 
                 for (const auto& field : fields) {
                     if (has_key(field, kStringNode)) {
-                        std::string sval = get_string(field[kStringNode], kSval);
+                        std::string sval = get_string(field[kStringNode], ast::kSval);
                         if (sval.empty()) {
-                            sval = get_string(field[kStringNode], kStr);
+                            sval = get_string(field[kStringNode], ast::kStr);
                         }
                         if (!sval.empty()) {
                             parts.push_back(std::move(sval));
@@ -1094,7 +1087,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             const auto& a_const = val[kAConst];
             if (has_key(a_const, kIval)) {
                 col.expression = kExprIntLiteral;
-            } else if (has_key(a_const, kSval)) {
+            } else if (has_key(a_const, ast::kSval)) {
                 col.expression = kExprStrLiteral;
             } else if (has_key(a_const, kFval)) {
                 col.expression = kExprFloatLiteral;
@@ -1161,17 +1154,17 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
 std::vector<ColumnRef> SQLAnalyzer::extract_filter_columns(void* parse_tree) {
     std::vector<ColumnRef> columns;
 
-    json root = parse_json_tree(parse_tree);
+    const json root = parse_json_tree(parse_tree);
     if (root.is_null()) {
         return columns;
     }
 
-    json stmt = get_first_stmt(root);
+    const json stmt = get_first_stmt(root);
     if (stmt.is_null()) {
         return columns;
     }
 
-    auto [stmt_type, body] = get_stmt_body(stmt);
+    const auto [stmt_type, body] = get_stmt_body(stmt);
     if (body.is_null()) {
         return columns;
     }
@@ -1202,7 +1195,7 @@ std::vector<ColumnRef> SQLAnalyzer::extract_filter_columns(void* parse_tree) {
             }
             if (!already_qualified) {
                 std::string key = std::string(kDotPrefix) + cn;
-                if (added.insert(key).second) {
+                if (added.insert(std::move(key)).second) {
                     columns.emplace_back(std::string(cn));
                 }
             }
@@ -1237,14 +1230,14 @@ static void extract_join_filter_columns(const json& node, std::vector<ColumnRef>
             std::unordered_set<std::string> added;
             for (const auto& tq : table_qualified) {
                 if (added.insert(tq).second) {
-                    size_t dot = tq.find(kDot);
+                    const size_t dot = tq.find(kDot);
                     columns.emplace_back(std::string(tq.substr(0, dot)), std::string(tq.substr(dot + 1)));
                 }
             }
             for (const auto& cn : col_names) {
                 bool already_qualified = false;
                 for (const auto& tq : table_qualified) {
-                    size_t dot = tq.find(kDot);
+                    const size_t dot = tq.find(kDot);
                     if (dot != std::string::npos && tq.substr(dot + 1) == cn) {
                         already_qualified = true;
                         break;
@@ -1276,12 +1269,12 @@ static void extract_join_filter_columns(const json& node, std::vector<ColumnRef>
 std::vector<ColumnRef> SQLAnalyzer::extract_write_columns(void* parse_tree, StatementType type) {
     std::vector<ColumnRef> columns;
 
-    json root = parse_json_tree(parse_tree);
+    const json root = parse_json_tree(parse_tree);
     if (root.is_null()) {
         return columns;
     }
 
-    json stmt = get_first_stmt(root);
+    const json stmt = get_first_stmt(root);
     if (stmt.is_null()) {
         return columns;
     }
@@ -1356,16 +1349,16 @@ std::string SQLAnalyzer::resolve_column(
     const std::unordered_map<std::string, std::string>& aliases) {
 
     // Check if column has table prefix: "alias.column"
-    size_t dot_pos = col.find(kDot);
+    const size_t dot_pos = col.find(kDot);
     if (dot_pos == std::string::npos) {
         return col; // No prefix
     }
 
-    std::string prefix = col.substr(0, dot_pos);
-    std::string col_name = col.substr(dot_pos + 1);
+    const std::string prefix = col.substr(0, dot_pos);
+    const std::string col_name = col.substr(dot_pos + 1);
 
     // Resolve alias to table name
-    auto it = aliases.find(prefix);
+    const auto it = aliases.find(prefix);
     if (it != aliases.end()) {
         return it->second + std::string(kDotPrefix) + col_name;
     }
@@ -1378,12 +1371,12 @@ std::string SQLAnalyzer::resolve_column(
 // ============================================================================
 
 bool SQLAnalyzer::has_aggregation(void* parse_tree) {
-    json root = parse_json_tree(parse_tree);
+    const json root = parse_json_tree(parse_tree);
     if (root.is_null()) {
         return false;
     }
 
-    json stmt = get_first_stmt(root);
+    const json stmt = get_first_stmt(root);
     if (stmt.is_null()) {
         return false;
     }
@@ -1396,12 +1389,12 @@ bool SQLAnalyzer::has_aggregation(void* parse_tree) {
 // ============================================================================
 
 bool SQLAnalyzer::has_subquery(void* parse_tree) {
-    json root = parse_json_tree(parse_tree);
+    const json root = parse_json_tree(parse_tree);
     if (root.is_null()) {
         return false;
     }
 
-    json stmt = get_first_stmt(root);
+    const json stmt = get_first_stmt(root);
     if (stmt.is_null()) {
         return false;
     }
@@ -1414,12 +1407,12 @@ bool SQLAnalyzer::has_subquery(void* parse_tree) {
 // ============================================================================
 
 bool SQLAnalyzer::has_join(void* parse_tree) {
-    json root = parse_json_tree(parse_tree);
+    const json root = parse_json_tree(parse_tree);
     if (root.is_null()) {
         return false;
     }
 
-    json stmt = get_first_stmt(root);
+    const json stmt = get_first_stmt(root);
     if (stmt.is_null()) {
         return false;
     }
@@ -1432,17 +1425,17 @@ bool SQLAnalyzer::has_join(void* parse_tree) {
 // ============================================================================
 
 std::optional<int64_t> SQLAnalyzer::extract_limit(void* parse_tree) {
-    json root = parse_json_tree(parse_tree);
+    const json root = parse_json_tree(parse_tree);
     if (root.is_null()) {
         return std::nullopt;
     }
 
-    json stmt = get_first_stmt(root);
+    const json stmt = get_first_stmt(root);
     if (stmt.is_null()) {
         return std::nullopt;
     }
 
-    auto [stmt_type, body] = get_stmt_body(stmt);
+    const auto [stmt_type, body] = get_stmt_body(stmt);
     if (stmt_type != kSelectStmt || body.is_null()) {
         return std::nullopt;
     }

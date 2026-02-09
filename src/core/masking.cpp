@@ -102,7 +102,7 @@ std::vector<MaskingRecord> MaskingEngine::apply(
             }
         }
 
-        records.push_back({decision.column_name, decision.masking, decision.matched_policy});
+        records.emplace_back(decision.column_name, decision.masking, decision.matched_policy);
     }
 
     return records;

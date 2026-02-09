@@ -376,7 +376,7 @@ std::string AuditEmitter::compute_record_hash(
     // Hash: sequence_num|timestamp|user|sql|decision|previous_hash
     std::string input;
     input.reserve(256);
-    input += std::to_string(record.sequence_num);
+    input += std::format("{}", record.sequence_num);
     input += '|';
     input += utils::format_timestamp(record.timestamp);
     input += '|';

@@ -1,6 +1,7 @@
 #include "security/anomaly_detector.hpp"
 
 #include <cmath>
+#include <format>
 #include <mutex>
 #include <numeric>
 
@@ -18,7 +19,7 @@ AnomalyDetector::AnomalyResult AnomalyDetector::check(
 
     std::shared_lock lock(mutex_);
 
-    auto it = profiles_.find(user);
+    const auto it = profiles_.find(user);
     if (it == profiles_.end()) return {};
     const auto& profile = it->second;
 
@@ -44,12 +45,11 @@ AnomalyDetector::AnomalyResult AnomalyDetector::check(
 
     // 3. Volume spike
     if (profile->avg_queries_per_window > 0 && profile->stddev_queries_per_window > 0) {
-        double current = static_cast<double>(profile->window_queries.load());
-        double z_score = (current - profile->avg_queries_per_window) /
+        const double current = static_cast<double>(profile->window_queries.load());
+        const double z_score = (current - profile->avg_queries_per_window) /
                          profile->stddev_queries_per_window;
         if (z_score > config_.volume_stddev_threshold) {
-            result.anomalies.push_back(
-                "VOLUME_SPIKE:" + std::to_string(z_score).substr(0, 4) + "σ");
+            result.anomalies.push_back(std::format("VOLUME_SPIKE:{:.1f}σ", z_score));
             score += 0.4;
         }
     }
@@ -62,9 +62,9 @@ AnomalyDetector::AnomalyResult AnomalyDetector::check(
     int current_hour = tm_now.tm_hour;
 
     if (profile->total_queries.load() >= config_.new_table_alert_after_queries) {
-        auto it = profile->hour_distribution.find(current_hour);
+        const auto it = profile->hour_distribution.find(current_hour);
         if (it == profile->hour_distribution.end() || it->second == 0) {
-            result.anomalies.push_back("UNUSUAL_HOUR:" + std::to_string(current_hour));
+            result.anomalies.push_back(std::format("UNUSUAL_HOUR:{}", current_hour));
             score += 0.2;
         }
     }
@@ -119,7 +119,7 @@ std::shared_ptr<UserProfile> AnomalyDetector::get_or_create_profile(const std::s
     // Fast path: shared lock
     {
         std::shared_lock lock(mutex_);
-        auto it = profiles_.find(user);
+        const auto it = profiles_.find(user);
         if (it != profiles_.end()) return it->second;
     }
 
@@ -130,20 +130,20 @@ std::shared_ptr<UserProfile> AnomalyDetector::get_or_create_profile(const std::s
         auto profile = std::make_shared<UserProfile>();
         profile->profile_created = std::chrono::system_clock::now();
         profile->window_start = profile->profile_created;
-        it->second = profile;
+        it->second = std::move(profile);
     }
     return it->second;
 }
 
 std::shared_ptr<UserProfile> AnomalyDetector::find_profile(const std::string& user) const {
     std::shared_lock lock(mutex_);
-    auto it = profiles_.find(user);
+    const auto it = profiles_.find(user);
     return (it != profiles_.end()) ? it->second : nullptr;
 }
 
 void AnomalyDetector::maybe_rotate_window(UserProfile& profile) const {
-    auto now = std::chrono::system_clock::now();
-    auto window_duration = std::chrono::minutes(config_.baseline_window_minutes);
+    const auto now = std::chrono::system_clock::now();
+    const auto window_duration = std::chrono::minutes(config_.baseline_window_minutes);
 
     if (now - profile.window_start >= window_duration) {
         // Save current window count
@@ -157,14 +157,14 @@ void AnomalyDetector::maybe_rotate_window(UserProfile& profile) const {
 
         // Recalculate stats
         if (profile.window_history.size() >= 2) {
-            double sum = std::accumulate(profile.window_history.begin(),
+            const double sum = std::accumulate(profile.window_history.begin(),
                                          profile.window_history.end(), 0.0);
-            double n = static_cast<double>(profile.window_history.size());
+            const double n = static_cast<double>(profile.window_history.size());
             profile.avg_queries_per_window = sum / n;
 
             double sq_sum = 0.0;
             for (auto v : profile.window_history) {
-                double diff = static_cast<double>(v) - profile.avg_queries_per_window;
+                const double diff = static_cast<double>(v) - profile.avg_queries_per_window;
                 sq_sum += diff * diff;
             }
             profile.stddev_queries_per_window = std::sqrt(sq_sum / n);

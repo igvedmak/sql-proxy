@@ -1,5 +1,6 @@
 #include "server/dashboard_handler.hpp"
 #include "server/dashboard_html.hpp"
+#include "server/http_constants.hpp"
 #include "core/pipeline.hpp"
 #include "alerting/alert_evaluator.hpp"
 #include "server/rate_limiter.hpp"
@@ -22,10 +23,9 @@ namespace {
 
 bool check_admin_auth(const httplib::Request& req, const std::string& admin_token) {
     if (admin_token.empty()) return true;
-    auto auth = req.get_header_value("Authorization");
-    constexpr std::string_view kBearerPrefix = "Bearer ";
-    if (auth.size() <= kBearerPrefix.size()) return false;
-    return std::string_view(auth).substr(kBearerPrefix.size()) == admin_token;
+    const auto auth = req.get_header_value(http::kAuthorizationHeader);
+    if (auth.size() <= http::kBearerPrefix.size()) return false;
+    return std::string_view(auth).substr(http::kBearerPrefix.size()) == admin_token;
 }
 
 // Also check token from query parameter (for SSE which can't set headers)
@@ -54,7 +54,6 @@ void DashboardHandler::update_users(std::vector<DashboardUser> users) {
 }
 
 void DashboardHandler::register_routes(httplib::Server& svr, const std::string& admin_token) {
-    static constexpr const char* kJsonContentType = "application/json";
 
     // GET /dashboard - Serve SPA HTML
     svr.Get("/dashboard", [](const httplib::Request&, httplib::Response& res) {
@@ -65,7 +64,7 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
     svr.Get("/dashboard/api/stats", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, admin_token)) {
             res.status = 401;
-            res.set_content(R"({"error":"Unauthorized"})", kJsonContentType);
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
 
@@ -75,10 +74,10 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
         auto rate_limiter = pipeline_->get_rate_limiter();
         auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter.get());
         if (hierarchical_rl) {
-            auto rl = hierarchical_rl->get_stats();
-            uint64_t total_rejects = rl.global_rejects + rl.user_rejects
+            const auto rl = hierarchical_rl->get_stats();
+            const uint64_t total_rejects = rl.global_rejects + rl.user_rejects
                                    + rl.database_rejects + rl.user_database_rejects;
-            uint64_t allowed = (rl.total_checks > total_rejects)
+            const uint64_t allowed = (rl.total_checks > total_rejects)
                              ? (rl.total_checks - total_rejects) : 0;
             json += std::format(
                 "\"requests_allowed\":{},\"requests_blocked\":{},\"rate_limit_rejects\":{},",
@@ -86,9 +85,9 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
         }
 
         // Audit stats
-        auto audit = pipeline_->get_audit_emitter();
+        const auto audit = pipeline_->get_audit_emitter();
         if (audit) {
-            auto as = audit->get_stats();
+            const auto as = audit->get_stats();
             json += std::format(
                 "\"audit_emitted\":{},\"audit_written\":{},\"audit_overflow\":{},\"active_sinks\":{},",
                 as.total_emitted, as.total_written, as.overflow_dropped, as.active_sinks);
@@ -96,7 +95,7 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
 
         // Alert stats
         if (alert_evaluator_) {
-            auto als = alert_evaluator_->get_stats();
+            const auto als = alert_evaluator_->get_stats();
             json += std::format(
                 "\"alert_evaluations\":{},\"alerts_fired\":{},\"alerts_resolved\":{},\"active_alerts\":{},",
                 als.evaluations, als.alerts_fired, als.alerts_resolved, als.active_alert_count);
@@ -106,19 +105,19 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
         json += std::format("\"timestamp\":\"{}\"}}",
             utils::format_timestamp(std::chrono::system_clock::now()));
 
-        res.set_content(json, kJsonContentType);
+        res.set_content(json, http::kJsonContentType);
     });
 
     // GET /dashboard/api/policies - List all policies
     svr.Get("/dashboard/api/policies", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, admin_token)) {
             res.status = 401;
-            res.set_content(R"({"error":"Unauthorized"})", kJsonContentType);
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
 
-        auto pe = pipeline_->get_policy_engine();
-        auto policies = pe->get_policies();
+        const auto pe = pipeline_->get_policy_engine();
+        const auto policies = pe->get_policies();
 
         std::string json = "{\"policies\":[";
         for (size_t i = 0; i < policies.size(); ++i) {
@@ -145,14 +144,14 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
             json += "]}";
         }
         json += std::format("],\"total\":{}}}", policies.size());
-        res.set_content(json, kJsonContentType);
+        res.set_content(json, http::kJsonContentType);
     });
 
     // GET /dashboard/api/users - List all users
     svr.Get("/dashboard/api/users", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, admin_token)) {
             res.status = 401;
-            res.set_content(R"({"error":"Unauthorized"})", kJsonContentType);
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
 
@@ -168,24 +167,24 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
             json += "]}";
         }
         json += std::format("],\"total\":{}}}", users_.size());
-        res.set_content(json, kJsonContentType);
+        res.set_content(json, http::kJsonContentType);
     });
 
     // GET /dashboard/api/alerts - Active alerts + history
     svr.Get("/dashboard/api/alerts", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, admin_token)) {
             res.status = 401;
-            res.set_content(R"({"error":"Unauthorized"})", kJsonContentType);
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
 
         if (!alert_evaluator_) {
-            res.set_content(R"({"active":[],"history":[],"total":0})", kJsonContentType);
+            res.set_content(R"({"active":[],"history":[],"total":0})", http::kJsonContentType);
             return;
         }
 
-        auto active = alert_evaluator_->active_alerts();
-        auto history = alert_evaluator_->alert_history();
+        const auto active = alert_evaluator_->active_alerts();
+        const auto history = alert_evaluator_->alert_history();
 
         std::string json = "{\"active\":[";
         for (size_t i = 0; i < active.size(); ++i) {
@@ -207,14 +206,14 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
                 h.id, h.rule_name, h.severity, h.resolved ? "true" : "false");
         }
         json += std::format("],\"total\":{}}}", active.size());
-        res.set_content(json, kJsonContentType);
+        res.set_content(json, http::kJsonContentType);
     });
 
     // GET /dashboard/api/metrics/stream - SSE real-time metrics
     svr.Get("/dashboard/api/metrics/stream", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth_or_param(req, admin_token)) {
             res.status = 401;
-            res.set_content(R"({"error":"Unauthorized"})", kJsonContentType);
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
 
@@ -227,22 +226,22 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
                 for (int i = 0; i < 300; ++i) { // 300 events * 2s = 10 min max
                     std::string json = "{";
 
-                    auto rate_limiter = pipeline_->get_rate_limiter();
+                    const auto rate_limiter = pipeline_->get_rate_limiter();
                     auto* rl = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter.get());
                     if (rl) {
-                        auto stats = rl->get_stats();
-                        uint64_t rejects = stats.global_rejects + stats.user_rejects
+                        const auto stats = rl->get_stats();
+                        const uint64_t rejects = stats.global_rejects + stats.user_rejects
                                          + stats.database_rejects + stats.user_database_rejects;
-                        uint64_t allowed = (stats.total_checks > rejects)
+                        const uint64_t allowed = (stats.total_checks > rejects)
                                          ? (stats.total_checks - rejects) : 0;
                         json += std::format(
                             "\"requests_allowed\":{},\"requests_blocked\":{},\"rate_limit_rejects\":{},",
                             allowed, rejects, rejects);
                     }
 
-                    auto audit = pipeline_->get_audit_emitter();
+                    const auto audit = pipeline_->get_audit_emitter();
                     if (audit) {
-                        auto as = audit->get_stats();
+                        const auto as = audit->get_stats();
                         json += std::format(
                             "\"audit_emitted\":{},\"audit_written\":{},\"audit_overflow\":{},",
                             as.total_emitted, as.total_written, as.overflow_dropped);
@@ -257,7 +256,7 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
                         active_count,
                         utils::format_timestamp(std::chrono::system_clock::now()));
 
-                    std::string event = std::format("data: {}\n\n", json);
+                    const std::string event = std::format("data: {}\n\n", json);
                     if (!sink.write(event.data(), event.size())) {
                         return false; // Client disconnected
                     }

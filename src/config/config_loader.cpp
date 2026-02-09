@@ -285,7 +285,7 @@ JsonValue parse_string(const std::string& content) {
             int bracket_depth = 0;
             bool in_str = false;
             bool esc = false;
-            for (char c : multiline_buffer) {
+            for (const char c : multiline_buffer) {
                 if (esc) { esc = false; continue; }
                 if (c == '\\') { esc = true; continue; }
                 if (c == '"') { in_str = !in_str; continue; }
@@ -397,7 +397,7 @@ JsonValue parse_string(const std::string& content) {
             int bracket_depth = 0;
             bool in_str = false;
             bool esc = false;
-            for (char c : value_str) {
+            for (const char c : value_str) {
                 if (esc) { esc = false; continue; }
                 if (c == '\\') { esc = true; continue; }
                 if (c == '"') { in_str = !in_str; continue; }

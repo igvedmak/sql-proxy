@@ -119,7 +119,7 @@ std::vector<uint8_t> WireWriter::row_description(
         body.write_string(columns[i]);              // column name
         body.write_int32(0);                         // table OID
         body.write_int16(0);                         // column number
-        uint32_t type_oid = (i < type_oids.size()) ? type_oids[i] : 25;  // 25 = text
+        const uint32_t type_oid = (i < type_oids.size()) ? type_oids[i] : 25;  // 25 = text
         body.write_int32(static_cast<int32_t>(type_oid));  // type OID
         body.write_int16(-1);                        // type size (-1 = variable)
         body.write_int32(-1);                        // type modifier
@@ -193,7 +193,7 @@ std::optional<StartupMessage> parse_startup_message(const std::vector<uint8_t>& 
     // Parse key=value pairs
     size_t pos = 4;  // Skip protocol version
     while (pos < data.size()) {
-        std::string key = WireBuffer::read_string(data.data() + pos, data.size() - pos);
+        const std::string key = WireBuffer::read_string(data.data() + pos, data.size() - pos);
         if (key.empty()) break;  // End of parameters
         pos += key.size() + 1;
 

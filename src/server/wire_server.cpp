@@ -88,7 +88,7 @@ void WireServer::accept_loop() {
         struct sockaddr_in client_addr{};
         socklen_t addr_len = sizeof(client_addr);
 
-        int client_fd = accept(server_fd_,
+        const int client_fd = accept(server_fd_,
             reinterpret_cast<struct sockaddr*>(&client_addr), &addr_len);
 
         if (client_fd < 0) {

@@ -72,11 +72,11 @@ bool WireSession::read_frame(WireFrame& frame) {
     n = recv(fd_, len_buf, 4, MSG_WAITALL);
     if (n != 4) return false;
 
-    int32_t length = WireBuffer::read_int32(len_buf);
+    const int32_t length = WireBuffer::read_int32(len_buf);
     if (length < 4 || length > 1048576) return false;  // Max 1MB
 
     // Read payload
-    int32_t payload_len = length - 4;
+    const int32_t payload_len = length - 4;
     frame.payload.resize(payload_len);
     if (payload_len > 0) {
         n = recv(fd_, frame.payload.data(), payload_len, MSG_WAITALL);
@@ -92,7 +92,7 @@ bool WireSession::read_startup(std::vector<uint8_t>& payload) {
     ssize_t n = recv(fd_, len_buf, 4, MSG_WAITALL);
     if (n != 4) return false;
 
-    int32_t length = WireBuffer::read_int32(len_buf);
+    const int32_t length = WireBuffer::read_int32(len_buf);
     if (length < 8 || length > 10000) return false;
 
     // Read remaining bytes
@@ -138,7 +138,7 @@ void WireSession::handle_startup(const std::vector<uint8_t>& payload) {
     database_ = startup->database.empty() ? user_ : startup->database;
 
     // Validate user
-    auto user_info = user_lookup_(user_);
+    const auto user_info = user_lookup_(user_);
     if (!user_info) {
         send_error(std::format("Unknown user: {}", user_), "28P01");
         state_ = State::CLOSED;
@@ -197,7 +197,7 @@ void WireSession::handle_password(const WireFrame& frame) {
 }
 
 void WireSession::handle_query(const WireFrame& frame) {
-    std::string sql = parse_query_message(frame);
+    const std::string sql = parse_query_message(frame);
 
     if (sql.empty()) {
         send(WireWriter::empty_query_response());
@@ -214,7 +214,7 @@ void WireSession::handle_query(const WireFrame& frame) {
     request.source_ip = remote_addr_;
 
     // Execute through pipeline
-    auto response = pipeline_->execute(request);
+    const auto response = pipeline_->execute(request);
 
     // Send result back through wire protocol
     send_query_result(response);

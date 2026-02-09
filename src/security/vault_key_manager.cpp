@@ -1,4 +1,5 @@
 #include "security/vault_key_manager.hpp"
+#include "server/http_constants.hpp"
 #include "core/utils.hpp"
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -29,10 +30,9 @@ VaultKeyManager::VaultKeyManager(VaultKeyManagerConfig config)
 std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_active_key() const {
     {
         std::shared_lock lock(cache_mutex_);
-        auto elapsed = std::chrono::steady_clock::now() - last_refresh_;
+        const auto elapsed = std::chrono::steady_clock::now() - last_refresh_;
         if (elapsed < std::chrono::seconds(config_.cache_ttl_seconds) && !active_key_id_.empty()) {
-            auto it = key_cache_.find(active_key_id_);
-            if (it != key_cache_.end()) {
+            if (auto it = key_cache_.find(active_key_id_); it != key_cache_.end()) {
                 return it->second;
             }
         }
@@ -42,8 +42,7 @@ std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_active_key() const {
 
     std::shared_lock lock(cache_mutex_);
     if (!active_key_id_.empty()) {
-        auto it = key_cache_.find(active_key_id_);
-        if (it != key_cache_.end()) {
+        if (auto it = key_cache_.find(active_key_id_); it != key_cache_.end()) {
             return it->second;
         }
     }
@@ -53,8 +52,7 @@ std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_active_key() const {
 std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_key(const std::string& key_id) const {
     {
         std::shared_lock lock(cache_mutex_);
-        auto it = key_cache_.find(key_id);
-        if (it != key_cache_.end()) {
+        if (auto it = key_cache_.find(key_id); it != key_cache_.end()) {
             return it->second;
         }
     }
@@ -62,16 +60,15 @@ std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_key(const std::string& 
     refresh_cache();
 
     std::shared_lock lock(cache_mutex_);
-    auto it = key_cache_.find(key_id);
-    if (it != key_cache_.end()) {
+    if (auto it = key_cache_.find(key_id); it != key_cache_.end()) {
         return it->second;
     }
     return std::nullopt;
 }
 
 bool VaultKeyManager::rotate_key() {
-    std::string path = std::format("/v1/{}/keys/{}/rotate", config_.mount, config_.key_name);
-    std::string response = vault_api_post(path);
+    const std::string path = std::format("/v1/{}/keys/{}/rotate", config_.mount, config_.key_name);
+    const std::string response = vault_api_post(path);
 
     if (response.empty()) {
         utils::log::error("Vault: key rotation failed — empty response");
@@ -89,8 +86,8 @@ size_t VaultKeyManager::key_count() const {
 }
 
 void VaultKeyManager::refresh_cache() const {
-    std::string path = std::format("/v1/{}/keys/{}", config_.mount, config_.key_name);
-    std::string response = vault_api_get(path);
+    const std::string path = std::format("/v1/{}/keys/{}", config_.mount, config_.key_name);
+    const std::string response = vault_api_get(path);
 
     if (response.empty()) {
         utils::log::error("Vault: failed to fetch key info");
@@ -112,7 +109,7 @@ void VaultKeyManager::refresh_cache() const {
         if (lv_pos != std::string::npos) {
             ++lv_pos;
             while (lv_pos < response.size() && response[lv_pos] == ' ') ++lv_pos;
-            auto end = response.find_first_of(",}", lv_pos);
+            const auto end = response.find_first_of(",}", lv_pos);
             std::string version_str = response.substr(lv_pos, end - lv_pos);
             try {
                 int latest = std::stoi(version_str);
@@ -125,7 +122,6 @@ void VaultKeyManager::refresh_cache() const {
                         KeyInfo ki;
                         ki.key_id = kid;
                         ki.key_bytes.resize(32, 0);  // Placeholder — real impl uses Vault encrypt/decrypt
-                        ki.created_at = std::chrono::system_clock::now();
                         ki.active = (v == latest);
                         key_cache_[kid] = std::move(ki);
                     } else {
@@ -153,7 +149,7 @@ std::string VaultKeyManager::vault_api_get(const std::string& path) const {
             {"X-Vault-Token", config_.vault_token}
         };
 
-        auto res = cli.Get(path, headers);
+        const auto res = cli.Get(path, headers);
         if (res && res->status == 200) {
             return res->body;
         }
@@ -175,7 +171,7 @@ std::string VaultKeyManager::vault_api_post(const std::string& path) const {
             {"X-Vault-Token", config_.vault_token}
         };
 
-        auto res = cli.Post(path, headers, "", "application/json");
+        const auto res = cli.Post(path, headers, "", http::kJsonContentType);
         if (res && (res->status == 200 || res->status == 204)) {
             return res->body.empty() ? "{}" : res->body;
         }

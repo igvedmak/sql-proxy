@@ -3,7 +3,10 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+#include "core/utils.hpp"
 
 namespace sqlproxy {
 
@@ -29,13 +32,17 @@ struct AlertRule {
 struct Alert {
     std::string id;
     std::string rule_name;
-    AlertCondition condition;
+    AlertCondition condition = AlertCondition::CUSTOM_METRIC;
     std::string severity;
     double current_value = 0.0;
     double threshold = 0.0;
     std::string message;
     std::chrono::system_clock::time_point fired_at;
     bool resolved = false;
+
+    Alert()
+        : id(utils::generate_uuid()),
+          fired_at(std::chrono::system_clock::now()) {}
 };
 
 struct AlertWebhookConfig {
@@ -65,12 +72,15 @@ struct AlertingConfig {
 }
 
 [[nodiscard]] inline AlertCondition parse_alert_condition(const std::string& s) {
-    if (s == "rate_limit_breach") return AlertCondition::RATE_LIMIT_BREACH;
-    if (s == "policy_violation_spike") return AlertCondition::POLICY_VIOLATION_SPIKE;
-    if (s == "circuit_breaker_open") return AlertCondition::CIRCUIT_BREAKER_OPEN;
-    if (s == "pii_exposure_spike") return AlertCondition::PII_EXPOSURE_SPIKE;
-    if (s == "audit_buffer_overflow") return AlertCondition::AUDIT_BUFFER_OVERFLOW;
-    return AlertCondition::CUSTOM_METRIC;
+    static const std::unordered_map<std::string, AlertCondition> lookup = {
+        {"rate_limit_breach",      AlertCondition::RATE_LIMIT_BREACH},
+        {"policy_violation_spike", AlertCondition::POLICY_VIOLATION_SPIKE},
+        {"circuit_breaker_open",   AlertCondition::CIRCUIT_BREAKER_OPEN},
+        {"pii_exposure_spike",     AlertCondition::PII_EXPOSURE_SPIKE},
+        {"audit_buffer_overflow",  AlertCondition::AUDIT_BUFFER_OVERFLOW},
+    };
+    const auto it = lookup.find(s);
+    return (it != lookup.end()) ? it->second : AlertCondition::CUSTOM_METRIC;
 }
 
 } // namespace sqlproxy

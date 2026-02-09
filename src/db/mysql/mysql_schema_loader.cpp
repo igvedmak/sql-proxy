@@ -1,14 +1,13 @@
 #include "db/mysql/mysql_schema_loader.hpp"
 #include "db/mysql/mysql_connection.hpp"
 #include "db/mysql/mysql_type_map.hpp"
+#include "db/schema_constants.hpp"
 #include "core/utils.hpp"
 #include <algorithm>
 
 namespace sqlproxy {
 
 static constexpr char kDot = '.';
-static constexpr std::string_view kYes    = "YES";
-static constexpr std::string_view kYesLow = "yes";
 
 std::shared_ptr<SchemaMap> MysqlSchemaLoader::load_schema(
     const std::string& conn_string) {
@@ -80,7 +79,7 @@ std::shared_ptr<SchemaMap> MysqlSchemaLoader::load_schema(
         }
 
         // Build ColumnMetadata
-        bool is_nullable = (nullable_str == kYes || nullable_str == kYesLow);
+        bool is_nullable = (nullable_str == db::kYes || nullable_str == db::kYesLow);
         ColumnMetadata col(std::move(column_name), std::move(data_type), 0, is_nullable, false);
 
         const size_t col_index = current_table->columns.size();

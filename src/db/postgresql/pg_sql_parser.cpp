@@ -1,4 +1,5 @@
 #include "db/postgresql/pg_sql_parser.hpp"
+#include "parser/ast_keys.hpp"
 #include "core/utils.hpp"
 
 // libpg_query C API
@@ -15,13 +16,7 @@ extern "C" {
 
 namespace sqlproxy {
 
-// Constexpr AST field keys (used 2+ times in RangeVar extraction)
-static constexpr std::string_view kRangeVar      = "RangeVar";
-static constexpr std::string_view kRelname       = "relname";
-static constexpr std::string_view kSchemaname    = "schemaname";
-static constexpr std::string_view kAliasFld      = "alias";
-static constexpr std::string_view kAlias         = "Alias";
-static constexpr std::string_view kAliasname     = "aliasname";
+// File-local AST field keys (unique to this parser)
 static constexpr std::string_view kRelpersistence = "relpersistence";
 static constexpr char kDot = '.';
 
@@ -98,7 +93,7 @@ ISqlParser::ParseResult PgSqlParser::parse_with_libpgquery(
     if (parse_result.error) {
         std::string error_msg = parse_result.error->message
             ? parse_result.error->message
-            : "Unknown parse error";
+            : std::string{ast::kUnknownParseError};
         pg_query_free_parse_result(parse_result);
         return ParseResult::error(ErrorCode::SYNTAX_ERROR, std::move(error_msg));
     }
@@ -229,10 +224,10 @@ StatementType PgSqlParser::extract_statement_type(void* parse_result_ptr) {
     // Special case: TransactionStmt requires checking kind field
     if (type == StatementType::BEGIN && stmt_type_str == "TransactionStmt") {
         // Check for string enum names first (libpg_query protobuf JSON format)
-        if (tree.find("TRANS_STMT_COMMIT") != std::string_view::npos) {
+        if (tree.contains("TRANS_STMT_COMMIT")) {
             return StatementType::COMMIT;
         }
-        if (tree.find("TRANS_STMT_ROLLBACK") != std::string_view::npos) {
+        if (tree.contains("TRANS_STMT_ROLLBACK")) {
             return StatementType::ROLLBACK;
         }
 
@@ -287,28 +282,28 @@ StatementType PgSqlParser::extract_statement_type(void* parse_result_ptr) {
 static void extract_table_from_rangevar(const JsonValue& range_var,
                                         std::vector<TableRef>& tables,
                                         std::unordered_set<std::string>& seen_tables) {
-    if (!range_var.contains(kRelname) || !range_var[kRelname].is_string()) {
+    if (!range_var.contains(ast::kRelname) || !range_var[ast::kRelname].is_string()) {
         return;
     }
 
-    std::string table_name = range_var[kRelname].get<std::string>();
+    std::string table_name = range_var[ast::kRelname].get<std::string>();
 
     std::string schema_name;
-    if (range_var.contains(kSchemaname) && range_var[kSchemaname].is_string()) {
-        schema_name = range_var[kSchemaname].get<std::string>();
+    if (range_var.contains(ast::kSchemaname) && range_var[ast::kSchemaname].is_string()) {
+        schema_name = range_var[ast::kSchemaname].get<std::string>();
     }
 
     // Handle alias in both wrapped and unwrapped forms
     std::string alias_name;
-    if (range_var.contains(kAliasFld) && range_var[kAliasFld].is_object()) {
-        const auto& alias_node = range_var[kAliasFld];
-        if (alias_node.contains(kAlias) && alias_node[kAlias].is_object()) {
-            const auto& inner = alias_node[kAlias];
-            if (inner.contains(kAliasname) && inner[kAliasname].is_string()) {
-                alias_name = inner[kAliasname].get<std::string>();
+    if (range_var.contains(ast::kAliasFld) && range_var[ast::kAliasFld].is_object()) {
+        const auto& alias_node = range_var[ast::kAliasFld];
+        if (alias_node.contains(ast::kAlias) && alias_node[ast::kAlias].is_object()) {
+            const auto& inner = alias_node[ast::kAlias];
+            if (inner.contains(ast::kAliasname) && inner[ast::kAliasname].is_string()) {
+                alias_name = inner[ast::kAliasname].get<std::string>();
             }
-        } else if (alias_node.contains(kAliasname) && alias_node[kAliasname].is_string()) {
-            alias_name = alias_node[kAliasname].get<std::string>();
+        } else if (alias_node.contains(ast::kAliasname) && alias_node[ast::kAliasname].is_string()) {
+            alias_name = alias_node[ast::kAliasname].get<std::string>();
         }
     }
 
@@ -329,15 +324,15 @@ static void find_range_vars(const JsonValue& node,
                             std::unordered_set<std::string>& seen_tables) {
     if (node.is_object()) {
         // Wrapped form: {"RangeVar": {relname: ...}} (Node union in FROM clauses)
-        if (node.contains(kRangeVar)) {
-            extract_table_from_rangevar(node[kRangeVar], tables, seen_tables);
+        if (node.contains(ast::kRangeVar)) {
+            extract_table_from_rangevar(node[ast::kRangeVar], tables, seen_tables);
         }
 
         // Direct form: {relname: ...} (typed field like InsertStmt.relation)
         // Only match if this looks like a RangeVar (has relname + relpersistence)
         // and isn't already inside a RangeVar wrapper
-        if (!node.contains(kRangeVar) &&
-            node.contains(kRelname) && node[kRelname].is_string() &&
+        if (!node.contains(ast::kRangeVar) &&
+            node.contains(ast::kRelname) && node[ast::kRelname].is_string() &&
             node.contains(kRelpersistence)) {
             extract_table_from_rangevar(node, tables, seen_tables);
         }

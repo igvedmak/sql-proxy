@@ -24,7 +24,7 @@ EnvKeyManager::EnvKeyManager(const std::string& env_var_name) {
     key_.key_bytes.reserve(hex.size() / 2);
     for (size_t i = 0; i < hex.size(); i += 2) {
         try {
-            uint8_t byte = static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16));
+            const uint8_t byte = static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16));
             key_.key_bytes.push_back(byte);
         } catch (...) {
             utils::log::error(std::format("EnvKeyManager: invalid hex at position {}", i));
@@ -39,7 +39,6 @@ EnvKeyManager::EnvKeyManager(const std::string& env_var_name) {
     }
 
     key_.key_id = "env-key-1";
-    key_.created_at = std::chrono::system_clock::now();
     key_.active = true;
     valid_ = true;
 

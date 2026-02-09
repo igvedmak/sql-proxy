@@ -7,7 +7,7 @@ namespace sqlproxy {
 namespace {
 
 bool is_valid_hex(std::string_view s) {
-    for (char c : s) {
+    for (const char c : s) {
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
             return false;
         }
@@ -16,7 +16,7 @@ bool is_valid_hex(std::string_view s) {
 }
 
 bool is_all_zeros(std::string_view s) {
-    for (char c : s) {
+    for (const char c : s) {
         if (c != '0') return false;
     }
     return true;
@@ -33,7 +33,7 @@ std::string random_hex(size_t bytes) {
     size_t remaining = bytes;
     while (remaining > 0) {
         uint64_t val = dis(gen);
-        size_t chunk = std::min(remaining, size_t(8));
+        const size_t chunk = std::min(remaining, size_t(8));
         for (size_t i = 0; i < chunk; ++i) {
             result += std::format("{:02x}", static_cast<uint8_t>(val >> (i * 8)));
         }
@@ -69,10 +69,10 @@ std::optional<TraceContext> TraceContext::parse_traceparent(std::string_view hea
         return std::nullopt;
     }
 
-    auto version = header.substr(0, 2);
-    auto trace_id = header.substr(3, 32);
-    auto parent_id = header.substr(36, 16);
-    auto flags = header.substr(53, 2);
+    const auto version = header.substr(0, 2);
+    const auto trace_id = header.substr(3, 32);
+    const auto parent_id = header.substr(36, 16);
+    const auto flags = header.substr(53, 2);
 
     // Version must be "00"
     if (version != "00") return std::nullopt;
@@ -95,7 +95,7 @@ std::optional<TraceContext> TraceContext::parse_traceparent(std::string_view hea
 
     // Parse flags
     uint8_t flag_val = 0;
-    for (char c : flags) {
+    for (const char c : flags) {
         flag_val <<= 4;
         if (c >= '0' && c <= '9') flag_val |= (c - '0');
         else if (c >= 'a' && c <= 'f') flag_val |= (c - 'a' + 10);

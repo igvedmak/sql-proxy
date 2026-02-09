@@ -440,7 +440,6 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
     }
 
     AuditRecord record;
-    record.audit_id = utils::generate_uuid();
     record.trace_id = ctx.trace_context.trace_id;
     record.span_id = ctx.trace_context.span_id;
     record.parent_span_id = ctx.trace_context.parent_span_id;
@@ -508,7 +507,6 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
 ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
     ProxyResponse response;
     response.request_id = ctx.request_id;
-    response.audit_id = utils::generate_uuid();
     response.success = ctx.query_result.success;
     response.error_code = ctx.query_result.error_code;
     response.error_message = ctx.query_result.error_message;

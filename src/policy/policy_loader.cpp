@@ -69,7 +69,7 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             const auto action = parse_action(action_str);
             if (!action) {
                 return LoadResult::error(
-                    "Policy '" + policy.name + "': Invalid action '" + action_str + "'");
+                    std::format("Policy '{}': Invalid action '{}'", policy.name, action_str));
             }
             policy.action = *action;
 
@@ -119,8 +119,7 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
                             policy.scope.operations.insert(*stmt_type);
                         } else if (!stmt_str.empty()) {
                             return LoadResult::error(
-                                "Policy '" + policy.name +
-                                "': Invalid statement type '" + stmt_str + "'");
+                                std::format("Policy '{}': Invalid statement type '{}'", policy.name, stmt_str));
                         }
                     }
                 }
@@ -178,7 +177,7 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             // Validate policy
             std::string error_msg;
             if (!validate_policy(policy, error_msg)) {
-                return LoadResult::error("Policy '" + policy.name + "': " + error_msg);
+                return LoadResult::error(std::format("Policy '{}': {}", policy.name, error_msg));
             }
 
             policies.push_back(std::move(policy));
@@ -187,7 +186,7 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
         return LoadResult::ok(std::move(policies));
 
     } catch (const std::exception& e) {
-        return LoadResult::error(std::string("Error parsing policies: ") + e.what());
+        return LoadResult::error(std::format("Error parsing policies: {}", e.what()));
     }
 }
 

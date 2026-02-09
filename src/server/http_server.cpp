@@ -1,4 +1,5 @@
 #include "server/http_server.hpp"
+#include "server/http_constants.hpp"
 #include "server/rate_limiter.hpp"
 #include "server/waitable_rate_limiter.hpp"
 #include "server/shutdown_coordinator.hpp"
@@ -24,8 +25,6 @@
 #include <string_view>
 
 namespace sqlproxy {
-
-static constexpr const char* kJsonContentType = "application/json";
 
 // Simple JSON parsing/building (would use glaze in production)
 namespace {
@@ -219,7 +218,7 @@ void HttpServer::start() {
         // Shutdown guard: reject new requests during graceful shutdown
         if (shutdown_coordinator_ && !shutdown_coordinator_->try_enter_request()) {
             res.status = httplib::StatusCode::ServiceUnavailable_503;
-            res.set_content(R"({"success":false,"error":"Server shutting down"})", kJsonContentType);
+            res.set_content(R"({"success":false,"error":"Server shutting down"})", http::kJsonContentType);
             return;
         }
         struct ShutdownGuard {
@@ -230,17 +229,17 @@ void HttpServer::start() {
         try {
             // Validate Content-Type
             std::string content_type = req.get_header_value("Content-Type");
-            if (content_type.find(kJsonContentType) == std::string_view::npos) {
+            if (!content_type.contains(http::kJsonContentType)) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Content-Type must be application/json"})", kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Content-Type must be application/json"})", http::kJsonContentType);
                 return;
             }
 
             // Basic JSON validation - check for opening/closing braces
             std::string_view body = req.body;
-            if (body.empty() || body.find('{') == std::string_view::npos || body.find('}') == std::string_view::npos) {
+            if (body.empty() || !body.contains('{') || !body.contains('}')) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Invalid JSON: empty or malformed"})", kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Invalid JSON: empty or malformed"})", http::kJsonContentType);
                 return;
             }
 
@@ -251,7 +250,7 @@ void HttpServer::start() {
             // Validate required field: sql
             if (sql_sv.empty()) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Missing required field: sql"})", kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Missing required field: sql"})", http::kJsonContentType);
                 return;
             }
 
@@ -261,7 +260,7 @@ void HttpServer::start() {
                 res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(
                     std::format(R"({{"success":false,"error":"SQL too long: max {} bytes"}})", max_sql),
-                    "application/json");
+                    http::kJsonContentType);
                 return;
             }
 
@@ -269,15 +268,14 @@ void HttpServer::start() {
             std::optional<UserInfo> user_info;
             std::string user;
 
-            std::string auth_header = req.get_header_value("Authorization");
-            constexpr std::string_view kBearerPrefix = "Bearer ";
-            if (auth_header.size() > kBearerPrefix.size() &&
-                std::string_view(auth_header).substr(0, kBearerPrefix.size()) == kBearerPrefix) {
-                std::string api_key(std::string_view(auth_header).substr(kBearerPrefix.size()));
+            std::string auth_header = req.get_header_value(http::kAuthorizationHeader);
+                if (auth_header.size() > http::kBearerPrefix.size() &&
+                std::string_view(auth_header).substr(0, http::kBearerPrefix.size()) == http::kBearerPrefix) {
+                std::string api_key(std::string_view(auth_header).substr(http::kBearerPrefix.size()));
                 user_info = authenticate_api_key(api_key);
                 if (!user_info) {
                     res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Invalid API key"})", kJsonContentType);
+                    res.set_content(R"({"success":false,"error":"Invalid API key"})", http::kJsonContentType);
                     return;
                 }
                 user = user_info->name;
@@ -286,7 +284,7 @@ void HttpServer::start() {
                 auto user_sv = parse_json_field(req.body, "user");
                 if (user_sv.empty()) {
                     res.status = httplib::StatusCode::BadRequest_400;
-                    res.set_content(R"j({"success":false,"error":"Missing required field: user (or Authorization header)"})j", kJsonContentType);
+                    res.set_content(R"j({"success":false,"error":"Missing required field: user (or Authorization header)"})j", http::kJsonContentType);
                     return;
                 }
                 user = std::string(user_sv);
@@ -295,7 +293,7 @@ void HttpServer::start() {
                     res.status = httplib::StatusCode::Unauthorized_401;
                     res.set_content(
                         std::format(R"({{"success":false,"error":"Unknown user: {}"}})", user),
-                        "application/json");
+                        http::kJsonContentType);
                     return;
                 }
             }
@@ -364,29 +362,29 @@ void HttpServer::start() {
             // Gzip compression (if client supports it and response is large enough)
             if (compressor_.should_compress(json.size())) {
                 std::string accept_enc = req.get_header_value("Accept-Encoding");
-                if (accept_enc.find("gzip") != std::string::npos) {
+                if (accept_enc.contains("gzip")) {
                     if (auto compressed = compressor_.try_compress(json)) {
                         res.set_header("Content-Encoding", "gzip");
-                        res.set_content(std::move(*compressed), kJsonContentType);
+                        res.set_content(std::move(*compressed), http::kJsonContentType);
                         return;
                     }
                 }
             }
 
-            res.set_content(json, kJsonContentType);
+            res.set_content(json, http::kJsonContentType);
 
         } catch (const std::exception& e) {
             res.status = httplib::StatusCode::InternalServerError_500;
             res.set_content(
                 std::format(R"({{"success":false,"error":"{}"}})", e.what()),
-                "application/json");
+                http::kJsonContentType);
         }
     });
 
     // GET /health - Health check
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
         std::string health_json = R"({"status":"healthy","service":"sql-proxy"})";
-        res.set_content(health_json, kJsonContentType);
+        res.set_content(health_json, http::kJsonContentType);
     });
 
     // GET /metrics - Prometheus metrics endpoint
@@ -502,13 +500,12 @@ void HttpServer::start() {
         try {
             // Validate admin token if configured
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value("Authorization");
-                constexpr std::string_view kBearerPrefix = "Bearer ";
-                if (auth.size() <= kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
-                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                        if (auth.size() <= http::kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
                     res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized: invalid or missing admin token"})", kJsonContentType);
+                    res.set_content(R"({"success":false,"error":"Unauthorized: invalid or missing admin token"})", http::kJsonContentType);
                     return;
                 }
             }
@@ -521,7 +518,7 @@ void HttpServer::start() {
                 res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(
                     std::format(R"({{"success":false,"error":"{}"}})", load_result.error_message),
-                    "application/json");
+                    http::kJsonContentType);
                 return;
             }
 
@@ -532,7 +529,7 @@ void HttpServer::start() {
             res.status = httplib::StatusCode::OK_200;
             res.set_content(
                 std::format(R"({{"success":true,"policies_loaded":{}}})", load_result.policies.size()),
-                "application/json");
+                http::kJsonContentType);
 
             utils::log::info(std::format("Policies reloaded: {} policies loaded", load_result.policies.size()));
 
@@ -540,70 +537,67 @@ void HttpServer::start() {
             res.status = httplib::StatusCode::InternalServerError_500;
             res.set_content(
                 std::format(R"({{"success":false,"error":"{}"}})", e.what()),
-                "application/json");
+                http::kJsonContentType);
         }
     });
 
     // GET /api/v1/compliance/pii-report - PII access report (admin only)
     svr.Get("/api/v1/compliance/pii-report", [this](const httplib::Request& req, httplib::Response& res) {
         if (!admin_token_.empty()) {
-            auto auth = req.get_header_value("Authorization");
-            constexpr std::string_view kBearerPrefix = "Bearer ";
-            if (auth.size() <= kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
-                std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+            auto auth = req.get_header_value(http::kAuthorizationHeader);
+                if (auth.size() <= http::kBearerPrefix.size() ||
+                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
                 res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
                 return;
             }
         }
         if (!compliance_reporter_) {
             res.status = httplib::StatusCode::ServiceUnavailable_503;
-            res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", kJsonContentType);
+            res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", http::kJsonContentType);
             return;
         }
         auto report = compliance_reporter_->generate_pii_report();
-        res.set_content(ComplianceReporter::pii_report_to_json(report), kJsonContentType);
+        res.set_content(ComplianceReporter::pii_report_to_json(report), http::kJsonContentType);
     });
 
     // GET /api/v1/compliance/security-summary - Security overview (admin only)
     svr.Get("/api/v1/compliance/security-summary", [this](const httplib::Request& req, httplib::Response& res) {
         if (!admin_token_.empty()) {
-            auto auth = req.get_header_value("Authorization");
-            constexpr std::string_view kBearerPrefix = "Bearer ";
-            if (auth.size() <= kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
-                std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+            auto auth = req.get_header_value(http::kAuthorizationHeader);
+                if (auth.size() <= http::kBearerPrefix.size() ||
+                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
                 res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
                 return;
             }
         }
         if (!compliance_reporter_) {
             res.status = httplib::StatusCode::ServiceUnavailable_503;
-            res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", kJsonContentType);
+            res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", http::kJsonContentType);
             return;
         }
         auto summary = compliance_reporter_->generate_security_summary();
-        res.set_content(ComplianceReporter::security_summary_to_json(summary), kJsonContentType);
+        res.set_content(ComplianceReporter::security_summary_to_json(summary), http::kJsonContentType);
     });
 
     // GET /api/v1/compliance/lineage - Data lineage summaries (admin only)
     svr.Get("/api/v1/compliance/lineage", [this](const httplib::Request& req, httplib::Response& res) {
         if (!admin_token_.empty()) {
-            auto auth = req.get_header_value("Authorization");
-            constexpr std::string_view kBearerPrefix = "Bearer ";
-            if (auth.size() <= kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
-                std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+            auto auth = req.get_header_value(http::kAuthorizationHeader);
+                if (auth.size() <= http::kBearerPrefix.size() ||
+                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
                 res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
                 return;
             }
         }
         if (!lineage_tracker_) {
             res.status = httplib::StatusCode::ServiceUnavailable_503;
-            res.set_content(R"({"success":false,"error":"Lineage tracker not configured"})", kJsonContentType);
+            res.set_content(R"({"success":false,"error":"Lineage tracker not configured"})", http::kJsonContentType);
             return;
         }
         auto summaries = lineage_tracker_->get_summaries();
@@ -620,7 +614,7 @@ void HttpServer::start() {
                 s.accessing_users.size());
         }
         json += std::format("],\"total_events\":{}}}", lineage_tracker_->total_events());
-        res.set_content(json, kJsonContentType);
+        res.set_content(json, http::kJsonContentType);
     });
 
     // =====================================================================
@@ -636,7 +630,7 @@ void HttpServer::start() {
 
                 if (query_sv.empty()) {
                     res.status = httplib::StatusCode::BadRequest_400;
-                    res.set_content(R"({"errors":[{"message":"Missing required field: query"}]})", kJsonContentType);
+                    res.set_content(R"({"errors":[{"message":"Missing required field: query"}]})", http::kJsonContentType);
                     return;
                 }
 
@@ -650,12 +644,12 @@ void HttpServer::start() {
 
                 auto result_json = graphql_handler_->execute(
                     std::string(query_sv), user, roles, database);
-                res.set_content(result_json, kJsonContentType);
+                res.set_content(result_json, http::kJsonContentType);
             } catch (const std::exception& e) {
                 res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(
                     std::format(R"({{"errors":[{{"message":"{}"}}]}})", e.what()),
-                    kJsonContentType);
+                    http::kJsonContentType);
             }
         });
     }
@@ -667,13 +661,12 @@ void HttpServer::start() {
         // GET /api/v1/schema/history
         svr.Get("/api/v1/schema/history", [this](const httplib::Request& req, httplib::Response& res) {
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value("Authorization");
-                constexpr std::string_view kBearerPrefix = "Bearer ";
-                if (auth.size() <= kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
-                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                        if (auth.size() <= http::kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
                     res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                    res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
                     return;
                 }
             }
@@ -688,19 +681,18 @@ void HttpServer::start() {
                     h.id, h.user, h.database, h.table, h.status);
             }
             json += std::format("],\"total\":{}}}", history.size());
-            res.set_content(json, kJsonContentType);
+            res.set_content(json, http::kJsonContentType);
         });
 
         // GET /api/v1/schema/pending
         svr.Get("/api/v1/schema/pending", [this](const httplib::Request& req, httplib::Response& res) {
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value("Authorization");
-                constexpr std::string_view kBearerPrefix = "Bearer ";
-                if (auth.size() <= kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
-                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                        if (auth.size() <= http::kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
                     res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                    res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
                     return;
                 }
             }
@@ -715,19 +707,18 @@ void HttpServer::start() {
                     p.id, p.user, p.database, p.table, p.status);
             }
             json += std::format("],\"total\":{}}}", pending.size());
-            res.set_content(json, kJsonContentType);
+            res.set_content(json, http::kJsonContentType);
         });
 
         // POST /api/v1/schema/approve - body: {"id": "...", "admin": "..."}
         svr.Post("/api/v1/schema/approve", [this](const httplib::Request& req, httplib::Response& res) {
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value("Authorization");
-                constexpr std::string_view kBearerPrefix = "Bearer ";
-                if (auth.size() <= kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
-                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                        if (auth.size() <= http::kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
                     res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                    res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
                     return;
                 }
             }
@@ -735,25 +726,24 @@ void HttpServer::start() {
             auto admin = std::string(parse_json_field(req.body, "admin"));
             if (id.empty()) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Missing field: id"})", kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Missing field: id"})", http::kJsonContentType);
                 return;
             }
             bool ok = schema_manager_->approve(id, admin.empty() ? "admin" : admin);
             res.set_content(
                 std::format(R"({{"success":{}}})", ok ? "true" : "false"),
-                kJsonContentType);
+                http::kJsonContentType);
         });
 
         // POST /api/v1/schema/reject - body: {"id": "...", "admin": "..."}
         svr.Post("/api/v1/schema/reject", [this](const httplib::Request& req, httplib::Response& res) {
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value("Authorization");
-                constexpr std::string_view kBearerPrefix = "Bearer ";
-                if (auth.size() <= kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, kBearerPrefix.size()) != kBearerPrefix ||
-                    std::string_view(auth).substr(kBearerPrefix.size()) != admin_token_) {
+                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                        if (auth.size() <= http::kBearerPrefix.size() ||
+                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
                     res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized"})", kJsonContentType);
+                    res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
                     return;
                 }
             }
@@ -761,13 +751,13 @@ void HttpServer::start() {
             auto admin = std::string(parse_json_field(req.body, "admin"));
             if (id.empty()) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Missing field: id"})", kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Missing field: id"})", http::kJsonContentType);
                 return;
             }
             bool ok = schema_manager_->reject(id, admin.empty() ? "admin" : admin);
             res.set_content(
                 std::format(R"({{"success":{}}})", ok ? "true" : "false"),
-                kJsonContentType);
+                http::kJsonContentType);
         });
     }
 
@@ -775,7 +765,7 @@ void HttpServer::start() {
     svr.Post("/api/v1/query/dry-run", [this](const httplib::Request& req, httplib::Response& res) {
         if (shutdown_coordinator_ && !shutdown_coordinator_->try_enter_request()) {
             res.status = httplib::StatusCode::ServiceUnavailable_503;
-            res.set_content(R"({"success":false,"error":"Server shutting down"})", kJsonContentType);
+            res.set_content(R"({"success":false,"error":"Server shutting down"})", http::kJsonContentType);
             return;
         }
         struct ShutdownGuard {
@@ -790,7 +780,7 @@ void HttpServer::start() {
 
             if (sql_sv.empty()) {
                 res.status = httplib::StatusCode::BadRequest_400;
-                res.set_content(R"({"success":false,"error":"Missing field: sql"})", kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Missing field: sql"})", http::kJsonContentType);
                 return;
             }
 
@@ -821,12 +811,12 @@ void HttpServer::start() {
                     ? std::format(",\"shadow_policy\":\"{}\"", response.shadow_policy)
                     : "");
 
-            res.set_content(json, kJsonContentType);
+            res.set_content(json, http::kJsonContentType);
         } catch (const std::exception& e) {
             res.status = httplib::StatusCode::InternalServerError_500;
             res.set_content(
                 std::format(R"({{"success":false,"error":"{}"}})", e.what()),
-                "application/json");
+                http::kJsonContentType);
         }
     });
 

@@ -2,7 +2,6 @@
 #include "audit/audit_emitter.hpp"
 #include "config/config_loader.hpp"
 #include "core/types.hpp"
-#include "core/utils.hpp"
 
 #include <chrono>
 #include <memory>
@@ -22,7 +21,6 @@ TEST_CASE("Audit hash chain - records have hashes", "[audit][integrity]") {
     // Emit a few records
     for (int i = 0; i < 5; ++i) {
         AuditRecord record;
-        record.audit_id = utils::generate_uuid();
         record.timestamp = std::chrono::system_clock::now();
         record.received_at = std::chrono::system_clock::now();
         record.user = "test_user";

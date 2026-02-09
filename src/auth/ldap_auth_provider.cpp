@@ -32,9 +32,9 @@ std::pair<std::string, std::string> LdapAuthProvider::decode_basic_auth(
 
     uint32_t bits = 0;
     int bit_count = 0;
-    for (char c : encoded) {
+    for (const char c : encoded) {
         if (c == '=') break;
-        auto idx = b64chars.find(c);
+        const auto idx = b64chars.find(c);
         if (idx == std::string::npos) continue;
         bits = (bits << 6) | static_cast<uint32_t>(idx);
         bit_count += 6;
@@ -45,7 +45,7 @@ std::pair<std::string, std::string> LdapAuthProvider::decode_basic_auth(
     }
 
     // Split on ':'
-    auto colon = decoded.find(':');
+    const auto colon = decoded.find(':');
     if (colon == std::string::npos) return {"", ""};
 
     return {decoded.substr(0, colon), decoded.substr(colon + 1)};
@@ -56,6 +56,7 @@ IAuthProvider::AuthResult LdapAuthProvider::authenticate(
     const std::string& /*body_user*/) {
 
     AuthResult result;
+    (void)auth_header; // Suppress unused parameter warning
 
 #ifdef ENABLE_LDAP
     auto [username, password] = decode_basic_auth(auth_header);

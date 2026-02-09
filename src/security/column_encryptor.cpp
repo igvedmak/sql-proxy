@@ -48,7 +48,7 @@ std::vector<uint8_t> base64_decode(const std::string& encoded) {
 
     uint32_t buf = 0;
     int bits = 0;
-    for (char c : encoded) {
+    for (const char c : encoded) {
         if (c == '=' || c == '\n' || c == '\r') continue;
         if (static_cast<unsigned char>(c) >= 128) continue;
         uint8_t val = kDecodeTable[static_cast<unsigned char>(c)];
@@ -162,12 +162,12 @@ std::string ColumnEncryptor::decrypt(std::string_view ciphertext) const {
     std::string key_id(rest.substr(0, colon));
     std::string b64_data(rest.substr(colon + 1));
 
-    auto key_info = key_manager_->get_key(key_id);
+    const auto key_info = key_manager_->get_key(key_id);
     if (!key_info || key_info->key_bytes.size() < kKeyLen) {
         return std::string(ciphertext); // Key not found
     }
 
-    auto packed = base64_decode(b64_data);
+    const auto packed = base64_decode(b64_data);
     if (packed.size() < kIvLen + kTagLen) {
         return std::string(ciphertext); // Too short
     }
@@ -194,7 +194,7 @@ std::string ColumnEncryptor::decrypt(std::string_view ciphertext) const {
     EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, kTagLen,
         const_cast<uint8_t*>(tag));
 
-    int ret = EVP_DecryptFinal_ex(ctx, plaintext.data() + len, &len);
+    const int ret = EVP_DecryptFinal_ex(ctx, plaintext.data() + len, &len);
     EVP_CIPHER_CTX_free(ctx);
 
     if (ret <= 0) {

@@ -16,7 +16,7 @@ ComplianceReporter::ComplianceReporter(
 PiiAccessReport ComplianceReporter::generate_pii_report() const {
     PiiAccessReport report;
 
-    auto now = std::chrono::system_clock::now();
+    const auto now = std::chrono::system_clock::now();
     auto time_t = std::chrono::system_clock::to_time_t(now);
     struct tm tm;
     gmtime_r(&time_t, &tm);
@@ -27,17 +27,17 @@ PiiAccessReport ComplianceReporter::generate_pii_report() const {
 
     if (!lineage_) return report;
 
-    auto summaries = lineage_->get_summaries();
+    const auto summaries = lineage_->get_summaries();
     report.entries.reserve(summaries.size());
 
     for (const auto& s : summaries) {
         // Parse column_key: "db.table.column"
-        size_t first_dot = s.column_key.find('.');
-        size_t second_dot = s.column_key.find('.', first_dot + 1);
-        std::string table_name = (first_dot != std::string::npos && second_dot != std::string::npos)
+        const size_t first_dot = s.column_key.find('.');
+        const size_t second_dot = s.column_key.find('.', first_dot + 1);
+        const std::string table_name = (first_dot != std::string::npos && second_dot != std::string::npos)
             ? s.column_key.substr(first_dot + 1, second_dot - first_dot - 1)
             : "";
-        std::string column_name = (second_dot != std::string::npos)
+        const std::string column_name = (second_dot != std::string::npos)
             ? s.column_key.substr(second_dot + 1)
             : s.column_key;
 
@@ -58,7 +58,7 @@ PiiAccessReport ComplianceReporter::generate_pii_report() const {
             strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &last_tm);
             entry.last_access = buf;
 
-            report.entries.push_back(std::move(entry));
+            report.entries.emplace_back(std::move(entry));
         }
 
         report.total_pii_accesses += s.total_accesses;
@@ -75,8 +75,8 @@ PiiAccessReport ComplianceReporter::generate_pii_report() const {
 SecuritySummary ComplianceReporter::generate_security_summary() const {
     SecuritySummary summary;
 
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
+    const auto now = std::chrono::system_clock::now();
+    const auto time_t = std::chrono::system_clock::to_time_t(now);
     struct tm tm;
     gmtime_r(&time_t, &tm);
     char buf[32];
@@ -84,7 +84,7 @@ SecuritySummary ComplianceReporter::generate_security_summary() const {
     summary.generated_at = buf;
 
     if (audit_) {
-        auto stats = audit_->get_stats();
+        const auto stats = audit_->get_stats();
         summary.total_queries = stats.total_emitted;
     }
 

@@ -205,7 +205,7 @@ std::string QueryRewriter::enforce_limit(
 
     // Check if LIMIT already exists (case-insensitive)
     std::string lower = utils::to_lower(sql);
-    if (lower.find(" limit ") != std::string::npos) {
+    if (lower.contains(" limit ")) {
         return {};  // Already has LIMIT
     }
 

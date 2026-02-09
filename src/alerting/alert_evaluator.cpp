@@ -1,4 +1,5 @@
 #include "alerting/alert_evaluator.hpp"
+#include "server/http_constants.hpp"
 #include "server/rate_limiter.hpp"
 #include "core/utils.hpp"
 
@@ -93,7 +94,7 @@ void AlertEvaluator::evaluator_loop() {
 
         if (!running_.load(std::memory_order_acquire)) break;
 
-        auto current = collect_metrics();
+        const auto current = collect_metrics();
         evaluate_rules(current, prev_snapshot_);
         prev_snapshot_ = current;
         evaluation_count_.fetch_add(1, std::memory_order_relaxed);
@@ -104,16 +105,16 @@ AlertEvaluator::MetricSnapshot AlertEvaluator::collect_metrics() {
     MetricSnapshot snap;
 
     if (audit_emitter_) {
-        auto stats = audit_emitter_->get_stats();
+        const auto stats = audit_emitter_->get_stats();
         snap.audit_overflow = stats.overflow_dropped;
         snap.audit_emitted = stats.total_emitted;
         snap.audit_written = stats.total_written;
     }
 
     // Rate limiter rejects
-    auto* hierarchical = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter_.get());
+    const auto* hierarchical = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter_.get());
     if (hierarchical) {
-        auto rl_stats = hierarchical->get_stats();
+        const auto rl_stats = hierarchical->get_stats();
         snap.rate_limit_rejects = rl_stats.global_rejects
                                 + rl_stats.user_rejects
                                 + rl_stats.database_rejects
@@ -126,7 +127,7 @@ AlertEvaluator::MetricSnapshot AlertEvaluator::collect_metrics() {
 void AlertEvaluator::evaluate_rules(const MetricSnapshot& current, const MetricSnapshot& previous) {
     std::shared_lock rules_lock(rules_mutex_);
 
-    auto now = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
 
     for (const auto& rule : rules_) {
         if (!rule.enabled) continue;
@@ -134,7 +135,7 @@ void AlertEvaluator::evaluate_rules(const MetricSnapshot& current, const MetricS
         // Check cooldown
         {
             std::lock_guard alert_lock(alerts_mutex_);
-            auto cool_it = cooldowns_.find(rule.name);
+            const auto cool_it = cooldowns_.find(rule.name);
             if (cool_it != cooldowns_.end()) {
                 if (now - cool_it->second < rule.cooldown) continue;
             }
@@ -178,7 +179,6 @@ void AlertEvaluator::evaluate_rules(const MetricSnapshot& current, const MetricS
 
 void AlertEvaluator::fire_alert(const AlertRule& rule, double current_value) {
     Alert alert;
-    alert.id = utils::generate_uuid();
     alert.rule_name = rule.name;
     alert.condition = rule.condition;
     alert.severity = rule.severity;
@@ -186,7 +186,6 @@ void AlertEvaluator::fire_alert(const AlertRule& rule, double current_value) {
     alert.threshold = rule.threshold;
     alert.message = std::format("{}: {} ({:.0f} >= {:.0f})",
         rule.severity, rule.name, current_value, rule.threshold);
-    alert.fired_at = std::chrono::system_clock::now();
 
     {
         std::lock_guard lock(alerts_mutex_);
@@ -208,7 +207,7 @@ void AlertEvaluator::fire_alert(const AlertRule& rule, double current_value) {
 
 void AlertEvaluator::resolve_alert(const std::string& rule_name) {
     // Caller must hold alerts_mutex_
-    auto it = active_alerts_.find(rule_name);
+    const auto it = active_alerts_.find(rule_name);
     if (it == active_alerts_.end()) return;
 
     Alert resolved = it->second;
@@ -256,7 +255,7 @@ void AlertEvaluator::send_webhook(const Alert& alert) {
             url = url.substr(0, path_pos);
         }
 
-        auto port_pos = url.find(':');
+        const auto port_pos = url.find(':');
         if (port_pos != std::string::npos) {
             port = std::stoi(url.substr(port_pos + 1));
             host = url.substr(0, port_pos);
@@ -264,14 +263,14 @@ void AlertEvaluator::send_webhook(const Alert& alert) {
             host = url;
         }
 
-        std::string scheme_host = (use_ssl ? "https://" : "http://") + host + ":" + std::to_string(port);
+        const std::string scheme_host = std::format("{}{}:{}", use_ssl ? "https://" : "http://", host, port);
         httplib::Client cli(scheme_host);
         cli.set_connection_timeout(5);
         httplib::Headers headers;
         if (!config_.webhook.auth_header.empty()) {
-            headers.emplace("Authorization", config_.webhook.auth_header);
+            headers.emplace(http::kAuthorizationHeader, config_.webhook.auth_header);
         }
-        cli.Post(path, headers, json, "application/json");
+        cli.Post(path, headers, json, http::kJsonContentType);
     } catch (...) {
         // Webhook failures must never crash the evaluator
     }

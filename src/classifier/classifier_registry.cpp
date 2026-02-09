@@ -21,7 +21,7 @@ bool luhn_validate(std::string_view number) {
     // Extract digits only
     std::string digits;
     digits.reserve(number.size());
-    for (char c : number) {
+    for (const char c : number) {
         if (std::isdigit(static_cast<unsigned char>(c))) {
             digits += c;
         }
@@ -59,7 +59,7 @@ bool luhn_validate(std::string_view number) {
 bool validate_ssn(std::string_view value) {
     std::string digits;
     digits.reserve(9);
-    for (char c : value) {
+    for (const char c : value) {
         if (std::isdigit(static_cast<unsigned char>(c))) {
             digits += c;
         }
@@ -236,7 +236,7 @@ ClassificationResult ClassifierRegistry::classify(
         if (derived_names.count(col_name) > 0) continue;
 
         // Strategy 1: Column name matching
-        auto name_type = classify_by_name(col_name);
+        const auto name_type = classify_by_name(col_name);
         if (name_type.has_value()) {
             base_classifications[col_name] = *name_type;
             classification_result.classifications[col_name] =
@@ -246,7 +246,7 @@ ClassificationResult ClassifierRegistry::classify(
 
         // Strategy 2: Type OID hint (if available)
         if (i < result.column_type_oids.size() && result.column_type_oids[i] != 0) {
-            auto oid_type = classify_by_type_oid(col_name, result.column_type_oids[i]);
+            const auto oid_type = classify_by_type_oid(col_name, result.column_type_oids[i]);
             if (oid_type.has_value()) {
                 base_classifications[col_name] = *oid_type;
                 classification_result.classifications[col_name] =
@@ -264,7 +264,7 @@ ClassificationResult ClassifierRegistry::classify(
             }
         }
 
-        auto pattern_type = classify_by_pattern(col_name, sample_values);
+        const auto pattern_type = classify_by_pattern(col_name, sample_values);
         if (pattern_type.has_value()) {
             base_classifications[col_name] = *pattern_type;
             classification_result.classifications[col_name] =
@@ -276,7 +276,7 @@ ClassificationResult ClassifierRegistry::classify(
     for (const auto& proj : analysis.projections) {
         if (proj.derived_from.empty()) continue;
 
-        auto derived_cls = classify_derived_column(proj, base_classifications);
+        const auto derived_cls = classify_derived_column(proj, base_classifications);
         if (derived_cls.has_value()) {
             classification_result.classifications[proj.name] = *derived_cls;
         }
@@ -296,7 +296,7 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_name(const std
 
     // Substring match (lower confidence)
     for (const auto& [pattern, type] : column_patterns_) {
-        if (lower.find(pattern) != std::string::npos) {
+        if (lower.contains(pattern)) {
             return type;
         }
     }
@@ -336,7 +336,7 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_pattern(
     }
 
     // 50% match threshold with ceiling division to handle edge cases
-    size_t threshold = (sample_values.size() + 1) / 2;
+    const size_t threshold = (sample_values.size() + 1) / 2;
 
     // Check most specific (validated) types first to prevent false positives
     if (static_cast<size_t>(cc_matches) >= threshold) {
@@ -369,34 +369,34 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_type_oid(
     constexpr uint32_t INT8OID = 20;
     constexpr uint32_t INT4OID = 23;
 
-    bool is_text = (type_oid == TEXTOID || type_oid == VARCHAROID || type_oid == BPCHAROID);
-    bool is_numeric = (type_oid == INT4OID || type_oid == INT8OID);
+    const bool is_text = (type_oid == TEXTOID || type_oid == VARCHAROID || type_oid == BPCHAROID);
+    const bool is_numeric = (type_oid == INT4OID || type_oid == INT8OID);
 
     // Email: must be text type
-    if (is_text && (lower.find("email") != std::string::npos ||
-                    lower.find("mail") != std::string::npos)) {
+    if (is_text && (lower.contains("email") ||
+                    lower.contains("mail"))) {
         return ClassificationType::PII_EMAIL;
     }
 
     // SSN: could be text (formatted) or numeric (raw)
     if ((is_text || is_numeric) &&
-        (lower.find("ssn") != std::string::npos ||
-         lower.find("social_security") != std::string::npos)) {
+        (lower.contains("ssn") ||
+         lower.contains("social_security"))) {
         return ClassificationType::PII_SSN;
     }
 
     // Phone: usually text (formatted) or bigint (raw)
     if ((is_text || type_oid == INT8OID) &&
-        (lower.find("phone") != std::string::npos ||
-         lower.find("mobile") != std::string::npos ||
-         lower.find("telephone") != std::string::npos)) {
+        (lower.contains("phone") ||
+         lower.contains("mobile") ||
+         lower.contains("telephone"))) {
         return ClassificationType::PII_PHONE;
     }
 
     // Credit card: usually text or bigint
     if ((is_text || type_oid == INT8OID) &&
-        (lower.find("credit_card") != std::string::npos ||
-         lower.find("card_number") != std::string::npos)) {
+        (lower.contains("credit_card") ||
+         lower.contains("card_number"))) {
         return ClassificationType::PII_CREDIT_CARD;
     }
 
@@ -439,7 +439,7 @@ std::optional<ColumnClassification> ClassifierRegistry::classify_derived_column(
     }};
 
     for (const auto func : destroyers) {
-        if (expr.find(func) != std::string::npos) {
+        if (expr.contains(func)) {
             return std::nullopt;
         }
     }

@@ -1,4 +1,6 @@
 #include "analyzer/schema_cache.hpp"
+#include "db/schema_constants.hpp"
+#include "policy/policy_constants.hpp"
 #include "core/utils.hpp"
 #include <libpq-fe.h>
 #include <algorithm>
@@ -10,8 +12,6 @@
 namespace sqlproxy {
 
 static constexpr char kDot = '.';
-static constexpr std::string_view kYes    = "YES";
-static constexpr std::string_view kYesLow = "yes";
 
 // ============================================================================
 // PostgreSQL Type OID Mapping
@@ -110,7 +110,7 @@ SchemaCache::SchemaCache()
 SchemaCache::SchemaCache(const std::string& conn_string)
     : version_(0), loader_(nullptr) {
 
-    auto loaded_cache = load_from_database(conn_string);
+    const auto loaded_cache = load_from_database(conn_string);
     std::atomic_store_explicit(&cache_ptr_, loaded_cache, std::memory_order_release);
 }
 
@@ -120,7 +120,7 @@ SchemaCache::SchemaCache(const std::string& conn_string)
 
 std::shared_ptr<const TableMetadata> SchemaCache::get_table(const std::string& table_name) const {
     // RCU read: Load current cache pointer (wait-free atomic)
-    auto cache = std::atomic_load_explicit(&cache_ptr_, std::memory_order_acquire);
+    const auto cache = std::atomic_load_explicit(&cache_ptr_, std::memory_order_acquire);
 
     if (!cache) {
         return nullptr;
@@ -141,7 +141,7 @@ bool SchemaCache::has_table(const std::string& table_name) const {
 }
 
 size_t SchemaCache::table_count() const {
-    auto cache = std::atomic_load_explicit(&cache_ptr_, std::memory_order_acquire);
+    const auto cache = std::atomic_load_explicit(&cache_ptr_, std::memory_order_acquire);
     if (!cache) {
         return 0;
     }
@@ -258,11 +258,11 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
         const char* nullable_raw = PQgetvalue(res.get(), row, COL_IS_NULLABLE);
 
         // Build the qualified key: "schema.table" (lowercased)
-        std::string schema_name = utils::to_lower(schema_raw ? schema_raw : "public");
+        std::string schema_name = utils::to_lower(schema_raw ? schema_raw : policy::kDefaultSchema.data());
         std::string table_name  = utils::to_lower(table_raw  ? table_raw  : "");
         std::string column_name = utils::to_lower(column_raw ? column_raw : "");
         std::string data_type   = utils::to_lower(type_raw   ? type_raw   : "");
-        std::string nullable_str = nullable_raw ? nullable_raw : std::string(kYes);
+        std::string nullable_str = nullable_raw ? nullable_raw : std::string(db::kYes);
 
         // Construct the map key
         std::string key;
@@ -280,7 +280,7 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
 
             // Check if this table already exists in the cache (shouldn't happen
             // with ordered results, but defensive coding)
-            auto [it, inserted] = cache->try_emplace(key, nullptr);
+            const auto [it, inserted] = cache->try_emplace(key, nullptr);
             if (!inserted && it->second) {
                 // Table already exists from a previous batch - continue building it
                 current_table = it->second;
@@ -295,8 +295,8 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
         }
 
         // Build ColumnMetadata for this row
-        uint32_t type_oid = pg_type_oid(data_type);
-        bool is_nullable = (nullable_str == kYes || nullable_str == kYesLow);
+        const uint32_t type_oid = pg_type_oid(data_type);
+        const bool is_nullable = (nullable_str == db::kYes || nullable_str == db::kYesLow);
         ColumnMetadata col(std::move(column_name), std::move(data_type), type_oid, is_nullable, false);
 
         // Record the column index for fast name-based lookup
@@ -324,7 +324,7 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
         "WHERE i.indisprimary "
         "  AND n.nspname NOT IN ('pg_catalog', 'information_schema');";
 
-    PGResultPtr pk_res(PQexec(conn.get(), PK_QUERY));
+    const PGResultPtr pk_res(PQexec(conn.get(), PK_QUERY));
     if (pk_res && PQresultStatus(pk_res.get()) == PGRES_TUPLES_OK) {
         const int pk_rows = PQntuples(pk_res.get());
 
@@ -333,9 +333,9 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
             const char* pk_table_raw  = PQgetvalue(pk_res.get(), row, 1);
             const char* pk_col_raw    = PQgetvalue(pk_res.get(), row, 2);
 
-            std::string pk_schema = utils::to_lower(pk_schema_raw ? pk_schema_raw : "");
-            std::string pk_table  = utils::to_lower(pk_table_raw  ? pk_table_raw  : "");
-            std::string pk_col    = utils::to_lower(pk_col_raw    ? pk_col_raw    : "");
+            const std::string pk_schema = utils::to_lower(pk_schema_raw ? pk_schema_raw : "");
+            const std::string pk_table  = utils::to_lower(pk_table_raw  ? pk_table_raw  : "");
+            const std::string pk_col    = utils::to_lower(pk_col_raw    ? pk_col_raw    : "");
 
             // Build the lookup key
             std::string pk_key;
@@ -367,7 +367,7 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
 
 std::string SchemaCache::normalize_table_name(const std::string& table_name) {
     // Check for dot before allocating to avoid double-allocation
-    const bool needs_schema = table_name.find(kDot) == std::string::npos;
+    const bool needs_schema = !table_name.contains(kDot);
 
     std::string result;
     result.reserve(needs_schema ? 7 + table_name.size() : table_name.size());
@@ -377,7 +377,7 @@ std::string SchemaCache::normalize_table_name(const std::string& table_name) {
     }
 
     // Lowercase for case-insensitive matching
-    for (char c : table_name) {
+    for (const char c : table_name) {
         result += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
 

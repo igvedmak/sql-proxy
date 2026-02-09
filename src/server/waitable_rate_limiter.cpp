@@ -21,7 +21,7 @@ RateLimitResult WaitableRateLimiter::check(
     if (!config_.queue_enabled) return result;
 
     // Atomic queue depth check (fixes TOCTOU race: increment first, rollback if over)
-    uint32_t prev = current_queue_depth_.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t prev = current_queue_depth_.fetch_add(1, std::memory_order_relaxed);
     if (prev >= config_.max_queue_depth) {
         current_queue_depth_.fetch_sub(1, std::memory_order_relaxed);
         return result;  // Queue full
@@ -34,9 +34,9 @@ RateLimitResult WaitableRateLimiter::check(
     // Sleep-retry loop: each waiter sleeps independently (no mutex contention)
     while (!shutdown_.load(std::memory_order_acquire) &&
            std::chrono::steady_clock::now() < deadline) {
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
-        auto sleep_time = std::min(std::chrono::milliseconds(10), remaining);
+        const auto sleep_time = std::min(std::chrono::milliseconds(10), remaining);
         if (sleep_time <= std::chrono::milliseconds::zero()) break;
 
         std::this_thread::sleep_for(sleep_time);

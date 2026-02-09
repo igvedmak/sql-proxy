@@ -27,7 +27,7 @@ bool ShutdownCoordinator::try_enter_request() {
 }
 
 void ShutdownCoordinator::leave_request() {
-    uint32_t prev = in_flight_.fetch_sub(1, std::memory_order_relaxed);
+    const uint32_t prev = in_flight_.fetch_sub(1, std::memory_order_relaxed);
     if (prev == 1 && shutting_down_.load(std::memory_order_acquire)) {
         drain_cv_.notify_one();
     }

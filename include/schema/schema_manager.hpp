@@ -5,10 +5,18 @@
 #include <deque>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace sqlproxy {
+
+namespace ddl_status {
+inline constexpr std::string_view kPending  = "pending";
+inline constexpr std::string_view kApproved = "approved";
+inline constexpr std::string_view kRejected = "rejected";
+inline constexpr std::string_view kApplied  = "applied";
+} // namespace ddl_status
 
 struct SchemaManagementConfig {
     bool enabled = false;
@@ -22,9 +30,13 @@ struct SchemaSnapshot {
     std::string database;
     std::string table;
     std::string sql;
-    StatementType type;
+    StatementType type = StatementType::UNKNOWN;
     std::chrono::system_clock::time_point timestamp;
     std::string status;     // "applied", "pending", "rejected"
+
+    SchemaSnapshot()
+        : id(utils::generate_uuid()),
+          timestamp(std::chrono::system_clock::now()) {}
 };
 
 struct PendingDDL {
@@ -33,11 +45,15 @@ struct PendingDDL {
     std::string database;
     std::string table;
     std::string sql;
-    StatementType type;
+    StatementType type = StatementType::UNKNOWN;
     std::chrono::system_clock::time_point submitted_at;
     std::string status;     // "pending", "approved", "rejected"
     std::string reviewed_by;
     std::chrono::system_clock::time_point reviewed_at;
+
+    PendingDDL()
+        : id(utils::generate_uuid()),
+          submitted_at(std::chrono::system_clock::now()) {}
 };
 
 class SchemaManager {

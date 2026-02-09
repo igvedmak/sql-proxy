@@ -1,4 +1,5 @@
 #include "parser/sql_parser.hpp"
+#include "parser/ast_keys.hpp"
 #include "core/utils.hpp"
 
 // libpg_query C API
@@ -15,20 +16,12 @@ extern "C" {
 
 namespace sqlproxy {
 
-// Constexpr AST field keys (used 2+ times in RangeVar extraction)
-static constexpr std::string_view kRangeVar   = "RangeVar";
-static constexpr std::string_view kRelname    = "relname";
-static constexpr std::string_view kSchemaname = "schemaname";
-static constexpr std::string_view kAliasFld   = "alias";
-static constexpr std::string_view kAlias      = "Alias";
-static constexpr std::string_view kAliasname  = "aliasname";
+// File-local AST field keys (unique to this parser)
 static constexpr std::string_view kDropStmt   = "DropStmt";
 static constexpr std::string_view kObjects    = "objects";
 static constexpr std::string_view kString     = "String";
 static constexpr std::string_view kList       = "List";
 static constexpr std::string_view kItems      = "items";
-static constexpr std::string_view kSval       = "sval";
-static constexpr std::string_view kStr        = "str";
 static constexpr char kDot = '.';
 
 // Static hash map for O(1) statement type lookup
@@ -104,7 +97,7 @@ SQLParser::ParseResult SQLParser::parse_with_libpgquery(
     if (parse_result.error) {
         std::string error_msg = parse_result.error->message
             ? parse_result.error->message
-            : "Unknown parse error";
+            : std::string{ast::kUnknownParseError};
         pg_query_free_parse_result(parse_result);
         return ParseResult::error(ErrorCode::SYNTAX_ERROR, std::move(error_msg));
     }
@@ -237,31 +230,31 @@ static void find_range_vars(const JsonValue& node,
                             std::vector<TableRef>& tables,
                             std::unordered_set<std::string>& seen_tables) {
     if (node.is_object()) {
-        if (node.contains(kRangeVar)) {
-            const auto& range_var = node[kRangeVar];
+        if (node.contains(ast::kRangeVar)) {
+            const auto& range_var = node[ast::kRangeVar];
 
             // Early continue: skip malformed RangeVar (flattened from nested if-else)
-            if (range_var.contains(kRelname) && range_var[kRelname].is_string()) {
-                std::string table_name = range_var[kRelname].get<std::string>();
+            if (range_var.contains(ast::kRelname) && range_var[ast::kRelname].is_string()) {
+                std::string table_name = range_var[ast::kRelname].get<std::string>();
 
                 // schemaname is optional
                 std::string schema_name;
-                if (range_var.contains(kSchemaname) && range_var[kSchemaname].is_string()) {
-                    schema_name = range_var[kSchemaname].get<std::string>();
+                if (range_var.contains(ast::kSchemaname) && range_var[ast::kSchemaname].is_string()) {
+                    schema_name = range_var[ast::kSchemaname].get<std::string>();
                 }
 
                 // alias is optional
                 // libpg_query JSON wraps nodes by type: {"alias": {"Alias": {"aliasname": "..."}}}
                 std::string alias_name;
-                if (range_var.contains(kAliasFld) && range_var[kAliasFld].is_object()) {
-                    const auto& alias_node = range_var[kAliasFld];
-                    if (alias_node.contains(kAlias) && alias_node[kAlias].is_object()) {
-                        const auto& inner = alias_node[kAlias];
-                        if (inner.contains(kAliasname) && inner[kAliasname].is_string()) {
-                            alias_name = inner[kAliasname].get<std::string>();
+                if (range_var.contains(ast::kAliasFld) && range_var[ast::kAliasFld].is_object()) {
+                    const auto& alias_node = range_var[ast::kAliasFld];
+                    if (alias_node.contains(ast::kAlias) && alias_node[ast::kAlias].is_object()) {
+                        const auto& inner = alias_node[ast::kAlias];
+                        if (inner.contains(ast::kAliasname) && inner[ast::kAliasname].is_string()) {
+                            alias_name = inner[ast::kAliasname].get<std::string>();
                         }
-                    } else if (alias_node.contains(kAliasname) && alias_node[kAliasname].is_string()) {
-                        alias_name = alias_node[kAliasname].get<std::string>();
+                    } else if (alias_node.contains(ast::kAliasname) && alias_node[ast::kAliasname].is_string()) {
+                        alias_name = alias_node[ast::kAliasname].get<std::string>();
                     }
                 }
 
@@ -296,10 +289,10 @@ static void find_range_vars(const JsonValue& node,
                             const auto& str_node = item[kString];
                             std::string val;
                             if (str_node.is_object()) {
-                                if (str_node.contains(kSval) && str_node[kSval].is_string()) {
-                                    val = str_node[kSval].get<std::string>();
-                                } else if (str_node.contains(kStr) && str_node[kStr].is_string()) {
-                                    val = str_node[kStr].get<std::string>();
+                                if (str_node.contains(ast::kSval) && str_node[ast::kSval].is_string()) {
+                                    val = str_node[ast::kSval].get<std::string>();
+                                } else if (str_node.contains(ast::kStr) && str_node[ast::kStr].is_string()) {
+                                    val = str_node[ast::kStr].get<std::string>();
                                 }
                             }
                             if (!val.empty()) {

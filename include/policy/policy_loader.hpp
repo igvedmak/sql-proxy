@@ -47,25 +47,25 @@ public:
      * @param config_path Path to proxy.toml
      * @return Load result with policies or error
      */
-    static LoadResult load_from_file(const std::string& config_path);
+    [[nodiscard]] static LoadResult load_from_file(const std::string& config_path);
 
     /**
      * @brief Load policies from TOML string
      * @param toml_content TOML content
      * @return Load result with policies or error
      */
-    static LoadResult load_from_string(const std::string& toml_content);
+    [[nodiscard]] static LoadResult load_from_string(const std::string& toml_content);
 
 private:
     /**
      * @brief Parse statement type from string
      */
-    static std::optional<StatementType> parse_statement_type(const std::string& type_str);
+    [[nodiscard]] static std::optional<StatementType> parse_statement_type(const std::string& type_str);
 
     /**
      * @brief Parse action from string
      */
-    static std::optional<Decision> parse_action(const std::string& action_str);
+    [[nodiscard]] static std::optional<Decision> parse_action(const std::string& action_str);
 
     /**
      * @brief Validate policy

@@ -17,17 +17,17 @@ std::string create_test_jwt(const std::string& payload_json, const std::string& 
     auto b64url_encode = [](const std::string& input) -> std::string {
         static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         std::string result;
-        size_t i = 0;
-        while (i < input.size()) {
-            uint32_t a = i < input.size() ? static_cast<uint8_t>(input[i++]) : 0;
-            uint32_t b = i < input.size() ? static_cast<uint8_t>(input[i++]) : 0;
-            uint32_t c = i < input.size() ? static_cast<uint8_t>(input[i++]) : 0;
+        for (size_t i = 0; i < input.size(); i += 3) {
+            uint32_t a = static_cast<uint8_t>(input[i]);
+            uint32_t b = (i + 1 < input.size()) ? static_cast<uint8_t>(input[i + 1]) : 0;
+            uint32_t c = (i + 2 < input.size()) ? static_cast<uint8_t>(input[i + 2]) : 0;
             uint32_t triple = (a << 16) | (b << 8) | c;
-            size_t bytes = (i - 1 < input.size()) ? 3 : (input.size() % 3 == 0 ? 3 : input.size() % 3);
-            for (int j = 0; j < 4; ++j) {
-                if (j <= static_cast<int>(bytes)) {
-                    result += b64[(triple >> (18 - j * 6)) & 0x3F];
-                }
+
+            size_t remaining = input.size() - i;
+            int nchars = (remaining >= 3) ? 4 : static_cast<int>(remaining) + 1;
+
+            for (int j = 0; j < nchars; ++j) {
+                result += b64[(triple >> (18 - j * 6)) & 0x3F];
             }
         }
         // Convert to base64url
@@ -35,8 +35,6 @@ std::string create_test_jwt(const std::string& payload_json, const std::string& 
             if (ch == '+') ch = '-';
             else if (ch == '/') ch = '_';
         }
-        // Remove padding
-        while (!result.empty() && result.back() == '=') result.pop_back();
         return result;
     };
 

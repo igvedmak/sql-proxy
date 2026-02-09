@@ -403,7 +403,7 @@ int main(int argc, char* argv[]) {
             ColumnEncryptor::Config enc_config;
             enc_config.enabled = true;
             for (const auto& c : enc_cfg.columns) {
-                enc_config.columns.push_back({c.database, c.table, c.column});
+                enc_config.columns.emplace_back(c.database, c.table, c.column);
             }
             column_encryptor = std::make_shared<ColumnEncryptor>(key_manager, enc_config);
             utils::log::info(std::format("Column encryptor: {} columns configured",
@@ -538,7 +538,7 @@ int main(int argc, char* argv[]) {
         {
             std::vector<DashboardUser> dash_users;
             for (const auto& [name, info] : users) {
-                dash_users.push_back({name, info.roles});
+                dash_users.emplace_back(name, info.roles);
             }
             dashboard_handler = std::make_shared<DashboardHandler>(
                 pipeline, g_alert_evaluator, std::move(dash_users));

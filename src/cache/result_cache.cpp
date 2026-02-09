@@ -1,5 +1,6 @@
 #include "cache/result_cache.hpp"
 
+#include <format>
 #include <functional>
 
 namespace sqlproxy {
@@ -10,8 +11,8 @@ namespace sqlproxy {
 
 ResultCache::ResultCache(const Config& config)
     : config_(config) {
-    size_t num_shards = std::max(config_.num_shards, size_t{1});
-    size_t per_shard = std::max(config_.max_entries / num_shards, size_t{1});
+    const size_t num_shards = std::max(config_.num_shards, size_t{1});
+    const size_t per_shard = std::max(config_.max_entries / num_shards, size_t{1});
     shards_.reserve(num_shards);
     for (size_t i = 0; i < num_shards; ++i) {
         shards_.push_back(std::make_unique<Shard>(per_shard));
@@ -20,15 +21,7 @@ ResultCache::ResultCache(const Config& config)
 
 std::string ResultCache::make_key(uint64_t hash, const std::string& user,
                                   const std::string& db) {
-    auto hash_str = std::to_string(hash);
-    std::string key;
-    key.reserve(hash_str.size() + 1 + user.size() + 1 + db.size());
-    key = hash_str;
-    key += ':';
-    key += user;
-    key += ':';
-    key += db;
-    return key;
+    return std::format("{}:{}:{}", hash, user, db);
 }
 
 size_t ResultCache::select_shard(const std::string& key) const {
@@ -51,9 +44,9 @@ size_t ResultCache::estimate_result_size(const QueryResult& result) const {
 std::optional<QueryResult> ResultCache::get(
     uint64_t fingerprint_hash, const std::string& user,
     const std::string& database) {
-    auto key = make_key(fingerprint_hash, user, database);
+    const auto key = make_key(fingerprint_hash, user, database);
     auto& shard = *shards_[select_shard(key)];
-    auto result = shard.get(key);
+    const auto result = shard.get(key);
     if (result) {
         hits_.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -69,8 +62,8 @@ void ResultCache::put(uint64_t fingerprint_hash, const std::string& user,
         return;
     }
 
-    auto key = make_key(fingerprint_hash, user, database);
-    auto expires = std::chrono::steady_clock::now() + config_.ttl;
+    const auto key = make_key(fingerprint_hash, user, database);
+    const auto expires = std::chrono::steady_clock::now() + config_.ttl;
     auto& shard = *shards_[select_shard(key)];
     shard.put(key, database, result, expires);
 }
@@ -144,7 +137,7 @@ void ResultCache::Shard::put(
     }
 
     // Insert new entry at front
-    lru_list_.push_front({key, database, std::move(result), expires_at});
+    lru_list_.emplace_front(key, database, std::move(result), expires_at);
     map_[key] = lru_list_.begin();
 }
 

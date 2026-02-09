@@ -41,7 +41,7 @@ IQueryExecutor* RoutingQueryExecutor::select_replica() {
 
     // Try each replica starting from round-robin position
     for (size_t i = 0; i < n; ++i) {
-        size_t idx = (start + i) % n;
+        const size_t idx = (start + i) % n;
         auto& entry = replicas_[idx];
 
         // Skip replicas with OPEN circuit breaker

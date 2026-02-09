@@ -307,7 +307,7 @@ bool QueryFingerprinter::is_digit(char c) {
 
 bool QueryFingerprinter::is_keyword(std::string_view word) {
     // O(1) lookup without creating temporary std::string (transparent hash)
-    return SQL_KEYWORDS.find(word) != SQL_KEYWORDS.end();
+    return SQL_KEYWORDS.contains(word);
 }
 
 } // namespace sqlproxy

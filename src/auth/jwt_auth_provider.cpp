@@ -1,4 +1,5 @@
 #include "auth/jwt_auth_provider.hpp"
+#include "server/http_constants.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -20,51 +21,50 @@ IAuthProvider::AuthResult JwtAuthProvider::authenticate(
     AuthResult result;
 
     // Extract Bearer token
-    constexpr std::string_view kBearerPrefix = "Bearer ";
-    if (auth_header.size() <= kBearerPrefix.size() ||
-        std::string_view(auth_header).substr(0, kBearerPrefix.size()) != kBearerPrefix) {
+    if (auth_header.size() <= http::kBearerPrefix.size() ||
+        std::string_view(auth_header).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix) {
         result.error = "No Bearer token";
         return result;
     }
 
-    std::string token(std::string_view(auth_header).substr(kBearerPrefix.size()));
+    std::string token(std::string_view(auth_header).substr(http::kBearerPrefix.size()));
 
     // Split into header.payload.signature
-    auto dot1 = token.find('.');
+    const auto dot1 = token.find('.');
     if (dot1 == std::string::npos) {
         result.error = "Invalid JWT: missing first dot";
         return result;
     }
-    auto dot2 = token.find('.', dot1 + 1);
+    const auto dot2 = token.find('.', dot1 + 1);
     if (dot2 == std::string::npos) {
         result.error = "Invalid JWT: missing second dot";
         return result;
     }
 
-    std::string header_b64 = token.substr(0, dot1);
-    std::string payload_b64 = token.substr(dot1 + 1, dot2 - dot1 - 1);
-    std::string signature_b64 = token.substr(dot2 + 1);
+    const std::string header_b64 = token.substr(0, dot1);
+    const std::string payload_b64 = token.substr(dot1 + 1, dot2 - dot1 - 1);
+    const std::string signature_b64 = token.substr(dot2 + 1);
 
     // Verify signature (HMAC-SHA256)
-    std::string signing_input = header_b64 + "." + payload_b64;
+    const std::string signing_input = std::format("{}.{}", header_b64, payload_b64);
     if (!config_.secret.empty() && !verify_hmac_sha256(signing_input, signature_b64)) {
         result.error = "Invalid JWT signature";
         return result;
     }
 
     // Decode payload
-    std::string payload_json = base64url_decode(payload_b64);
+    const std::string payload_json = base64url_decode(payload_b64);
     if (payload_json.empty()) {
         result.error = "Invalid JWT: failed to decode payload";
         return result;
     }
 
     // Check expiration
-    std::string exp_str = extract_json_string(payload_json, "exp");
+    const std::string exp_str = extract_json_string(payload_json, "exp");
     if (!exp_str.empty()) {
         try {
-            long long exp_time = std::stoll(exp_str);
-            auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            const long long exp_time = std::stoll(exp_str);
+            const auto now = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             if (now > exp_time) {
                 result.error = "JWT expired";
@@ -77,7 +77,7 @@ IAuthProvider::AuthResult JwtAuthProvider::authenticate(
 
     // Verify issuer
     if (!config_.issuer.empty()) {
-        std::string iss = extract_json_string(payload_json, "iss");
+        const std::string iss = extract_json_string(payload_json, "iss");
         if (iss != config_.issuer) {
             result.error = std::format("JWT issuer mismatch: expected={}, got={}", config_.issuer, iss);
             return result;
@@ -86,7 +86,7 @@ IAuthProvider::AuthResult JwtAuthProvider::authenticate(
 
     // Verify audience
     if (!config_.audience.empty()) {
-        std::string aud = extract_json_string(payload_json, "aud");
+        const std::string aud = extract_json_string(payload_json, "aud");
         if (aud != config_.audience) {
             result.error = std::format("JWT audience mismatch: expected={}, got={}", config_.audience, aud);
             return result;
@@ -114,7 +114,7 @@ bool JwtAuthProvider::verify_hmac_sha256(
     const std::string& signing_input,
     const std::string& signature_b64) const {
 
-    std::string expected_sig = base64url_decode(signature_b64);
+    const std::string expected_sig = base64url_decode(signature_b64);
     if (expected_sig.empty()) return false;
 
     unsigned char hmac_result[EVP_MAX_MD_SIZE];
@@ -142,7 +142,7 @@ std::string JwtAuthProvider::base64url_decode(const std::string& input) {
     }
 
     // Decode using OpenSSL EVP
-    size_t max_decoded_len = (b64.size() / 4) * 3 + 3;
+    const size_t max_decoded_len = (b64.size() / 4) * 3 + 3;
     std::string decoded(max_decoded_len, '\0');
 
     EVP_ENCODE_CTX* ctx = EVP_ENCODE_CTX_new();
@@ -174,7 +174,7 @@ std::string JwtAuthProvider::base64url_decode(const std::string& input) {
 
 std::string JwtAuthProvider::extract_json_string(const std::string& json, const std::string& key) {
     // Simple JSON string extraction (no dependency on JSON library)
-    std::string search = "\"" + key + "\"";
+    const std::string search = std::format("\"{}\"", key);
     auto pos = json.find(search);
     if (pos == std::string::npos) return "";
 
@@ -186,7 +186,7 @@ std::string JwtAuthProvider::extract_json_string(const std::string& json, const 
 
     // Handle numeric values (for "exp" claim)
     if (json[pos] != '"') {
-        size_t end = json.find_first_of(",}", pos);
+        const size_t end = json.find_first_of(",}", pos);
         if (end == std::string::npos) return "";
         std::string value = json.substr(pos, end - pos);
         // Trim whitespace
@@ -196,7 +196,7 @@ std::string JwtAuthProvider::extract_json_string(const std::string& json, const 
 
     // String value
     ++pos;  // Skip opening quote
-    size_t end = json.find('"', pos);
+    const size_t end = json.find('"', pos);
     if (end == std::string::npos) return "";
 
     return json.substr(pos, end - pos);
@@ -206,7 +206,7 @@ std::vector<std::string> JwtAuthProvider::extract_json_string_array(
     const std::string& json, const std::string& key) {
 
     std::vector<std::string> result;
-    std::string search = "\"" + key + "\"";
+    const std::string search = std::format("\"{}\"", key);
     auto pos = json.find(search);
     if (pos == std::string::npos) return result;
 
@@ -221,7 +221,7 @@ std::vector<std::string> JwtAuthProvider::extract_json_string_array(
 
         if (json[pos] == '"') {
             ++pos;
-            size_t end = json.find('"', pos);
+            const size_t end = json.find('"', pos);
             if (end == std::string::npos) break;
             result.push_back(json.substr(pos, end - pos));
             pos = end + 1;

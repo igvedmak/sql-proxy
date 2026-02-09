@@ -76,12 +76,12 @@ public:
      * @param sql SQL query string
      * @return Parse result with statement info or error
      */
-    ParseResult parse(std::string_view sql);
+    [[nodiscard]] ParseResult parse(std::string_view sql);
 
     /**
      * @brief Get cache statistics
      */
-    ParseCache::Stats get_cache_stats() const {
+    [[nodiscard]] ParseCache::Stats get_cache_stats() const {
         return cache_ ? cache_->get_stats() : ParseCache::Stats{};
     }
 

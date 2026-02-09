@@ -104,11 +104,11 @@ void Arena::reset() {
 }
 
 bool Arena::can_allocate(size_t size, size_t alignment) const {
-    uintptr_t current_addr = reinterpret_cast<uintptr_t>(current_);
-    uintptr_t aligned_addr = align_up(current_addr, alignment);
-    size_t padding = aligned_addr - current_addr;
-    size_t required = padding + size;
-    size_t available = capacity_ - (current_ - buffer_);
+    const uintptr_t current_addr = reinterpret_cast<uintptr_t>(current_);
+    const uintptr_t aligned_addr = align_up(current_addr, alignment);
+    const size_t padding = aligned_addr - current_addr;
+    const size_t required = padding + size;
+    const size_t available = capacity_ - (current_ - buffer_);
 
     return required <= available || (capacity_ * 2 <= max_capacity_);
 }
@@ -119,7 +119,7 @@ uintptr_t Arena::align_up(uintptr_t ptr, size_t alignment) {
         alignment = alignof(std::max_align_t);
     }
 
-    uintptr_t mask = alignment - 1;
+    const uintptr_t mask = alignment - 1;
     return (ptr + mask) & ~mask;
 }
 
@@ -142,7 +142,7 @@ void Arena::grow(size_t required_size) {
     }
 
     // Copy existing data
-    size_t used_size = current_ - buffer_;
+    const size_t used_size = current_ - buffer_;
     std::memcpy(new_buffer, buffer_, used_size);
 
     // Update pointers

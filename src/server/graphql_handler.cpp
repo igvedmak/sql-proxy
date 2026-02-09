@@ -242,12 +242,12 @@ std::string GraphQLHandler::execute(const std::string& graphql_query,
                                      const std::string& user,
                                      const std::vector<std::string>& roles,
                                      const std::string& database) const {
-    auto gql = parse(graphql_query);
+    const auto gql = parse(graphql_query);
     if (!gql) {
         return R"({"errors":[{"message":"Failed to parse GraphQL query"}]})";
     }
 
-    std::string sql = to_sql(*gql);
+    const std::string sql = to_sql(*gql);
 
     ProxyRequest request;
     request.user = user;
@@ -255,7 +255,7 @@ std::string GraphQLHandler::execute(const std::string& graphql_query,
     request.sql = sql;
     request.database = database;
 
-    auto response = pipeline_->execute(request);
+    const auto response = pipeline_->execute(request);
 
     return build_graphql_response(response, gql->table);
 }
@@ -263,7 +263,7 @@ std::string GraphQLHandler::execute(const std::string& graphql_query,
 std::string GraphQLHandler::escape_sql_value(const std::string& val) {
     std::string escaped;
     escaped.reserve(val.size());
-    for (char c : val) {
+    for (const char c : val) {
         if (c == '\'') escaped += "''";
         else if (c == '\\') escaped += "\\\\";
         else escaped += c;

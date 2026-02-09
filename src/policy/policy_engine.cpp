@@ -1,16 +1,16 @@
 #include "policy/policy_engine.hpp"
+#include "policy/policy_constants.hpp"
 #include <algorithm>
+#include <ranges>
 
 namespace sqlproxy {
-    
-static const std::string kWildcardKey = "*";
 
 PolicyEngine::PolicyEngine()
     : store_(std::make_shared<PolicyStore>()) {}
 
 void PolicyEngine::load_policies(const std::vector<Policy>& policies) {
     policies_ = policies;
-    auto new_store = build_store(policies);
+    const auto new_store = build_store(policies);
     std::atomic_store_explicit(&store_, new_store, std::memory_order_release);
 }
 
@@ -25,12 +25,12 @@ PolicyEvaluationResult PolicyEngine::evaluate(
     const AnalysisResult& analysis) const {
 
     // Load current policy store (RCU read)
-    auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
+    const auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
 
     if (!store) {
         return PolicyEvaluationResult(
             Decision::BLOCK,
-            "default_deny",
+            std::string{policy::kDefaultDeny},
             "No policies loaded - default deny"
         );
     }
@@ -95,13 +95,13 @@ std::vector<ColumnPolicyDecision> PolicyEngine::evaluate_columns(
     const AnalysisResult& analysis,
     const std::vector<std::string>& column_names) const {
 
-    auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
+    const auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
     std::vector<ColumnPolicyDecision> decisions;
     decisions.reserve(column_names.size());
 
     if (!store) {
         for (const auto& col : column_names) {
-            decisions.push_back({col, Decision::ALLOW, MaskingAction::NONE, {}});
+            decisions.emplace_back(col, Decision::ALLOW, MaskingAction::NONE, std::string{});
         }
         return decisions;
     }
@@ -110,8 +110,8 @@ std::vector<ColumnPolicyDecision> PolicyEngine::evaluate_columns(
     auto collect_column_policies = [&](const PolicyTrie& trie) -> std::vector<const Policy*> {
         std::vector<const Policy*> result;
         for (const auto& table : analysis.source_tables) {
-            const std::string eff_schema = table.schema.empty() ? "public" : table.schema;
-            auto matches = trie.find_matching(database, eff_schema, table.table,
+            const std::string eff_schema = table.schema.empty() ? std::string{policy::kDefaultSchema} : table.schema;
+            const auto matches = trie.find_matching(database, eff_schema, table.table,
                                                analysis.statement_type);
             for (const auto* p : matches) {
                 if (!p->scope.columns.empty() && matches_user(*p, user, roles)) {
@@ -123,27 +123,25 @@ std::vector<ColumnPolicyDecision> PolicyEngine::evaluate_columns(
     };
 
     std::vector<const Policy*> column_policies;
-    auto user_it = store->user_tries.find(user);
-    if (user_it != store->user_tries.end()) {
-        auto p = collect_column_policies(user_it->second);
+    if (auto user_it = store->user_tries.find(user); user_it != store->user_tries.end()) {
+        const auto p = collect_column_policies(user_it->second);
         column_policies.insert(column_policies.end(), p.begin(), p.end());
     }
     for (const auto& role : roles) {
-        auto role_it = store->role_tries.find(role);
-        if (role_it != store->role_tries.end()) {
-            auto p = collect_column_policies(role_it->second);
+        if (auto role_it = store->role_tries.find(role); role_it != store->role_tries.end()) {
+            const auto p = collect_column_policies(role_it->second);
             column_policies.insert(column_policies.end(), p.begin(), p.end());
         }
     }
     {
-        auto p = collect_column_policies(store->wildcard_trie);
+        const auto p = collect_column_policies(store->wildcard_trie);
         column_policies.insert(column_policies.end(), p.begin(), p.end());
     }
 
     // No column policies at all → default ALLOW everything
     if (column_policies.empty()) {
         for (const auto& col : column_names) {
-            decisions.push_back({col, Decision::ALLOW, MaskingAction::NONE, {}});
+            decisions.emplace_back(col, Decision::ALLOW, MaskingAction::NONE, std::string{});
         }
         return decisions;
     }
@@ -159,13 +157,9 @@ std::vector<ColumnPolicyDecision> PolicyEngine::evaluate_columns(
         int best_priority = -1;
 
         for (const auto* policy : column_policies) {
-            bool targets_column = false;
-            for (const auto& pc : policy->scope.columns) {
-                if (pc == col || pc == "*") {
-                    targets_column = true;
-                    break;
-                }
-            }
+            bool targets_column = std::ranges::any_of(
+                policy->scope.columns,
+                [&col](const auto& pc) { return pc == col || pc == "*"; });
             if (!targets_column) continue;
 
             const int spec = policy->scope.specificity();
@@ -197,12 +191,12 @@ void PolicyEngine::reload_policies(const std::vector<Policy>& policies) {
     std::lock_guard<std::mutex> lock(reload_mutex_);
 
     policies_ = policies;
-    auto new_store = build_store(policies);
+    const auto new_store = build_store(policies);
     std::atomic_store_explicit(&store_, new_store, std::memory_order_release);
 }
 
 size_t PolicyEngine::policy_count() const {
-    auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
+    const auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
     if (!store) {
         return 0;
     }
@@ -236,12 +230,11 @@ PolicyEvaluationResult PolicyEngine::evaluate_table(
 
     // Resolve effective schema: default to "public" when not specified
     // (consistent with PostgreSQL's default search_path)
-    const std::string effective_schema = table.schema.empty() ? "public" : table.schema;
+    const std::string effective_schema = table.schema.empty() ? std::string{policy::kDefaultSchema} : table.schema;
 
     // Collect from user-specific trie
-    auto user_it = store.user_tries.find(user);
-    if (user_it != store.user_tries.end()) {
-        auto user_matches = user_it->second.find_matching(
+    if (auto user_it = store.user_tries.find(user); user_it != store.user_tries.end()) {
+        const auto user_matches = user_it->second.find_matching(
             database,
             effective_schema,
             table.table,
@@ -253,9 +246,8 @@ PolicyEvaluationResult PolicyEngine::evaluate_table(
 
     // Collect from role-specific tries
     for (const auto& role : roles) {
-        auto role_it = store.role_tries.find(role);
-        if (role_it != store.role_tries.end()) {
-            auto role_matches = role_it->second.find_matching(
+        if (auto role_it = store.role_tries.find(role); role_it != store.role_tries.end()) {
+            const auto role_matches = role_it->second.find_matching(
                 database,
                 effective_schema,
                 table.table,
@@ -267,7 +259,7 @@ PolicyEvaluationResult PolicyEngine::evaluate_table(
     }
 
     // Collect from wildcard trie
-    auto wildcard_matches = store.wildcard_trie.find_matching(
+    const auto wildcard_matches = store.wildcard_trie.find_matching(
         database,
         effective_schema,
         table.table,
@@ -296,7 +288,7 @@ PolicyEvaluationResult PolicyEngine::evaluate_table(
     if (enforcement_policies.empty()) {
         result = PolicyEvaluationResult(
             Decision::BLOCK,
-            "default_deny",
+            std::string{policy::kDefaultDeny},
             "No matching policy for table: " + table.full_name()
         );
     } else {
@@ -305,7 +297,7 @@ PolicyEvaluationResult PolicyEngine::evaluate_table(
 
     // Evaluate shadow policies (log-only, never changes actual decision)
     if (!shadow_policies.empty()) {
-        auto shadow_result = resolve_specificity(shadow_policies);
+        const auto shadow_result = resolve_specificity(shadow_policies);
         if (shadow_result.decision == Decision::BLOCK) {
             result.shadow_blocked = true;
             result.shadow_policy = shadow_result.matched_policy;
@@ -321,7 +313,7 @@ PolicyEvaluationResult PolicyEngine::resolve_specificity(
     if (policies.empty()) {
         return PolicyEvaluationResult(
             Decision::BLOCK,
-            "default_deny",
+            std::string{policy::kDefaultDeny},
             "No policies matched"
         );
     }
@@ -335,7 +327,7 @@ PolicyEvaluationResult PolicyEngine::resolve_specificity(
     std::vector<RankedPolicy> ranked;
     ranked.reserve(policies.size());
     for (const auto* p : policies) {
-        ranked.push_back({p, p->scope.specificity()});
+        ranked.emplace_back(p, p->scope.specificity());
     }
 
     std::sort(ranked.begin(), ranked.end(),
@@ -366,7 +358,7 @@ PolicyEvaluationResult PolicyEngine::resolve_specificity(
 
     return PolicyEvaluationResult(
         Decision::BLOCK,
-        "default_deny",
+        std::string{policy::kDefaultDeny},
         "No explicit ALLOW policy"
     );
 }
@@ -381,7 +373,7 @@ bool PolicyEngine::matches_user(const Policy& policy, const std::string& user,
     }
 
     // Check user match
-    if (!policy.users.empty() && !policy.users.contains(kWildcardKey) && !policy.users.contains(user)) {
+    if (!policy.users.empty() && !policy.users.contains(policy::kWildcard) && !policy.users.contains(user)) {
         return false;
     }
 
@@ -403,13 +395,13 @@ std::shared_ptr<PolicyEngine::PolicyStore> PolicyEngine::build_store(
 
     for (const auto& policy : policies) {
         // Wildcard user policies
-        if (policy.users.empty() || policy.users.contains(kWildcardKey)) {
+        if (policy.users.empty() || policy.users.contains(policy::kWildcard)) {
             store->wildcard_trie.insert(policy);
         }
 
         // User-specific policies
         for (const auto& user : policy.users) {
-            if (user != kWildcardKey) {
+            if (user != policy::kWildcard) {
                 store->user_tries[user].insert(policy);
             }
         }

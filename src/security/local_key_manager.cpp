@@ -50,7 +50,6 @@ bool LocalKeyManager::rotate_key() {
     KeyInfo new_key;
     new_key.key_id = generate_key_id();
     new_key.key_bytes = generate_key();
-    new_key.created_at = std::chrono::system_clock::now();
     new_key.active = true;
 
     keys_.push_back(std::move(new_key));
@@ -73,7 +72,6 @@ bool LocalKeyManager::generate_and_add_key() {
     KeyInfo key;
     key.key_id = generate_key_id();
     key.key_bytes = generate_key();
-    key.created_at = std::chrono::system_clock::now();
     key.active = true;
 
     // Deactivate previous active key
@@ -118,7 +116,6 @@ void LocalKeyManager::load_keys() {
         }
 
         key.active = (active_str == "1" || active_str == "true");
-        key.created_at = std::chrono::system_clock::now();
 
         if (key.active) {
             active_index_ = keys_.size();
