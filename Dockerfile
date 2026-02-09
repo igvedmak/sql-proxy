@@ -7,6 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
+    ninja-build \
     git \
     wget \
     pkg-config \
@@ -60,8 +61,8 @@ COPY src /build/sql_proxy/src
 # Build the proxy service
 RUN mkdir -p build && \
     cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" .. && \
-    make -j$(nproc)
+    cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" .. && \
+    ninja
 
 # Stage 4: Build Catch2 (cached until CMakeLists.txt changes, survives src/ edits)
 FROM proxy-builder AS test-deps
@@ -71,8 +72,8 @@ RUN mkdir -p tests && echo "// stub" > tests/test_stub.cpp
 
 # Configure with tests enabled and build only Catch2
 RUN cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON .. && \
-    make -j$(nproc) Catch2 Catch2WithMain
+    cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON .. && \
+    ninja Catch2 Catch2WithMain
 
 FROM test-deps AS test-builder
 
@@ -81,8 +82,8 @@ COPY tests /build/sql_proxy/tests
 
 # Reconfigure to re-glob real test files, then build (Catch2 is already cached)
 RUN cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON .. && \
-    make -j$(nproc) sql_proxy_tests
+    cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON .. && \
+    ninja sql_proxy_tests
 
 # Run tests
 RUN cd build && ./sql_proxy_tests --reporter compact
@@ -95,8 +96,8 @@ COPY tests /build/sql_proxy/tests
 
 # Build with benchmarks enabled (library is already built, only benchmarks compile)
 RUN cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_BENCHMARKS=ON .. && \
-    make -j$(nproc) sql_proxy_benchmarks
+    cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_BENCHMARKS=ON .. && \
+    ninja sql_proxy_benchmarks
 
 # Stage 5: Runtime (minimal production image)
 FROM ubuntu:24.04

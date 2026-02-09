@@ -13,7 +13,6 @@
 #include "tenant/tenant_manager.hpp"
 #include "tracing/trace_context.hpp"
 
-#include <format>
 #include <unordered_set>
 
 namespace sqlproxy {
@@ -91,76 +90,53 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         }
     }
 
-    utils::log::info(std::format("[DIAG] ENTER user={} sql='{}'",
-        ctx.user, ctx.sql.substr(0, 80)));
-
     // Layer 1: Rate limiting
-    utils::log::info("[DIAG] L1 rate_limit");
     if (!check_rate_limit(ctx)) {
-        utils::log::info(std::format("[DIAG] L1 rate limited - blocking request: {}", ctx.query_result.error_message));
         emit_audit(ctx);
         return build_response(ctx);
     }
 
     // Layer 2: Parse + Cache
-    utils::log::info("[DIAG] L2 parse");
     if (!parse_query(ctx)) {
-        utils::log::info(std::format("[DIAG] L2 parse failed: {}", ctx.query_result.error_message));
         emit_audit(ctx);
         return build_response(ctx);
     }
 
     // Layer 3: Analyze
-    utils::log::info("[DIAG] L3 analyze");
     if (!analyze_query(ctx)) {
-        utils::log::info("[DIAG] L3 analyze failed");
         emit_audit(ctx);
         return build_response(ctx);
     }
 
     // Layer 3.5: SQL injection detection (can block)
-    utils::log::info("[DIAG] L3.5 injection");
     if (!check_injection(ctx)) {
-        utils::log::info(std::format("[DIAG] L3.5 SQL injection detected: {}", ctx.query_result.error_message));
         emit_audit(ctx);
         return build_response(ctx);
     }
 
     // Layer 3.7: Anomaly detection (informational, never blocks)
-    utils::log::info("[DIAG] L3.7 anomaly");
     check_anomaly(ctx);
 
     // Layer 4: Policy evaluation (table-level)
-    utils::log::info("[DIAG] L4 policy");
     if (!evaluate_policy(ctx)) {
-        utils::log::info(std::format("[DIAG] L4 policy decision: {} ({})",
-            ctx.policy_result.decision == Decision::BLOCK ? "BLOCK" : "ALLOW",
-            ctx.policy_result.reason));
         emit_audit(ctx);
         return build_response(ctx);
     }
 
     // Layer 4.1: Schema DDL interception (can block if approval required)
-    utils::log::info("[DIAG] L4.1 ddl_intercept");
     if (!intercept_ddl(ctx)) {
-        utils::log::info(std::format("[DIAG] L4.1 DDL interception: blocking DDL statement pending approval"));
         emit_audit(ctx);
         return build_response(ctx);
     }
 
     // Layer 4.5: Query rewriting (RLS + enforce_limit)
-    utils::log::info("[DIAG] L4.5 rewrite");
     rewrite_query(ctx);
 
     // Layer 5: Execute
-    utils::log::info(std::format("[DIAG] L5 execute sql='{}'", ctx.sql.substr(0, 80)));
     if (!execute_query(ctx)) {
-        utils::log::info(std::format("[DIAG] L5 FAILED: {}", ctx.query_result.error_message));
         emit_audit(ctx);
         return build_response(ctx);
     }
-    utils::log::info(std::format("[DIAG] L5 OK cols={} rows={}",
-        ctx.query_result.column_names.size(), ctx.query_result.rows.size()));
 
     // Layer 5.1: Record DDL change (after successful execution)
     if (schema_manager_ && stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL)) {
@@ -172,32 +148,20 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
             ctx.sql, ctx.analysis.statement_type);
     }
 
-    utils::log::info(std::format("[DIAG] user={} sql='{}' cols={} rows={}",
-        ctx.user, ctx.sql.substr(0, 60),
-        ctx.query_result.column_names.size(), ctx.query_result.rows.size()));
-
     // Layer 5.3: Decrypt encrypted columns (transparent)
-    utils::log::info("[DIAG] -> decrypt_columns");
     decrypt_columns(ctx);
 
     // Layer 5.5: Column-level ACL (remove blocked columns)
-    utils::log::info("[DIAG] -> apply_column_policies");
     apply_column_policies(ctx);
 
     // Layer 5.6: Data masking (mask values in-place)
-    utils::log::info(std::format("[DIAG] -> apply_masking (decisions={}, cols={})",
-        ctx.column_decisions.size(), ctx.query_result.column_names.size()));
     apply_masking(ctx);
 
     // Layer 6: Classify (runs on masked data — won't double-report PII)
-    utils::log::info("[DIAG] -> classify_results");
     classify_results(ctx);
 
     // Layer 6.5: Record data lineage for PII columns
-    utils::log::info("[DIAG] -> record_lineage");
     record_lineage(ctx);
-
-    utils::log::info("[DIAG] -> done, building response");
 
     // Build response first (response should not wait on audit I/O)
     auto response = build_response(ctx);
@@ -332,14 +296,10 @@ void Pipeline::apply_column_policies(RequestContext& ctx) {
 
     utils::Timer timer;
 
-    utils::log::info(std::format("[DIAG]   evaluate_columns for {} cols, {} source_tables",
-        ctx.query_result.column_names.size(), ctx.analysis.source_tables.size()));
-
     ctx.column_decisions = policy_engine_->evaluate_columns(
         ctx.user, ctx.roles, ctx.database, ctx.analysis,
         ctx.query_result.column_names);
 
-    utils::log::info(std::format("[DIAG]   got {} decisions", ctx.column_decisions.size()));
     ctx.column_policy_time = timer.elapsed_us();
 
     // Find blocked column indices
@@ -406,23 +366,15 @@ void Pipeline::apply_masking(RequestContext& ctx) {
 
 void Pipeline::classify_results(RequestContext& ctx) {
     if (!classifier_ || !ctx.query_result.success) {
-        utils::log::info(std::format("[DIAG]   classify skipped (classifier={}, success={})",
-            classifier_ != nullptr, ctx.query_result.success));
         return;
     }
 
     utils::Timer timer;
 
-    utils::log::info(std::format("[DIAG]   classifying {} cols, {} rows",
-        ctx.query_result.column_names.size(), ctx.query_result.rows.size()));
-
     ctx.classification_result = classifier_->classify(
         ctx.query_result,
         ctx.analysis
     );
-
-    utils::log::info(std::format("[DIAG]   classified {} columns",
-        ctx.classification_result.classifications.size()));
 
     ctx.classification_time = timer.elapsed_us();
 }
