@@ -1,14 +1,12 @@
-version: '3.8'
-
 # Docker Compose for BUILD ONLY (no runtime services)
-# Usage: docker-compose -f docker-compose-build-only.yml up --build
+# Usage: docker compose -f docker-compose-build-only.yml up --build
 
 services:
   builder:
     build:
       context: .
       dockerfile: Dockerfile
-      target: builder
+      target: proxy-builder
     image: sql-proxy-builder:latest
     container_name: sql_proxy_builder
     command: echo "Build complete! Binary at /build/sql_proxy/build/sql_proxy"

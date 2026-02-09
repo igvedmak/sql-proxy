@@ -4,18 +4,10 @@ namespace sqlproxy {
 
 WaitableRateLimiter::WaitableRateLimiter(
     std::shared_ptr<IRateLimiter> inner, const Config& config)
-    : inner_(std::move(inner)), config_(config) {
-    if (config_.queue_enabled) {
-        notifier_thread_ = std::thread(&WaitableRateLimiter::notifier_loop, this);
-    }
-}
+    : inner_(std::move(inner)), config_(config) {}
 
 WaitableRateLimiter::~WaitableRateLimiter() {
-    stop_notifier_.store(true, std::memory_order_release);
-    wait_cv_.notify_all();
-    if (notifier_thread_.joinable()) {
-        notifier_thread_.join();
-    }
+    shutdown_.store(true, std::memory_order_release);
 }
 
 RateLimitResult WaitableRateLimiter::check(
@@ -28,42 +20,35 @@ RateLimitResult WaitableRateLimiter::check(
     // If queuing disabled, return rejected immediately (backward compatible)
     if (!config_.queue_enabled) return result;
 
-    // Check queue capacity
-    uint32_t depth = current_queue_depth_.load(std::memory_order_relaxed);
-    if (depth >= config_.max_queue_depth) {
+    // Atomic queue depth check (fixes TOCTOU race: increment first, rollback if over)
+    uint32_t prev = current_queue_depth_.fetch_add(1, std::memory_order_relaxed);
+    if (prev >= config_.max_queue_depth) {
+        current_queue_depth_.fetch_sub(1, std::memory_order_relaxed);
         return result;  // Queue full
     }
 
-    // Enter queue
-    current_queue_depth_.fetch_add(1, std::memory_order_relaxed);
     total_queued_.fetch_add(1, std::memory_order_relaxed);
 
     auto deadline = std::chrono::steady_clock::now() + config_.queue_timeout;
 
-    // Wait loop: retry inner rate limiter until success or timeout
-    std::unique_lock lock(wait_mutex_);
-    while (std::chrono::steady_clock::now() < deadline) {
-        auto wait_time = std::min(
-            std::chrono::milliseconds(10),
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now()));
+    // Sleep-retry loop: each waiter sleeps independently (no mutex contention)
+    while (!shutdown_.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        auto sleep_time = std::min(std::chrono::milliseconds(10), remaining);
+        if (sleep_time <= std::chrono::milliseconds::zero()) break;
 
-        if (wait_time <= std::chrono::milliseconds::zero()) break;
+        std::this_thread::sleep_for(sleep_time);
 
-        wait_cv_.wait_for(lock, wait_time);
-
-        // Unlock while checking rate limiter (avoid holding lock during atomic CAS)
-        lock.unlock();
         result = inner_->check(user, database);
-        lock.lock();
-
         if (result.allowed) {
             current_queue_depth_.fetch_sub(1, std::memory_order_relaxed);
             return result;
         }
     }
 
-    // Timeout
+    // Timeout or shutdown
     current_queue_depth_.fetch_sub(1, std::memory_order_relaxed);
     total_timeouts_.fetch_add(1, std::memory_order_relaxed);
     return result;
@@ -87,13 +72,6 @@ void WaitableRateLimiter::set_user_database_limit(
 
 void WaitableRateLimiter::reset_all() {
     inner_->reset_all();
-}
-
-void WaitableRateLimiter::notifier_loop() {
-    while (!stop_notifier_.load(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        wait_cv_.notify_all();
-    }
 }
 
 } // namespace sqlproxy

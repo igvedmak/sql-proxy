@@ -813,6 +813,14 @@ AnalysisResult SQLAnalyzer::analyze(const ParsedQuery& parsed, void* parse_tree)
                 result.source_tables.push_back(table);
                 result.table_usage[table.full_name()] = TableUsage::READ;
             }
+        } else if (stmt_mask::test(parsed.type, stmt_mask::kDDL)) {
+            // DDL: tables are targets (structurally modified)
+            result.target_tables.push_back(table);
+            result.table_usage[table.full_name()] = TableUsage::WRITE;
+        } else {
+            // Unknown statement type: treat as read
+            result.source_tables.push_back(table);
+            result.table_usage[table.full_name()] = TableUsage::READ;
         }
     }
 

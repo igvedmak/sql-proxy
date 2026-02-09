@@ -37,14 +37,11 @@ if(ENABLE_MYSQL)
     pkg_check_modules(MYSQL REQUIRED mysqlclient)
 endif()
 
-# OpenSSL (required by Drogon)
+# OpenSSL (required by cpp-httplib TLS support)
 find_package(OpenSSL REQUIRED)
 
 # UUID library
 find_library(UUID_LIBRARY uuid REQUIRED)
-
-# Drogon framework
-find_package(Drogon REQUIRED)
 
 # ============================================================================
 # Third-party Header-only Libraries
@@ -140,7 +137,6 @@ set(INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/include
     ${XXHASH_INCLUDE_DIR}
     ${OPENSSL_INCLUDE_DIR}
-    ${Drogon_INCLUDE_DIRS}
 )
 
 if(ENABLE_POSTGRESQL)
@@ -170,9 +166,6 @@ target_link_libraries(${PROJECT_NAME}_lib PUBLIC
     # OpenSSL
     OpenSSL::SSL
     OpenSSL::Crypto
-
-    # Drogon
-    Drogon::Drogon
 
     # JSON
     glaze::glaze
@@ -336,7 +329,6 @@ if(ENABLE_MYSQL)
 endif()
 message(STATUS "")
 message(STATUS "Dependencies:")
-message(STATUS "  Drogon:         Found")
 message(STATUS "  xxHash:         ${XXHASH_INCLUDE_DIR}")
 message(STATUS "")
 message(STATUS "Install prefix:   ${CMAKE_INSTALL_PREFIX}")

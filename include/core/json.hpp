@@ -1,5 +1,13 @@
 #pragma once
 
+// GCC 13 emits false -Wmaybe-uninitialized warnings from std::variant move
+// constructors inside glaze's json_t. This is a known GCC bug with complex
+// variant instantiations at -O2/-O3. Suppress for this header only.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+
 #include <glaze/glaze.hpp>
 
 #include <cmath>
@@ -246,7 +254,7 @@ public:
     }
 
     [[nodiscard]] static JsonValue parse(const std::string& json_str) {
-        glz::json_t result;
+        glz::json_t result{};
         auto ec = glz::read_json(result, json_str);
         if (ec) {
             throw parse_error("JSON parse error");
@@ -277,3 +285,7 @@ private:
 };
 
 } // namespace sqlproxy
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif

@@ -22,6 +22,13 @@ static constexpr std::string_view kSchemaname = "schemaname";
 static constexpr std::string_view kAliasFld   = "alias";
 static constexpr std::string_view kAlias      = "Alias";
 static constexpr std::string_view kAliasname  = "aliasname";
+static constexpr std::string_view kDropStmt   = "DropStmt";
+static constexpr std::string_view kObjects    = "objects";
+static constexpr std::string_view kString     = "String";
+static constexpr std::string_view kList       = "List";
+static constexpr std::string_view kItems      = "items";
+static constexpr std::string_view kSval       = "sval";
+static constexpr std::string_view kStr        = "str";
 static constexpr char kDot = '.';
 
 // Static hash map for O(1) statement type lookup
@@ -268,6 +275,58 @@ static void find_range_vars(const JsonValue& node,
                 // O(1) duplicate check - insert returns {iterator, was_inserted}
                 if (seen_tables.insert(key).second) {
                     tables.emplace_back(std::move(schema_name), std::move(table_name), std::move(alias_name));
+                }
+            }
+        }
+
+        // DropStmt: table names are stored in "objects" as lists of String nodes,
+        // not as RangeVar. Without this, DROP TABLE bypasses policy evaluation
+        // because parsed.tables is empty → policy engine allows as "utility statement".
+        if (node.contains(kDropStmt)) {
+            const auto& drop_stmt = node[kDropStmt];
+            if (drop_stmt.is_object() && drop_stmt.contains(kObjects) && drop_stmt[kObjects].is_array()) {
+                for (const auto& obj : drop_stmt[kObjects]) {
+                    // Each object is a qualified name: either a JSON array of String nodes,
+                    // or {"List": {"items": [...]}} depending on libpg_query version.
+                    // Extract string parts from whichever format is present.
+                    auto extract_drop_names = [&](const JsonValue& arr) {
+                        std::string schema_name, table_name;
+                        for (const auto& item : arr) {
+                            if (!item.is_object() || !item.contains(kString)) continue;
+                            const auto& str_node = item[kString];
+                            std::string val;
+                            if (str_node.is_object()) {
+                                if (str_node.contains(kSval) && str_node[kSval].is_string()) {
+                                    val = str_node[kSval].get<std::string>();
+                                } else if (str_node.contains(kStr) && str_node[kStr].is_string()) {
+                                    val = str_node[kStr].get<std::string>();
+                                }
+                            }
+                            if (!val.empty()) {
+                                schema_name = std::move(table_name);
+                                table_name = std::move(val);
+                            }
+                        }
+                        if (!table_name.empty()) {
+                            std::string key;
+                            key.reserve(schema_name.size() + 1 + table_name.size());
+                            key = schema_name;
+                            key += kDot;
+                            key += table_name;
+                            if (seen_tables.insert(key).second) {
+                                tables.emplace_back(std::move(schema_name), std::move(table_name), std::string{});
+                            }
+                        }
+                    };
+
+                    if (obj.is_array()) {
+                        extract_drop_names(obj);
+                    } else if (obj.is_object() && obj.contains(kList) && obj[kList].is_object()) {
+                        const auto& list = obj[kList];
+                        if (list.contains(kItems) && list[kItems].is_array()) {
+                            extract_drop_names(list[kItems]);
+                        }
+                    }
                 }
             }
         }

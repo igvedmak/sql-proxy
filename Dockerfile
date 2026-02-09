@@ -26,22 +26,7 @@ RUN apt-get update && apt-get install -y \
 ENV CC=gcc-14
 ENV CXX=g++-14
 
-# Stage 2: Build Drogon (cached unless Drogon version changes)
-FROM base AS drogon-builder
-
-WORKDIR /build
-
-RUN git clone --depth 1 --branch v1.9.3 https://github.com/drogonframework/drogon.git && \
-    cd drogon && \
-    git submodule update --init && \
-    mkdir build && \
-    cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
-    make -j$(nproc) && \
-    make install && \
-    ldconfig
-
-# Stage 3: Build libpg_query (cached unless libpg_query source changes)
+# Stage 2: Build libpg_query (cached unless libpg_query source changes)
 FROM base AS libpgquery-builder
 
 WORKDIR /build
@@ -52,16 +37,8 @@ COPY third_party/libpg_query /build/libpg_query
 RUN cd /build/libpg_query && \
     make -j$(nproc)
 
-# Stage 4: Build SQL Proxy (only this rebuilds on code changes)
+# Stage 3: Build SQL Proxy (only this rebuilds on code changes)
 FROM base AS proxy-builder
-
-# Copy Drogon installation from drogon-builder stage
-COPY --from=drogon-builder /usr/local/lib/libdrogon* /usr/local/lib/
-COPY --from=drogon-builder /usr/local/lib/libtrantor* /usr/local/lib/
-COPY --from=drogon-builder /usr/local/lib/cmake /usr/local/lib/cmake
-COPY --from=drogon-builder /usr/local/include/drogon /usr/local/include/drogon
-COPY --from=drogon-builder /usr/local/include/trantor /usr/local/include/trantor
-RUN ldconfig
 
 WORKDIR /build/sql_proxy
 
@@ -86,7 +63,7 @@ RUN mkdir -p build && \
     cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" .. && \
     make -j$(nproc)
 
-# Stage 5: Build Catch2 (cached until CMakeLists.txt changes, survives src/ edits)
+# Stage 4: Build Catch2 (cached until CMakeLists.txt changes, survives src/ edits)
 FROM proxy-builder AS test-deps
 
 # Create a stub test file so cmake configure succeeds without real test sources
@@ -110,7 +87,7 @@ RUN cd build && \
 # Run tests
 RUN cd build && ./sql_proxy_tests --reporter compact
 
-# Stage 5b: Build benchmarks (optional, used by: docker build --target benchmark-builder)
+# Stage 4b: Build benchmarks (optional, used by: docker build --target benchmark-builder)
 FROM proxy-builder AS benchmark-builder
 
 # Copy test/benchmark sources
@@ -121,7 +98,7 @@ RUN cd build && \
     cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_BENCHMARKS=ON .. && \
     make -j$(nproc) sql_proxy_benchmarks
 
-# Stage 6: Runtime (minimal production image)
+# Stage 5: Runtime (minimal production image)
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -135,13 +112,6 @@ RUN apt-get update && apt-get install -y \
     uuid-runtime \
     curl \
     && rm -rf /var/lib/apt/lists/*
-
-# Copy Drogon shared libraries
-COPY --from=proxy-builder /usr/local/lib/libdrogon* /usr/local/lib/
-COPY --from=proxy-builder /usr/local/lib/libtrantor* /usr/local/lib/
-
-# Update library cache
-RUN ldconfig
 
 # Create application directory
 WORKDIR /app

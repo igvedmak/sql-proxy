@@ -3,9 +3,7 @@
 #include "server/irate_limiter.hpp"
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <memory>
-#include <mutex>
 #include <thread>
 
 namespace sqlproxy {
@@ -52,8 +50,6 @@ public:
     [[nodiscard]] uint32_t current_queue_depth() const { return current_queue_depth_.load(std::memory_order_relaxed); }
 
 private:
-    void notifier_loop();
-
     std::shared_ptr<IRateLimiter> inner_;
     Config config_;
 
@@ -61,12 +57,7 @@ private:
     std::atomic<uint64_t> total_queued_{0};
     std::atomic<uint64_t> total_timeouts_{0};
 
-    std::mutex wait_mutex_;
-    std::condition_variable wait_cv_;
-
-    // Background notifier thread wakes waiters periodically
-    std::thread notifier_thread_;
-    std::atomic<bool> stop_notifier_{false};
+    std::atomic<bool> shutdown_{false};
 };
 
 } // namespace sqlproxy
