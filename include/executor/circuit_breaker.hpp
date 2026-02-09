@@ -42,10 +42,10 @@ public:
         uint32_t half_open_max_calls;   // Max concurrent calls in HALF_OPEN
 
         Config()
-            : failure_threshold(10),
+            : failure_threshold(15),
               success_threshold(5),
-              timeout(60000),
-              half_open_max_calls(3) {}
+              timeout(5000),
+              half_open_max_calls(5) {}
     };
 
     /**

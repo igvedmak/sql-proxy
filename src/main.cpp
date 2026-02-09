@@ -294,8 +294,19 @@ int main(int argc, char* argv[]) {
             db_name = config_result.config.databases[0].name;
         }
 
-        utils::log::info(std::format("Creating circuit breaker for database: {}", db_name));
-        auto circuit_breaker = std::make_shared<CircuitBreaker>(db_name);
+        CircuitBreaker::Config cb_config;
+        if (config_result.success) {
+            const auto& cb = config_result.config.circuit_breaker;
+            cb_config.failure_threshold = static_cast<uint32_t>(cb.failure_threshold);
+            cb_config.success_threshold = static_cast<uint32_t>(cb.success_threshold);
+            cb_config.timeout = std::chrono::milliseconds(cb.timeout_ms);
+            cb_config.half_open_max_calls = static_cast<uint32_t>(cb.half_open_max_calls);
+        }
+        utils::log::info(std::format("Creating circuit breaker for database: {} "
+            "(threshold={}, timeout={}ms, half_open={})",
+            db_name, cb_config.failure_threshold,
+            cb_config.timeout.count(), cb_config.half_open_max_calls));
+        auto circuit_breaker = std::make_shared<CircuitBreaker>(db_name, cb_config);
 
         utils::log::info("Creating connection pool...");
         std::shared_ptr<IConnectionPool> pool;

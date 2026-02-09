@@ -89,10 +89,10 @@ struct LoggingConfig {
 
 struct CircuitBreakerConfig {
     bool enabled = true;
-    int failure_threshold = 10;
+    int failure_threshold = 15;
     int success_threshold = 5;
-    int timeout_ms = 60000;
-    int half_open_max_calls = 3;
+    int timeout_ms = 5000;
+    int half_open_max_calls = 5;
 };
 
 // ============================================================================

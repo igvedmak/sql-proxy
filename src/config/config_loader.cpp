@@ -1031,10 +1031,10 @@ CircuitBreakerConfig ConfigLoader::extract_circuit_breaker(const JsonValue& root
     }
     const auto cb = root["circuit_breaker"];
     cfg.enabled = json_bool(cb, kEnabled, true);
-    cfg.failure_threshold = json_int(cb, "failure_threshold", 10);
+    cfg.failure_threshold = json_int(cb, "failure_threshold", 15);
     cfg.success_threshold = json_int(cb, "success_threshold", 5);
-    cfg.timeout_ms = json_int(cb, "timeout_ms", 60000);
-    cfg.half_open_max_calls = json_int(cb, "half_open_max_calls", 3);
+    cfg.timeout_ms = json_int(cb, "timeout_ms", 5000);
+    cfg.half_open_max_calls = json_int(cb, "half_open_max_calls", 5);
     return cfg;
 }
 
