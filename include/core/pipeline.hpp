@@ -7,6 +7,7 @@
 #include "db/iquery_executor.hpp"
 #include "policy/policy_engine.hpp"
 #include "server/irate_limiter.hpp"
+#include <atomic>
 #include <memory>
 
 namespace sqlproxy {
@@ -91,6 +92,18 @@ public:
      * @brief Get result cache (for metrics)
      */
     std::shared_ptr<ResultCache> get_result_cache() const { return result_cache_; }
+
+    struct Stats {
+        uint64_t total_requests;
+        uint64_t requests_blocked;
+    };
+
+    [[nodiscard]] Stats get_stats() const {
+        return {
+            total_requests_.load(std::memory_order_relaxed),
+            requests_blocked_.load(std::memory_order_relaxed)
+        };
+    }
 
 private:
     /**
@@ -205,6 +218,9 @@ private:
     const std::shared_ptr<TenantManager> tenant_manager_;
     const std::shared_ptr<AuditSampler> audit_sampler_;
     const std::shared_ptr<ResultCache> result_cache_;
+
+    mutable std::atomic<uint64_t> total_requests_{0};
+    mutable std::atomic<uint64_t> requests_blocked_{0};
 };
 
 } // namespace sqlproxy

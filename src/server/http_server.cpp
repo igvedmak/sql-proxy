@@ -46,7 +46,7 @@ namespace {
                 if (pos == std::string_view::npos) return "";
                 
                 // Find closing quote
-                size_t end = json.find(quote_char, pos + 1);
+                const size_t end = json.find(quote_char, pos + 1);
                 if (end == std::string_view::npos) return "";
                 
                 return json.substr(pos + 1, end - pos - 1);
@@ -228,7 +228,7 @@ void HttpServer::start() {
 
         try {
             // Validate Content-Type
-            std::string content_type = req.get_header_value("Content-Type");
+            const std::string content_type = req.get_header_value("Content-Type");
             if (!content_type.contains(http::kJsonContentType)) {
                 res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(R"({"success":false,"error":"Content-Type must be application/json"})", http::kJsonContentType);
@@ -244,8 +244,8 @@ void HttpServer::start() {
             }
 
             // Parse request fields as string_view (zero-copy until validation passes)
-            auto sql_sv = parse_json_field(req.body, "sql");
-            auto database_sv = parse_json_field(req.body, "database");
+            const auto sql_sv = parse_json_field(req.body, "sql");
+            const auto database_sv = parse_json_field(req.body, "database");
 
             // Validate required field: sql
             if (sql_sv.empty()) {
@@ -268,10 +268,10 @@ void HttpServer::start() {
             std::optional<UserInfo> user_info;
             std::string user;
 
-            std::string auth_header = req.get_header_value(http::kAuthorizationHeader);
+            const std::string auth_header = req.get_header_value(http::kAuthorizationHeader);
                 if (auth_header.size() > http::kBearerPrefix.size() &&
                 std::string_view(auth_header).substr(0, http::kBearerPrefix.size()) == http::kBearerPrefix) {
-                std::string api_key(std::string_view(auth_header).substr(http::kBearerPrefix.size()));
+                const std::string api_key(std::string_view(auth_header).substr(http::kBearerPrefix.size()));
                 user_info = authenticate_api_key(api_key);
                 if (!user_info) {
                     res.status = httplib::StatusCode::Unauthorized_401;
@@ -281,7 +281,7 @@ void HttpServer::start() {
                 user = user_info->name;
             } else {
                 // Fallback: user from JSON body
-                auto user_sv = parse_json_field(req.body, "user");
+                const auto user_sv = parse_json_field(req.body, "user");
                 if (user_sv.empty()) {
                     res.status = httplib::StatusCode::BadRequest_400;
                     res.set_content(R"j({"success":false,"error":"Missing required field: user (or Authorization header)"})j", http::kJsonContentType);
@@ -299,7 +299,7 @@ void HttpServer::start() {
             }
 
             // Convert to owning strings only after validation passes
-            std::string sql(sql_sv);
+            const std::string sql(sql_sv);
             std::string database;
             if (!database_sv.empty()) {
                 database = std::string(database_sv);
@@ -326,7 +326,7 @@ void HttpServer::start() {
             proxy_req.tracestate = req.get_header_value("tracestate");
 
             // Execute through pipeline
-            auto response = pipeline_->execute(proxy_req);
+            const auto response = pipeline_->execute(proxy_req);
 
             // Propagate trace headers on response
             if (!response.traceparent.empty()) {
@@ -353,7 +353,7 @@ void HttpServer::start() {
                     httplib::StatusCode::PayloadTooLarge_413,      // RESULT_TOO_LARGE
                     httplib::StatusCode::Forbidden_403,            // SQLI_BLOCKED
                 };
-                auto idx = static_cast<size_t>(response.error_code);
+                const size_t idx = static_cast<size_t>(response.error_code);
                 res.status = (idx < std::size(kErrorToHttp))
                     ? kErrorToHttp[idx]
                     : httplib::StatusCode::InternalServerError_500;
@@ -361,7 +361,7 @@ void HttpServer::start() {
 
             // Gzip compression (if client supports it and response is large enough)
             if (compressor_.should_compress(json.size())) {
-                std::string accept_enc = req.get_header_value("Accept-Encoding");
+                const std::string accept_enc = req.get_header_value("Accept-Encoding");
                 if (accept_enc.contains("gzip")) {
                     if (auto compressed = compressor_.try_compress(json)) {
                         res.set_header("Content-Encoding", "gzip");
@@ -383,7 +383,7 @@ void HttpServer::start() {
 
     // GET /health - Health check
     svr.Get("/health", [](const httplib::Request&, httplib::Response& res) {
-        std::string health_json = R"({"status":"healthy","service":"sql-proxy"})";
+        const std::string health_json = R"({"status":"healthy","service":"sql-proxy"})";
         res.set_content(health_json, http::kJsonContentType);
     });
 
@@ -391,26 +391,25 @@ void HttpServer::start() {
     svr.Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
         std::string output;
 
-        // --- Rate limiter stats ---
-        auto rate_limiter = pipeline_->get_rate_limiter();
-        auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter.get());
-        if (hierarchical_rl) {
-            auto rl_stats = hierarchical_rl->get_stats();
+        // --- Pipeline-level stats (covers ALL block types) ---
+        const auto ps = pipeline_->get_stats();
+        const uint64_t allowed = (ps.total_requests > ps.requests_blocked)
+                         ? (ps.total_requests - ps.requests_blocked) : 0;
 
-            // Total requests (allowed = total - all rejects)
-            uint64_t total_rejects = rl_stats.global_rejects
-                                   + rl_stats.user_rejects
-                                   + rl_stats.database_rejects
-                                   + rl_stats.user_database_rejects;
-            uint64_t total_allowed = (rl_stats.total_checks > total_rejects)
-                                   ? (rl_stats.total_checks - total_rejects)
-                                   : 0;
+        output += std::format(
+            "# HELP sql_proxy_requests_total Total number of requests processed\n"
+            "# TYPE sql_proxy_requests_total counter\n"
+            "sql_proxy_requests_total{{status=\"allowed\"}} {}\n"
+            "sql_proxy_requests_total{{status=\"blocked\"}} {}\n\n",
+            allowed, ps.requests_blocked);
+
+        // --- Rate limiter stats ---
+        const auto rate_limiter = pipeline_->get_rate_limiter();
+        const auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter.get());
+        if (hierarchical_rl) {
+            const auto rl_stats = hierarchical_rl->get_stats();
 
             output += std::format(
-                "# HELP sql_proxy_requests_total Total number of requests processed\n"
-                "# TYPE sql_proxy_requests_total counter\n"
-                "sql_proxy_requests_total{{status=\"allowed\"}} {}\n"
-                "sql_proxy_requests_total{{status=\"blocked\"}} {}\n\n"
                 "# HELP sql_proxy_rate_limit_total Rate limit rejections by level\n"
                 "# TYPE sql_proxy_rate_limit_total counter\n"
                 "sql_proxy_rate_limit_total{{level=\"global\"}} {}\n"
@@ -420,14 +419,13 @@ void HttpServer::start() {
                 "# HELP sql_proxy_rate_limit_checks_total Total rate limit checks performed\n"
                 "# TYPE sql_proxy_rate_limit_checks_total counter\n"
                 "sql_proxy_rate_limit_checks_total {}\n\n",
-                total_allowed, total_rejects,
                 rl_stats.global_rejects, rl_stats.user_rejects,
                 rl_stats.database_rejects, rl_stats.user_database_rejects,
                 rl_stats.total_checks);
         }
 
         // --- Queue stats (if WaitableRateLimiter wraps the rate limiter) ---
-        auto* waitable_rl = dynamic_cast<WaitableRateLimiter*>(rate_limiter.get());
+        const auto* waitable_rl = dynamic_cast<WaitableRateLimiter*>(rate_limiter.get());
         if (waitable_rl) {
             output += std::format(
                 "# HELP sql_proxy_queue_depth Current requests waiting in queue\n"
@@ -445,9 +443,9 @@ void HttpServer::start() {
         }
 
         // --- Audit emitter stats ---
-        auto audit_emitter = pipeline_->get_audit_emitter();
+        const auto audit_emitter = pipeline_->get_audit_emitter();
         if (audit_emitter) {
-            auto audit_stats = audit_emitter->get_stats();
+            const auto audit_stats = audit_emitter->get_stats();
 
             output += std::format(
                 "# HELP sql_proxy_audit_emitted_total Audit records pushed to ring buffer\n"
@@ -467,9 +465,9 @@ void HttpServer::start() {
         }
 
         // --- Result cache stats ---
-        auto result_cache = pipeline_->get_result_cache();
+        const auto result_cache = pipeline_->get_result_cache();
         if (result_cache && result_cache->is_enabled()) {
-            auto cache_stats = result_cache->get_stats();
+            const auto cache_stats = result_cache->get_stats();
             output += std::format(
                 "# HELP sql_proxy_cache_hits_total Cache hit count\n"
                 "# TYPE sql_proxy_cache_hits_total counter\n"
@@ -500,7 +498,7 @@ void HttpServer::start() {
         try {
             // Validate admin token if configured
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                const auto auth = req.get_header_value(http::kAuthorizationHeader);
                         if (auth.size() <= http::kBearerPrefix.size() ||
                     std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
                     std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
@@ -511,8 +509,8 @@ void HttpServer::start() {
             }
 
             // Load policies from config file
-            std::string config_path = "config/proxy.toml";
-            auto load_result = PolicyLoader::load_from_file(config_path);
+            const std::string config_path = "config/proxy.toml";
+            const auto load_result = PolicyLoader::load_from_file(config_path);
 
             if (!load_result.success) {
                 res.status = httplib::StatusCode::BadRequest_400;
@@ -544,7 +542,7 @@ void HttpServer::start() {
     // GET /api/v1/compliance/pii-report - PII access report (admin only)
     svr.Get("/api/v1/compliance/pii-report", [this](const httplib::Request& req, httplib::Response& res) {
         if (!admin_token_.empty()) {
-            auto auth = req.get_header_value(http::kAuthorizationHeader);
+            const auto auth = req.get_header_value(http::kAuthorizationHeader);
                 if (auth.size() <= http::kBearerPrefix.size() ||
                 std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
                 std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
@@ -558,14 +556,14 @@ void HttpServer::start() {
             res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", http::kJsonContentType);
             return;
         }
-        auto report = compliance_reporter_->generate_pii_report();
+        const auto report = compliance_reporter_->generate_pii_report();
         res.set_content(ComplianceReporter::pii_report_to_json(report), http::kJsonContentType);
     });
 
     // GET /api/v1/compliance/security-summary - Security overview (admin only)
     svr.Get("/api/v1/compliance/security-summary", [this](const httplib::Request& req, httplib::Response& res) {
         if (!admin_token_.empty()) {
-            auto auth = req.get_header_value(http::kAuthorizationHeader);
+            const auto auth = req.get_header_value(http::kAuthorizationHeader);
                 if (auth.size() <= http::kBearerPrefix.size() ||
                 std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
                 std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
@@ -579,14 +577,14 @@ void HttpServer::start() {
             res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", http::kJsonContentType);
             return;
         }
-        auto summary = compliance_reporter_->generate_security_summary();
+        const auto summary = compliance_reporter_->generate_security_summary();
         res.set_content(ComplianceReporter::security_summary_to_json(summary), http::kJsonContentType);
     });
 
     // GET /api/v1/compliance/lineage - Data lineage summaries (admin only)
     svr.Get("/api/v1/compliance/lineage", [this](const httplib::Request& req, httplib::Response& res) {
         if (!admin_token_.empty()) {
-            auto auth = req.get_header_value(http::kAuthorizationHeader);
+            const auto auth = req.get_header_value(http::kAuthorizationHeader);
                 if (auth.size() <= http::kBearerPrefix.size() ||
                 std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
                 std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
@@ -600,7 +598,7 @@ void HttpServer::start() {
             res.set_content(R"({"success":false,"error":"Lineage tracker not configured"})", http::kJsonContentType);
             return;
         }
-        auto summaries = lineage_tracker_->get_summaries();
+        const auto summaries = lineage_tracker_->get_summaries();
         std::string json = "{\"summaries\":[";
         for (size_t i = 0; i < summaries.size(); ++i) {
             if (i > 0) json += ",";
@@ -624,9 +622,9 @@ void HttpServer::start() {
         svr.Post("/api/v1/graphql", [this](const httplib::Request& req, httplib::Response& res) {
             try {
                 // Extract fields from GraphQL JSON body: {"query": "...", "user": "...", "database": "..."}
-                auto query_sv = parse_json_field(req.body, "query");
-                auto user_sv = parse_json_field(req.body, "user");
-                auto db_sv = parse_json_field(req.body, "database");
+                const auto query_sv = parse_json_field(req.body, "query");
+                const auto user_sv = parse_json_field(req.body, "user");
+                const auto db_sv = parse_json_field(req.body, "database");
 
                 if (query_sv.empty()) {
                     res.status = httplib::StatusCode::BadRequest_400;
@@ -634,15 +632,15 @@ void HttpServer::start() {
                     return;
                 }
 
-                std::string user = user_sv.empty() ? "anonymous" : std::string(user_sv);
-                std::string database = db_sv.empty() ? "testdb" : std::string(db_sv);
+                const std::string user = user_sv.empty() ? "anonymous" : std::string(user_sv);
+                const std::string database = db_sv.empty() ? "testdb" : std::string(db_sv);
 
                 // Validate user if configured
-                auto user_info = validate_user(user);
+                const auto user_info = validate_user(user);
                 std::vector<std::string> roles;
                 if (user_info) roles = user_info->roles;
 
-                auto result_json = graphql_handler_->execute(
+                const auto result_json = graphql_handler_->execute(
                     std::string(query_sv), user, roles, database);
                 res.set_content(result_json, http::kJsonContentType);
             } catch (const std::exception& e) {
@@ -661,7 +659,7 @@ void HttpServer::start() {
         // GET /api/v1/schema/history
         svr.Get("/api/v1/schema/history", [this](const httplib::Request& req, httplib::Response& res) {
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                const auto auth = req.get_header_value(http::kAuthorizationHeader);
                         if (auth.size() <= http::kBearerPrefix.size() ||
                     std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
                     std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
@@ -670,7 +668,7 @@ void HttpServer::start() {
                     return;
                 }
             }
-            auto history = schema_manager_->get_history();
+            const auto history = schema_manager_->get_history();
             std::string json = "{\"history\":[";
             for (size_t i = 0; i < history.size(); ++i) {
                 if (i > 0) json += ",";
@@ -687,7 +685,7 @@ void HttpServer::start() {
         // GET /api/v1/schema/pending
         svr.Get("/api/v1/schema/pending", [this](const httplib::Request& req, httplib::Response& res) {
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                const auto auth = req.get_header_value(http::kAuthorizationHeader);
                         if (auth.size() <= http::kBearerPrefix.size() ||
                     std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
                     std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
@@ -696,7 +694,7 @@ void HttpServer::start() {
                     return;
                 }
             }
-            auto pending = schema_manager_->get_pending();
+            const auto pending = schema_manager_->get_pending();
             std::string json = "{\"pending\":[";
             for (size_t i = 0; i < pending.size(); ++i) {
                 if (i > 0) json += ",";
@@ -713,7 +711,7 @@ void HttpServer::start() {
         // POST /api/v1/schema/approve - body: {"id": "...", "admin": "..."}
         svr.Post("/api/v1/schema/approve", [this](const httplib::Request& req, httplib::Response& res) {
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                const auto auth = req.get_header_value(http::kAuthorizationHeader);
                         if (auth.size() <= http::kBearerPrefix.size() ||
                     std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
                     std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
@@ -722,14 +720,14 @@ void HttpServer::start() {
                     return;
                 }
             }
-            auto id = std::string(parse_json_field(req.body, "id"));
-            auto admin = std::string(parse_json_field(req.body, "admin"));
+            const auto id = std::string(parse_json_field(req.body, "id"));
+            const auto admin = std::string(parse_json_field(req.body, "admin"));
             if (id.empty()) {
                 res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(R"({"success":false,"error":"Missing field: id"})", http::kJsonContentType);
                 return;
             }
-            bool ok = schema_manager_->approve(id, admin.empty() ? "admin" : admin);
+            const bool ok = schema_manager_->approve(id, admin.empty() ? "admin" : admin);
             res.set_content(
                 std::format(R"({{"success":{}}})", ok ? "true" : "false"),
                 http::kJsonContentType);
@@ -738,7 +736,7 @@ void HttpServer::start() {
         // POST /api/v1/schema/reject - body: {"id": "...", "admin": "..."}
         svr.Post("/api/v1/schema/reject", [this](const httplib::Request& req, httplib::Response& res) {
             if (!admin_token_.empty()) {
-                auto auth = req.get_header_value(http::kAuthorizationHeader);
+                const auto auth = req.get_header_value(http::kAuthorizationHeader);
                         if (auth.size() <= http::kBearerPrefix.size() ||
                     std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
                     std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
@@ -747,14 +745,14 @@ void HttpServer::start() {
                     return;
                 }
             }
-            auto id = std::string(parse_json_field(req.body, "id"));
-            auto admin = std::string(parse_json_field(req.body, "admin"));
+            const auto id = std::string(parse_json_field(req.body, "id"));
+            const auto admin = std::string(parse_json_field(req.body, "admin"));
             if (id.empty()) {
                 res.status = httplib::StatusCode::BadRequest_400;
                 res.set_content(R"({"success":false,"error":"Missing field: id"})", http::kJsonContentType);
                 return;
             }
-            bool ok = schema_manager_->reject(id, admin.empty() ? "admin" : admin);
+            const bool ok = schema_manager_->reject(id, admin.empty() ? "admin" : admin);
             res.set_content(
                 std::format(R"({{"success":{}}})", ok ? "true" : "false"),
                 http::kJsonContentType);
@@ -774,9 +772,9 @@ void HttpServer::start() {
         } shutdown_guard{shutdown_coordinator_.get()};
 
         try {
-            auto sql_sv = parse_json_field(req.body, "sql");
-            auto user_sv = parse_json_field(req.body, "user");
-            auto db_sv = parse_json_field(req.body, "database");
+            const auto sql_sv = parse_json_field(req.body, "sql");
+            const auto user_sv = parse_json_field(req.body, "user");
+            const auto db_sv = parse_json_field(req.body, "database");
 
             if (sql_sv.empty()) {
                 res.status = httplib::StatusCode::BadRequest_400;
@@ -784,10 +782,10 @@ void HttpServer::start() {
                 return;
             }
 
-            std::string user = user_sv.empty() ? "anonymous" : std::string(user_sv);
-            std::string database = db_sv.empty() ? "testdb" : std::string(db_sv);
+            const std::string user = user_sv.empty() ? "anonymous" : std::string(user_sv);
+            const std::string database = db_sv.empty() ? "testdb" : std::string(db_sv);
 
-            auto user_info = validate_user(user);
+            const auto user_info = validate_user(user);
             std::vector<std::string> roles;
             if (user_info) roles = user_info->roles;
 
@@ -799,9 +797,9 @@ void HttpServer::start() {
             proxy_req.database = database;
             proxy_req.dry_run = true;
 
-            auto response = pipeline_->execute(proxy_req);
+            const auto response = pipeline_->execute(proxy_req);
 
-            std::string json = std::format(
+            const std::string json = std::format(
                 R"({{"dry_run":true,"would_succeed":{},"policy_decision":"{}","matched_policy":"{}","shadow_blocked":{}{}}})",
                 response.success ? "true" : "false",
                 decision_to_string(response.policy_decision),

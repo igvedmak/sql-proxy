@@ -70,19 +70,24 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
 
         std::string json = "{";
 
+        // Pipeline stats (total requests and blocks across all layers)
+        const auto ps = pipeline_->get_stats();
+        const uint64_t allowed = (ps.total_requests > ps.requests_blocked)
+                         ? (ps.total_requests - ps.requests_blocked) : 0;
+
         // Rate limiter stats
+        uint64_t rate_limit_rejects = 0;
         auto rate_limiter = pipeline_->get_rate_limiter();
         auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter.get());
         if (hierarchical_rl) {
             const auto rl = hierarchical_rl->get_stats();
-            const uint64_t total_rejects = rl.global_rejects + rl.user_rejects
-                                   + rl.database_rejects + rl.user_database_rejects;
-            const uint64_t allowed = (rl.total_checks > total_rejects)
-                             ? (rl.total_checks - total_rejects) : 0;
-            json += std::format(
-                "\"requests_allowed\":{},\"requests_blocked\":{},\"rate_limit_rejects\":{},",
-                allowed, total_rejects, total_rejects);
+            rate_limit_rejects = rl.global_rejects + rl.user_rejects
+                               + rl.database_rejects + rl.user_database_rejects;
         }
+
+        json += std::format(
+            "\"requests_allowed\":{},\"requests_blocked\":{},\"rate_limit_rejects\":{},",
+            allowed, ps.requests_blocked, rate_limit_rejects);
 
         // Audit stats
         const auto audit = pipeline_->get_audit_emitter();

@@ -97,22 +97,28 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         }
     }
 
+    total_requests_.fetch_add(1, std::memory_order_relaxed);
+
+    // Helper: emit audit and build response for blocked requests
+    auto block_and_respond = [this](RequestContext& c) {
+        requests_blocked_.fetch_add(1, std::memory_order_relaxed);
+        emit_audit(c);
+        return build_response(c);
+    };
+
     // Layer 1: Rate limiting
     if (!check_rate_limit(ctx)) {
-        emit_audit(ctx);
-        return build_response(ctx);
+        return block_and_respond(ctx);
     }
 
     // Layer 2: Parse + Cache
     if (!parse_query(ctx)) {
-        emit_audit(ctx);
-        return build_response(ctx);
+        return block_and_respond(ctx);
     }
 
     // Layer 3: Analyze
     if (!analyze_query(ctx)) {
-        emit_audit(ctx);
-        return build_response(ctx);
+        return block_and_respond(ctx);
     }
 
     // Layer 2.5: Result cache lookup (only for SELECTs)
@@ -133,8 +139,7 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
     // Layer 3.5: SQL injection detection (can block)
     if (!check_injection(ctx)) {
-        emit_audit(ctx);
-        return build_response(ctx);
+        return block_and_respond(ctx);
     }
 
     // Layer 3.7: Anomaly detection (informational, never blocks)
@@ -142,14 +147,12 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
     // Layer 4: Policy evaluation (table-level)
     if (!evaluate_policy(ctx)) {
-        emit_audit(ctx);
-        return build_response(ctx);
+        return block_and_respond(ctx);
     }
 
     // Layer 4.1: Schema DDL interception (can block if approval required)
     if (!intercept_ddl(ctx)) {
-        emit_audit(ctx);
-        return build_response(ctx);
+        return block_and_respond(ctx);
     }
 
     // Layer 4.5: Query rewriting (RLS + enforce_limit)
