@@ -1489,11 +1489,12 @@ ProxyConfig ConfigLoader::extract_all_sections(const JsonValue& json) {
     config.tracing = extract_tracing(json);
     config.adaptive_rate_limiting = extract_adaptive_rate_limiting(json);
     config.priority = extract_priority(json);
+    config.routes = extract_routes(json);
     return config;
 }
 
 ConfigLoader::LoadResult ConfigLoader::validate_and_return(ProxyConfig config) {
-    auto errors = validate_config(config);
+    const auto errors = validate_config(config);
     if (!errors.empty()) {
         std::string combined = "Config validation failed:";
         for (const auto& err : errors) { combined += "\n  - "; combined += err; }
@@ -1672,6 +1673,38 @@ ProxyConfig::PriorityConfig ConfigLoader::extract_priority(const JsonValue& root
     const auto s = root["priority"];
 
     cfg.enabled = json_bool(s, kEnabled, false);
+    return cfg;
+}
+
+// ============================================================================
+// Route Config Extractor
+// ============================================================================
+
+RouteConfig ConfigLoader::extract_routes(const JsonValue& root) {
+    RouteConfig cfg;
+    if (!root.contains("routes")) return cfg;
+    const auto routes = root["routes"];
+
+    cfg.query              = json_string(routes, "query",              cfg.query);
+    cfg.dry_run            = json_string(routes, "dry_run",            cfg.dry_run);
+    cfg.health             = json_string(routes, "health",             cfg.health);
+    cfg.metrics            = json_string(routes, "metrics",            cfg.metrics);
+    cfg.openapi_spec       = json_string(routes, "openapi_spec",       cfg.openapi_spec);
+    cfg.swagger_ui         = json_string(routes, "swagger_ui",         cfg.swagger_ui);
+    cfg.policies_reload    = json_string(routes, "policies_reload",    cfg.policies_reload);
+    cfg.config_validate    = json_string(routes, "config_validate",    cfg.config_validate);
+    cfg.slow_queries       = json_string(routes, "slow_queries",       cfg.slow_queries);
+    cfg.circuit_breakers   = json_string(routes, "circuit_breakers",   cfg.circuit_breakers);
+    cfg.pii_report         = json_string(routes, "pii_report",         cfg.pii_report);
+    cfg.security_summary   = json_string(routes, "security_summary",   cfg.security_summary);
+    cfg.lineage            = json_string(routes, "lineage",            cfg.lineage);
+    cfg.data_subject_access = json_string(routes, "data_subject_access", cfg.data_subject_access);
+    cfg.schema_history     = json_string(routes, "schema_history",     cfg.schema_history);
+    cfg.schema_pending     = json_string(routes, "schema_pending",     cfg.schema_pending);
+    cfg.schema_approve     = json_string(routes, "schema_approve",     cfg.schema_approve);
+    cfg.schema_reject      = json_string(routes, "schema_reject",      cfg.schema_reject);
+    cfg.schema_drift       = json_string(routes, "schema_drift",       cfg.schema_drift);
+    cfg.graphql            = json_string(routes, "graphql",            cfg.graphql);
     return cfg;
 }
 

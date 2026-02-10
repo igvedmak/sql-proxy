@@ -128,4 +128,40 @@ struct AuditConfig {
           fsync_interval_batches(10) {}
 };
 
+// ============================================================================
+// Route Configuration (config-driven URL patterns)
+// ============================================================================
+
+struct RouteConfig {
+    // Core
+    std::string query           = "/api/v1/query";
+    std::string dry_run         = "/api/v1/query/dry-run";
+    std::string health          = "/health";
+    std::string metrics         = "/metrics";
+    std::string openapi_spec    = "/openapi.json";
+    std::string swagger_ui      = "/api/docs";
+
+    // Admin
+    std::string policies_reload = "/policies/reload";
+    std::string config_validate = "/api/v1/config/validate";
+    std::string slow_queries    = "/api/v1/slow-queries";
+    std::string circuit_breakers = "/api/v1/circuit-breakers";
+
+    // Compliance
+    std::string pii_report          = "/api/v1/compliance/pii-report";
+    std::string security_summary    = "/api/v1/compliance/security-summary";
+    std::string lineage             = "/api/v1/compliance/lineage";
+    std::string data_subject_access = "/api/v1/compliance/data-subject-access";
+
+    // Schema
+    std::string schema_history  = "/api/v1/schema/history";
+    std::string schema_pending  = "/api/v1/schema/pending";
+    std::string schema_approve  = "/api/v1/schema/approve";
+    std::string schema_reject   = "/api/v1/schema/reject";
+    std::string schema_drift    = "/api/v1/schema/drift";
+
+    // Optional
+    std::string graphql         = "/api/v1/graphql";
+};
+
 } // namespace sqlproxy

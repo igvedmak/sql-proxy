@@ -343,6 +343,9 @@ struct ProxyConfig {
     struct PriorityConfig {
         bool enabled = false;
     } priority;
+
+    // Route paths (config-driven URL patterns)
+    RouteConfig routes;
 };
 
 // ============================================================================
@@ -482,6 +485,9 @@ private:
     static ProxyConfig::TracingConfig extract_tracing(const JsonValue& root);
     static ProxyConfig::AdaptiveRateLimitingConfig extract_adaptive_rate_limiting(const JsonValue& root);
     static ProxyConfig::PriorityConfig extract_priority(const JsonValue& root);
+
+    // Route config extractor
+    static RouteConfig extract_routes(const JsonValue& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

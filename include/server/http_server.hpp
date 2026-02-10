@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/pipeline.hpp"
+#include "config/config_types.hpp"
 #include "server/response_compressor.hpp"
 #include <atomic>
 #include <memory>
@@ -8,6 +9,13 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+// Forward-declare httplib types (avoids pulling in massive header-only library)
+namespace httplib {
+struct Request;
+struct Response;
+class Server;
+}
 
 namespace sqlproxy {
 
@@ -43,11 +51,8 @@ struct UserInfo {
 /**
  * @brief HTTP server for SQL proxy
  *
- * Routes:
- * - POST /api/v1/query - Execute SELECT queries
- * - POST /api/v1/execute - Execute DML/DDL
- * - GET /health - Health check
- * - GET /metrics - Metrics endpoint
+ * Route paths are config-driven via RouteConfig (loaded from [routes] in TOML).
+ * Handler methods are grouped by domain: core, admin, compliance, schema.
  *
  * Hot-reloadable state (via ConfigWatcher):
  * - users_: User registry (shared_mutex protected)
@@ -55,16 +60,6 @@ struct UserInfo {
  */
 class HttpServer {
 public:
-    /**
-     * @brief Construct HTTP server
-     * @param pipeline Request pipeline
-     * @param host Bind host (default: 0.0.0.0)
-     * @param port Bind port (default: 8080)
-     * @param users User registry for authentication (optional)
-     * @param admin_token Bearer token for admin endpoints (empty = no auth required)
-     * @param max_sql_length Max SQL query size in bytes (default: 100KB)
-     * @param tls_config TLS/mTLS configuration (default: disabled)
-     */
     explicit HttpServer(
         std::shared_ptr<Pipeline> pipeline,
         std::string host = "0.0.0.0",
@@ -78,65 +73,69 @@ public:
         std::shared_ptr<GraphQLHandler> graphql_handler = nullptr,
         std::shared_ptr<DashboardHandler> dashboard_handler = nullptr,
         TlsConfig tls_config = {},
-        ResponseCompressor::Config compressor_config = ResponseCompressor::Config{}
+        ResponseCompressor::Config compressor_config = ResponseCompressor::Config{},
+        RouteConfig routes = {}
     );
 
-    /**
-     * @brief Start server (blocking)
-     */
     void start();
-
-    /**
-     * @brief Stop server
-     */
     void stop();
 
-    /**
-     * @brief Hot-reload users (thread-safe, zero-downtime)
-     * In-flight requests use old users; new requests get updated users.
-     */
     void update_users(std::unordered_map<std::string, UserInfo> new_users);
-
-    /**
-     * @brief Hot-reload max SQL length (thread-safe, atomic)
-     */
     void update_max_sql_length(size_t new_max) { max_sql_length_.store(new_max); }
 
     void set_shutdown_coordinator(std::shared_ptr<ShutdownCoordinator> sc) {
         shutdown_coordinator_ = std::move(sc);
     }
-
     void set_brute_force_protector(std::shared_ptr<BruteForceProtector> bfp) {
         brute_force_protector_ = std::move(bfp);
     }
-
     void set_schema_drift_detector(std::shared_ptr<SchemaDriftDetector> sdd) {
         schema_drift_detector_ = std::move(sdd);
     }
 
 private:
-    /**
-     * @brief Validate user exists and resolve roles
-     * @return UserInfo if valid, nullopt if unknown user
-     */
+    // ── Authentication ──────────────────────────────────────────────────
     std::optional<UserInfo> validate_user(const std::string& username) const;
-
-    /**
-     * @brief Authenticate via Bearer token
-     * @return UserInfo if valid API key, nullopt if invalid
-     */
     std::optional<UserInfo> authenticate_api_key(const std::string& api_key) const;
-
-    /**
-     * @brief Rebuild API key reverse index (caller must hold unique_lock)
-     */
     void rebuild_api_key_index();
 
+    // ── Route registration (called from start()) ────────────────────────
+    void register_core_routes(httplib::Server& svr);
+    void register_admin_routes(httplib::Server& svr);
+    void register_compliance_routes(httplib::Server& svr);
+    void register_schema_routes(httplib::Server& svr);
+    void register_optional_routes(httplib::Server& svr);
+
+    // ── Handler methods (one per endpoint) ──────────────────────────────
+    void handle_query(const httplib::Request& req, httplib::Response& res);
+    void handle_dry_run(const httplib::Request& req, httplib::Response& res);
+    void handle_health(const httplib::Request& req, httplib::Response& res);
+    void handle_metrics(const httplib::Request& req, httplib::Response& res);
+    void handle_policies_reload(const httplib::Request& req, httplib::Response& res);
+    void handle_config_validate(const httplib::Request& req, httplib::Response& res);
+    void handle_slow_queries(const httplib::Request& req, httplib::Response& res);
+    void handle_circuit_breakers(const httplib::Request& req, httplib::Response& res);
+    void handle_pii_report(const httplib::Request& req, httplib::Response& res);
+    void handle_security_summary(const httplib::Request& req, httplib::Response& res);
+    void handle_lineage(const httplib::Request& req, httplib::Response& res);
+    void handle_data_subject_access(const httplib::Request& req, httplib::Response& res);
+    void handle_schema_history(const httplib::Request& req, httplib::Response& res);
+    void handle_schema_pending(const httplib::Request& req, httplib::Response& res);
+    void handle_schema_approve(const httplib::Request& req, httplib::Response& res);
+    void handle_schema_reject(const httplib::Request& req, httplib::Response& res);
+    void handle_schema_drift(const httplib::Request& req, httplib::Response& res);
+    void handle_graphql(const httplib::Request& req, httplib::Response& res);
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+    std::string build_metrics_output();
+
+    // ── Members ─────────────────────────────────────────────────────────
     std::shared_ptr<Pipeline> pipeline_;
     const std::string host_;
     const int port_;
     const std::string admin_token_;
     const TlsConfig tls_config_;
+    const RouteConfig routes_;
 
     // Hot-reloadable state
     std::unordered_map<std::string, UserInfo> users_;

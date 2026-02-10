@@ -699,3 +699,29 @@ throttle_threshold_ms = 200
 
 [priority]
 enabled = true
+
+# ============================================================================
+# Route Configuration (URL paths for all API endpoints)
+# ============================================================================
+
+[routes]
+query                = "/api/v1/query"
+dry_run              = "/api/v1/query/dry-run"
+health               = "/health"
+metrics              = "/metrics"
+openapi_spec         = "/openapi.json"
+swagger_ui           = "/api/docs"
+policies_reload      = "/policies/reload"
+config_validate      = "/api/v1/config/validate"
+slow_queries         = "/api/v1/slow-queries"
+circuit_breakers     = "/api/v1/circuit-breakers"
+pii_report           = "/api/v1/compliance/pii-report"
+security_summary     = "/api/v1/compliance/security-summary"
+lineage              = "/api/v1/compliance/lineage"
+data_subject_access  = "/api/v1/compliance/data-subject-access"
+schema_history       = "/api/v1/schema/history"
+schema_pending       = "/api/v1/schema/pending"
+schema_approve       = "/api/v1/schema/approve"
+schema_reject        = "/api/v1/schema/reject"
+schema_drift         = "/api/v1/schema/drift"
+graphql              = "/api/v1/graphql"

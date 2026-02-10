@@ -683,7 +683,8 @@ int main(int argc, char* argv[]) {
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
             config_result.config.server.admin_token, max_sql_length,
             compliance_reporter, lineage_tracker, schema_manager, graphql_handler,
-            dashboard_handler, config_result.config.server.tls, compressor_config);
+            dashboard_handler, config_result.config.server.tls, compressor_config,
+            config_result.config.routes);
 
         // Tier B: Graceful shutdown coordinator
         ShutdownCoordinator::Config shutdown_cfg;
