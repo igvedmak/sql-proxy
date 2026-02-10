@@ -120,7 +120,7 @@ std::shared_ptr<SchemaMap> PgSchemaLoader::load_schema(const std::string& conn_s
         // Record the column index for fast name-based lookup
         const size_t col_index = current_table->columns.size();
         current_table->column_index[col.name] = col_index;
-        current_table->columns.push_back(std::move(col));
+        current_table->columns.emplace_back(std::move(col));
     }
 
     // Don't forget the last table

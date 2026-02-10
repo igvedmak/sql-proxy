@@ -408,37 +408,37 @@ TEST_CASE("PolicyScope specificity scoring", "[policy]") {
         REQUIRE(scope.specificity() == 1);
     }
 
-    SECTION("Schema only = specificity 10") {
+    SECTION("Schema only = specificity 2") {
         PolicyScope scope;
         scope.schema = "public";
-        REQUIRE(scope.specificity() == 10);
+        REQUIRE(scope.specificity() == 2);  // schema bit(1)
     }
 
-    SECTION("Table only = specificity 100") {
+    SECTION("Table only = specificity 4") {
         PolicyScope scope;
         scope.table = "users";
-        REQUIRE(scope.specificity() == 100);
+        REQUIRE(scope.specificity() == 4);  // table bit(2)
     }
 
-    SECTION("Database + schema = specificity 11") {
+    SECTION("Database + schema = specificity 3") {
         PolicyScope scope;
         scope.database = "mydb";
         scope.schema = "public";
-        REQUIRE(scope.specificity() == 11);
+        REQUIRE(scope.specificity() == 3);  // db(1) | schema(2)
     }
 
-    SECTION("Database + schema + table = specificity 111") {
+    SECTION("Database + schema + table = specificity 7") {
         PolicyScope scope;
         scope.database = "mydb";
         scope.schema = "public";
         scope.table = "users";
-        REQUIRE(scope.specificity() == 111);
+        REQUIRE(scope.specificity() == 7);  // db(1) | schema(2) | table(4)
     }
 
-    SECTION("Schema + table = specificity 110") {
+    SECTION("Schema + table = specificity 6") {
         PolicyScope scope;
         scope.schema = "public";
         scope.table = "users";
-        REQUIRE(scope.specificity() == 110);
+        REQUIRE(scope.specificity() == 6);  // schema(2) | table(4)
     }
 }

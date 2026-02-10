@@ -170,7 +170,7 @@ QueryResult QueryExecutor::execute_select(const std::string& sql) {
             const char* val = PQgetvalue(res, i, j);
             row.push_back(val ? val : "");
         }
-        result.rows.push_back(std::move(row));
+        result.rows.emplace_back(std::move(row));
     }
 
     PQclear(res);

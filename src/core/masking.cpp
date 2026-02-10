@@ -90,7 +90,7 @@ std::vector<MaskingRecord> MaskingEngine::apply(
             continue;
         }
 
-        auto it = col_idx.find(decision.column_name);
+        const auto it = col_idx.find(decision.column_name);
         if (it == col_idx.end()) continue;
         const size_t idx = it->second;
 

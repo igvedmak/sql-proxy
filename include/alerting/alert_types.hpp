@@ -10,6 +10,15 @@
 
 namespace sqlproxy {
 
+namespace keys {
+    inline constexpr std::string_view RATE_LIMIT_BREACH     = "rate_limit_breach";
+    inline constexpr std::string_view POLICY_VIOLATION_SPIKE = "policy_violation_spike";
+    inline constexpr std::string_view CIRCUIT_BREAKER_OPEN   = "circuit_breaker_open";
+    inline constexpr std::string_view PII_EXPOSURE_SPIKE     = "pii_exposure_spike";
+    inline constexpr std::string_view AUDIT_BUFFER_OVERFLOW  = "audit_buffer_overflow";
+    inline constexpr std::string_view CUSTOM_METRIC          = "custom_metric";
+}
+
 enum class AlertCondition {
     RATE_LIMIT_BREACH,
     POLICY_VIOLATION_SPIKE,
@@ -59,26 +68,28 @@ struct AlertingConfig {
     std::string alert_log_file = "alerts.jsonl";
 };
 
-[[nodiscard]] inline std::string alert_condition_to_string(AlertCondition c) {
+[[nodiscard]] constexpr std::string_view alert_condition_to_string(AlertCondition c) {
     switch (c) {
-        case AlertCondition::RATE_LIMIT_BREACH: return "rate_limit_breach";
-        case AlertCondition::POLICY_VIOLATION_SPIKE: return "policy_violation_spike";
-        case AlertCondition::CIRCUIT_BREAKER_OPEN: return "circuit_breaker_open";
-        case AlertCondition::PII_EXPOSURE_SPIKE: return "pii_exposure_spike";
-        case AlertCondition::AUDIT_BUFFER_OVERFLOW: return "audit_buffer_overflow";
-        case AlertCondition::CUSTOM_METRIC: return "custom_metric";
+        case AlertCondition::RATE_LIMIT_BREACH:     return keys::RATE_LIMIT_BREACH;
+        case AlertCondition::POLICY_VIOLATION_SPIKE: return keys::POLICY_VIOLATION_SPIKE;
+        case AlertCondition::CIRCUIT_BREAKER_OPEN:   return keys::CIRCUIT_BREAKER_OPEN;
+        case AlertCondition::PII_EXPOSURE_SPIKE:     return keys::PII_EXPOSURE_SPIKE;
+        case AlertCondition::AUDIT_BUFFER_OVERFLOW:  return keys::AUDIT_BUFFER_OVERFLOW;
+        case AlertCondition::CUSTOM_METRIC:          return keys::CUSTOM_METRIC;
+        default: return "unknown";
     }
-    return "unknown";
 }
 
-[[nodiscard]] inline AlertCondition parse_alert_condition(const std::string& s) {
-    static const std::unordered_map<std::string, AlertCondition> lookup = {
-        {"rate_limit_breach",      AlertCondition::RATE_LIMIT_BREACH},
-        {"policy_violation_spike", AlertCondition::POLICY_VIOLATION_SPIKE},
-        {"circuit_breaker_open",   AlertCondition::CIRCUIT_BREAKER_OPEN},
-        {"pii_exposure_spike",     AlertCondition::PII_EXPOSURE_SPIKE},
-        {"audit_buffer_overflow",  AlertCondition::AUDIT_BUFFER_OVERFLOW},
+[[nodiscard]] inline AlertCondition parse_alert_condition(std::string_view s) {
+    // The keys are constexpr string_views, but the map is static runtime
+    static const std::unordered_map<std::string_view, AlertCondition> lookup = {
+        {keys::RATE_LIMIT_BREACH,     AlertCondition::RATE_LIMIT_BREACH},
+        {keys::POLICY_VIOLATION_SPIKE, AlertCondition::POLICY_VIOLATION_SPIKE},
+        {keys::CIRCUIT_BREAKER_OPEN,   AlertCondition::CIRCUIT_BREAKER_OPEN},
+        {keys::PII_EXPOSURE_SPIKE,     AlertCondition::PII_EXPOSURE_SPIKE},
+        {keys::AUDIT_BUFFER_OVERFLOW,  AlertCondition::AUDIT_BUFFER_OVERFLOW},
     };
+
     const auto it = lookup.find(s);
     return (it != lookup.end()) ? it->second : AlertCondition::CUSTOM_METRIC;
 }

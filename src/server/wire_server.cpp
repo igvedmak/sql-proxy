@@ -126,7 +126,7 @@ void WireServer::handle_connection(int client_fd, std::string remote_addr) {
 
 std::optional<UserInfo> WireServer::lookup_user(const std::string& username) const {
     std::shared_lock lock(users_mutex_);
-    auto it = users_.find(username);
+    const auto it = users_.find(username);
     if (it != users_.end()) {
         return it->second;
     }

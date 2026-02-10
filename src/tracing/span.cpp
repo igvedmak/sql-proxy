@@ -14,7 +14,7 @@ ScopedSpan::ScopedSpan(RequestContext& ctx, const char* operation)
 
 ScopedSpan::~ScopedSpan() {
     span_.end_time = std::chrono::steady_clock::now();
-    ctx_.spans.push_back(std::move(span_));
+    ctx_.spans.emplace_back(std::move(span_));
 }
 
 } // namespace sqlproxy

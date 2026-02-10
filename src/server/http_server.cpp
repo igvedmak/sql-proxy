@@ -70,6 +70,21 @@ namespace {
 
     std::atomic<uint64_t> s_ip_blocks{0};
 
+    // Admin Bearer token check helper — returns true if authorized, false + 401 if not
+    bool require_admin(std::string_view admin_token,
+                       const httplib::Request& req, httplib::Response& res) {
+        if (admin_token.empty()) return true;
+        const auto auth = req.get_header_value(http::kAuthorizationHeader);
+        if (auth.size() <= http::kBearerPrefix.size() ||
+            std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token) {
+            res.status = httplib::StatusCode::Unauthorized_401;
+            res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
+            return false;
+        }
+        return true;
+    }
+
     std::string build_json_response(const ProxyResponse& response) {
         std::string result_str;
         result_str += std::format("{{\"success\":{},\"audit_id\":\"{}\",",
@@ -807,17 +822,7 @@ void HttpServer::start() {
     // POST /policies/reload - Hot reload policies from config file
     svr.Post("/policies/reload", [this](const httplib::Request& req, httplib::Response& res) {
         try {
-            // Validate admin token if configured
-            if (!admin_token_.empty()) {
-                const auto auth = req.get_header_value(http::kAuthorizationHeader);
-                if (auth.size() <= http::kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                    res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized: invalid or missing admin token"})", http::kJsonContentType);
-                    return;
-                }
-            }
+            if (!require_admin(admin_token_, req, res)) return;
 
             // Load policies from config file
             const std::string config_path = "config/proxy.toml";
@@ -852,16 +857,7 @@ void HttpServer::start() {
 
     // GET /api/v1/compliance/pii-report - PII access report (admin only)
     svr.Get("/api/v1/compliance/pii-report", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!admin_token_.empty()) {
-            const auto auth = req.get_header_value(http::kAuthorizationHeader);
-            if (auth.size() <= http::kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                return;
-            }
-        }
+        if (!require_admin(admin_token_, req, res)) return;
         if (!compliance_reporter_) {
             res.status = httplib::StatusCode::ServiceUnavailable_503;
             res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", http::kJsonContentType);
@@ -873,16 +869,7 @@ void HttpServer::start() {
 
     // GET /api/v1/compliance/security-summary - Security overview (admin only)
     svr.Get("/api/v1/compliance/security-summary", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!admin_token_.empty()) {
-            const auto auth = req.get_header_value(http::kAuthorizationHeader);
-            if (auth.size() <= http::kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                return;
-            }
-        }
+        if (!require_admin(admin_token_, req, res)) return;
         if (!compliance_reporter_) {
             res.status = httplib::StatusCode::ServiceUnavailable_503;
             res.set_content(R"({"success":false,"error":"Compliance reporter not configured"})", http::kJsonContentType);
@@ -894,16 +881,7 @@ void HttpServer::start() {
 
     // GET /api/v1/compliance/lineage - Data lineage summaries (admin only)
     svr.Get("/api/v1/compliance/lineage", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!admin_token_.empty()) {
-            const auto auth = req.get_header_value(http::kAuthorizationHeader);
-            if (auth.size() <= http::kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                return;
-            }
-        }
+        if (!require_admin(admin_token_, req, res)) return;
         if (!lineage_tracker_) {
             res.status = httplib::StatusCode::ServiceUnavailable_503;
             res.set_content(R"({"success":false,"error":"Lineage tracker not configured"})", http::kJsonContentType);
@@ -969,16 +947,7 @@ void HttpServer::start() {
     if (schema_manager_) {
         // GET /api/v1/schema/history
         svr.Get("/api/v1/schema/history", [this](const httplib::Request& req, httplib::Response& res) {
-            if (!admin_token_.empty()) {
-                const auto auth = req.get_header_value(http::kAuthorizationHeader);
-                if (auth.size() <= http::kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                    res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                    return;
-                }
-            }
+            if (!require_admin(admin_token_, req, res)) return;
             const auto history = schema_manager_->get_history();
             std::string json = "{\"history\":[";
             for (size_t i = 0; i < history.size(); ++i) {
@@ -995,16 +964,7 @@ void HttpServer::start() {
 
         // GET /api/v1/schema/pending
         svr.Get("/api/v1/schema/pending", [this](const httplib::Request& req, httplib::Response& res) {
-            if (!admin_token_.empty()) {
-                const auto auth = req.get_header_value(http::kAuthorizationHeader);
-                if (auth.size() <= http::kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                    res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                    return;
-                }
-            }
+            if (!require_admin(admin_token_, req, res)) return;
             const auto pending = schema_manager_->get_pending();
             std::string json = "{\"pending\":[";
             for (size_t i = 0; i < pending.size(); ++i) {
@@ -1021,16 +981,7 @@ void HttpServer::start() {
 
         // POST /api/v1/schema/approve - body: {"id": "...", "admin": "..."}
         svr.Post("/api/v1/schema/approve", [this](const httplib::Request& req, httplib::Response& res) {
-            if (!admin_token_.empty()) {
-                const auto auth = req.get_header_value(http::kAuthorizationHeader);
-                if (auth.size() <= http::kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                    res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                    return;
-                }
-            }
+            if (!require_admin(admin_token_, req, res)) return;
             const auto id = std::string(parse_json_field(req.body, "id"));
             const auto admin = std::string(parse_json_field(req.body, "admin"));
             if (id.empty()) {
@@ -1046,16 +997,7 @@ void HttpServer::start() {
 
         // POST /api/v1/schema/reject - body: {"id": "...", "admin": "..."}
         svr.Post("/api/v1/schema/reject", [this](const httplib::Request& req, httplib::Response& res) {
-            if (!admin_token_.empty()) {
-                const auto auth = req.get_header_value(http::kAuthorizationHeader);
-                if (auth.size() <= http::kBearerPrefix.size() ||
-                    std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                    std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                    res.status = httplib::StatusCode::Unauthorized_401;
-                    res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                    return;
-                }
-            }
+            if (!require_admin(admin_token_, req, res)) return;
             const auto id = std::string(parse_json_field(req.body, "id"));
             const auto admin = std::string(parse_json_field(req.body, "admin"));
             if (id.empty()) {
@@ -1072,16 +1014,7 @@ void HttpServer::start() {
 
     // GET /api/v1/slow-queries - Recent slow queries (admin only)
     svr.Get("/api/v1/slow-queries", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!admin_token_.empty()) {
-            const auto auth = req.get_header_value(http::kAuthorizationHeader);
-            if (auth.size() <= http::kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                return;
-            }
-        }
+        if (!require_admin(admin_token_, req, res)) return;
         const auto tracker = pipeline_->get_slow_query_tracker();
         if (!tracker || !tracker->is_enabled()) {
             res.set_content(R"({"slow_queries":[],"total_slow_queries":0,"enabled":false})", http::kJsonContentType);
@@ -1103,16 +1036,7 @@ void HttpServer::start() {
 
     // GET /api/v1/circuit-breakers - Circuit breaker state and events (admin only)
     svr.Get("/api/v1/circuit-breakers", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!admin_token_.empty()) {
-            const auto auth = req.get_header_value(http::kAuthorizationHeader);
-            if (auth.size() <= http::kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                return;
-            }
-        }
+        if (!require_admin(admin_token_, req, res)) return;
         const auto cb = pipeline_->get_circuit_breaker();
         if (!cb) {
             res.set_content(R"({"breakers":[]})", http::kJsonContentType);
@@ -1147,16 +1071,7 @@ void HttpServer::start() {
 
     // POST /api/v1/config/validate - Validate TOML config (admin only)
     svr.Post("/api/v1/config/validate", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!admin_token_.empty()) {
-            const auto auth = req.get_header_value(http::kAuthorizationHeader);
-            if (auth.size() <= http::kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                return;
-            }
-        }
+        if (!require_admin(admin_token_, req, res)) return;
         try {
             const auto result = ConfigLoader::load_from_string(req.body);
             if (result.success) {
@@ -1234,16 +1149,7 @@ void HttpServer::start() {
 
     // GET /api/v1/schema/drift - Schema drift events (admin only)
     svr.Get("/api/v1/schema/drift", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!admin_token_.empty()) {
-            const auto auth = req.get_header_value(http::kAuthorizationHeader);
-            if (auth.size() <= http::kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                return;
-            }
-        }
+        if (!require_admin(admin_token_, req, res)) return;
         if (!schema_drift_detector_ || !schema_drift_detector_->is_enabled()) {
             res.set_content(R"({"drift_events":[],"total_drifts":0,"enabled":false})", http::kJsonContentType);
             return;
@@ -1267,16 +1173,7 @@ void HttpServer::start() {
 
     // GET /api/v1/compliance/data-subject-access - GDPR data subject access (admin only)
     svr.Get("/api/v1/compliance/data-subject-access", [this](const httplib::Request& req, httplib::Response& res) {
-        if (!admin_token_.empty()) {
-            const auto auth = req.get_header_value(http::kAuthorizationHeader);
-            if (auth.size() <= http::kBearerPrefix.size() ||
-                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
-                res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
-                return;
-            }
-        }
+        if (!require_admin(admin_token_, req, res)) return;
         if (!lineage_tracker_) {
             res.status = httplib::StatusCode::ServiceUnavailable_503;
             res.set_content(R"({"success":false,"error":"Lineage tracker not configured"})", http::kJsonContentType);

@@ -52,7 +52,7 @@ bool LocalKeyManager::rotate_key() {
     new_key.key_bytes = generate_key();
     new_key.active = true;
 
-    keys_.push_back(std::move(new_key));
+    keys_.emplace_back(std::move(new_key));
     active_index_ = keys_.size() - 1;
 
     if (!key_file_.empty()) {
@@ -79,7 +79,7 @@ bool LocalKeyManager::generate_and_add_key() {
         keys_[active_index_].active = false;
     }
 
-    keys_.push_back(std::move(key));
+    keys_.emplace_back(std::move(key));
     active_index_ = keys_.size() - 1;
 
     if (!key_file_.empty()) {
@@ -97,20 +97,20 @@ void LocalKeyManager::load_keys() {
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '#') continue;
 
-        size_t first_colon = line.find(':');
+        const size_t first_colon = line.find(':');
         if (first_colon == std::string::npos) continue;
-        size_t second_colon = line.find(':', first_colon + 1);
+        const size_t second_colon = line.find(':', first_colon + 1);
         if (second_colon == std::string::npos) continue;
 
         KeyInfo key;
         key.key_id = line.substr(0, first_colon);
-        std::string hex_key = line.substr(first_colon + 1, second_colon - first_colon - 1);
-        std::string active_str = line.substr(second_colon + 1);
+        const std::string hex_key = line.substr(first_colon + 1, second_colon - first_colon - 1);
+        const std::string active_str = line.substr(second_colon + 1);
 
         // Decode hex
         key.key_bytes.reserve(hex_key.size() / 2);
         for (size_t i = 0; i + 1 < hex_key.size(); i += 2) {
-            uint8_t byte = static_cast<uint8_t>(
+            const uint8_t byte = static_cast<uint8_t>(
                 std::stoi(hex_key.substr(i, 2), nullptr, 16));
             key.key_bytes.push_back(byte);
         }
@@ -120,7 +120,7 @@ void LocalKeyManager::load_keys() {
         if (key.active) {
             active_index_ = keys_.size();
         }
-        keys_.push_back(std::move(key));
+        keys_.emplace_back(std::move(key));
     }
 }
 

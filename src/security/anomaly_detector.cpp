@@ -55,7 +55,7 @@ AnomalyDetector::AnomalyResult AnomalyDetector::check(
     }
 
     // 4. Unusual hour
-    auto now = std::chrono::system_clock::now();
+    const auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
     struct tm tm_now;
     gmtime_r(&time_t_now, &tm_now);
@@ -163,7 +163,7 @@ void AnomalyDetector::maybe_rotate_window(UserProfile& profile) const {
             profile.avg_queries_per_window = sum / n;
 
             double sq_sum = 0.0;
-            for (auto v : profile.window_history) {
+            for (const auto v : profile.window_history) {
                 const double diff = static_cast<double>(v) - profile.avg_queries_per_window;
                 sq_sum += diff * diff;
             }

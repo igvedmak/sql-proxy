@@ -229,16 +229,16 @@ TEST_CASE("PolicyScope specificity includes columns", "[auth]") {
     CHECK(scope.specificity() == 1);
 
     scope.schema = "public";
-    CHECK(scope.specificity() == 11);
+    CHECK(scope.specificity() == 3);  // db(1) | schema(2)
 
     scope.table = "customers";
-    CHECK(scope.specificity() == 111);
+    CHECK(scope.specificity() == 7);  // db(1) | schema(2) | table(4)
 
     scope.columns = {"email"};
-    CHECK(scope.specificity() == 1111);  // Column-level is highest
+    CHECK(scope.specificity() == 15);  // db(1) | schema(2) | table(4) | columns(8)
 
     // Column without table
     PolicyScope col_only;
     col_only.columns = {"ssn"};
-    CHECK(col_only.specificity() == 1000);
+    CHECK(col_only.specificity() == 8);  // columns(8) only
 }

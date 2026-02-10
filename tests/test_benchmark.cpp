@@ -198,8 +198,14 @@ struct BenchPipeline {
         executor = std::make_shared<MockExecutor>();
         classifier = std::make_shared<ClassifierRegistry>();
         audit = std::make_shared<AuditEmitter>("/dev/null");
-        pipeline = std::make_shared<Pipeline>(
-            parser, policy_engine, rate_limiter, executor, classifier, audit);
+        pipeline = PipelineBuilder()
+            .with_parser(parser)
+            .with_policy_engine(policy_engine)
+            .with_rate_limiter(rate_limiter)
+            .with_executor(executor)
+            .with_classifier(classifier)
+            .with_audit_emitter(audit)
+            .build();
     }
 
     ~BenchPipeline() { audit->shutdown(); }

@@ -110,7 +110,7 @@ void VaultKeyManager::refresh_cache() const {
             ++lv_pos;
             while (lv_pos < response.size() && response[lv_pos] == ' ') ++lv_pos;
             const auto end = response.find_first_of(",}", lv_pos);
-            std::string version_str = response.substr(lv_pos, end - lv_pos);
+            const std::string version_str = response.substr(lv_pos, end - lv_pos);
             try {
                 const int latest = std::stoi(version_str);
                 active_key_id_ = std::format("v{}", latest);

@@ -82,7 +82,7 @@ DbResultSet MysqlConnection::process_result_set(MYSQL_RES* res) {
             }
         }
 
-        result.rows.push_back(std::move(row_data));
+        result.rows.emplace_back(std::move(row_data));
     }
 
     result.affected_rows = result.rows.size();

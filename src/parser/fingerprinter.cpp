@@ -58,8 +58,8 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
     current_word.reserve(64);
 
     for (size_t i = 0; i < sql.size(); ++i) {
-        char c = sql[i];
-        char next_c = (i + 1 < sql.size()) ? sql[i + 1] : '\0';
+        const char c = sql[i];
+        const char next_c = (i + 1 < sql.size()) ? sql[i + 1] : '\0';
 
         switch (state) {
             case State::NORMAL: {

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string_view>
+#include <unordered_map>
 
 namespace sqlproxy {
 
@@ -21,41 +22,50 @@ enum class PriorityLevel : uint8_t {
     HIGH = 3
 };
 
+// String constants for priority level names
+inline constexpr std::string_view kPriorityHigh       = "high";
+inline constexpr std::string_view kPriorityNormal     = "normal";
+inline constexpr std::string_view kPriorityLow        = "low";
+inline constexpr std::string_view kPriorityBackground = "background";
+
 /**
  * @brief Get the number of rate-limit tokens consumed by a priority level
  */
-inline uint32_t priority_token_cost(uint8_t priority) {
+inline uint32_t priority_token_cost(PriorityLevel priority) {
     switch (priority) {
-        case 3:  return 1;  // HIGH
-        case 2:  return 1;  // NORMAL
-        case 1:  return 2;  // LOW
-        case 0:  return 4;  // BACKGROUND
-        default: return 1;  // Unknown → treat as NORMAL
+        case PriorityLevel::HIGH:       return 1;
+        case PriorityLevel::NORMAL:     return 1;
+        case PriorityLevel::LOW:        return 2;
+        case PriorityLevel::BACKGROUND: return 4;
+        default:                        return 1;
     }
 }
 
 /**
- * @brief Parse priority string to numeric value
- * @return priority value (0-3), defaults to 2 (NORMAL) if unrecognized
+ * @brief Parse priority string to PriorityLevel enum (O(1) hash lookup)
+ * @return PriorityLevel, defaults to NORMAL if unrecognized
  */
-inline uint8_t parse_priority(std::string_view str) {
-    if (str == "high")       return 3;
-    if (str == "normal")     return 2;
-    if (str == "low")        return 1;
-    if (str == "background") return 0;
-    return 2;  // default NORMAL
+inline PriorityLevel parse_priority(std::string_view str) {
+    static const std::unordered_map<std::string_view, PriorityLevel> kMap = {
+        {kPriorityHigh,       PriorityLevel::HIGH},
+        {kPriorityNormal,     PriorityLevel::NORMAL},
+        {kPriorityLow,        PriorityLevel::LOW},
+        {kPriorityBackground, PriorityLevel::BACKGROUND},
+    };
+    const auto it = kMap.find(str);
+    return (it != kMap.end()) ? it->second : PriorityLevel::NORMAL;
 }
 
 /**
- * @brief Convert priority value to string
+ * @brief Convert PriorityLevel to string
  */
-inline const char* priority_to_string(uint8_t priority) {
+inline const char* priority_to_string(PriorityLevel priority) {
     switch (priority) {
-        case 0:  return "background";
-        case 1:  return "low";
-        case 2:  return "normal";
-        case 3:  return "high";
-        default: return "normal";
+        case PriorityLevel::BACKGROUND: return "background";
+        case PriorityLevel::LOW:        return "low";
+        case PriorityLevel::NORMAL:     return "normal";
+        case PriorityLevel::HIGH:       return "high";
+        default:                        return "normal";
     }
 }
 

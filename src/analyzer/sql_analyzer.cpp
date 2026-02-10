@@ -366,7 +366,7 @@ static void extract_column_refs_from_node(const json& col_ref,
                 val = get_string(field[kStringNode], ast::kStr);
             }
             if (!val.empty()) {
-                parts.push_back(std::move(val));
+                parts.emplace_back(std::move(val));
             }
         }
         // A_Star is handled separately (SELECT *)
@@ -383,7 +383,7 @@ static void extract_column_refs_from_node(const json& col_ref,
     if (parts.size() >= 2) {
         // table.column or schema.table.column
         std::string qualified = parts[parts.size() - 2] + std::string(kDotPrefix) + col_name;
-        table_qualified_columns.push_back(std::move(qualified));
+        table_qualified_columns.emplace_back(std::move(qualified));
     }
 }
 
@@ -914,7 +914,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
         if (!has_key(res_target, kVal)) {
             // No value expression - skip
             if (!col.name.empty()) {
-                projections.push_back(std::move(col));
+                projections.emplace_back(std::move(col));
             }
             continue;
         }
@@ -931,7 +931,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                 if (col.name.empty()) {
                     col.name = "*";
                 }
-                projections.push_back(std::move(col));
+                projections.emplace_back(std::move(col));
                 continue;
             }
 
@@ -947,7 +947,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                             sval = get_string(field[kStringNode], ast::kStr);
                         }
                         if (!sval.empty()) {
-                            parts.push_back(std::move(sval));
+                            parts.emplace_back(std::move(sval));
                         }
                     }
                 }
@@ -971,7 +971,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             }
 
             col.confidence = 1.0; // Direct column reference
-            projections.push_back(std::move(col));
+            projections.emplace_back(std::move(col));
             continue;
         }
 
@@ -989,7 +989,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                 }
                 col.expression = func_name + "(*)";
                 col.confidence = 1.0;
-                projections.push_back(std::move(col));
+                projections.emplace_back(std::move(col));
                 continue;
             }
 
@@ -999,7 +999,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                     std::vector<std::string> arg_cols;
                     collect_column_names(arg, arg_cols);
                     for (auto& c : arg_cols) {
-                        col.derived_from.push_back(std::move(c));
+                        col.derived_from.emplace_back(std::move(c));
                     }
                 }
             }
@@ -1009,7 +1009,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             }
 
             col.confidence = 0.9; // High confidence for direct function call
-            projections.push_back(std::move(col));
+            projections.emplace_back(std::move(col));
             continue;
         }
 
@@ -1018,7 +1018,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             std::vector<std::string> expr_cols;
             collect_column_names(val, expr_cols);
             for (auto& c : expr_cols) {
-                col.derived_from.push_back(std::move(c));
+                col.derived_from.emplace_back(std::move(c));
             }
             col.expression = kExprExpression;
             col.confidence = 0.8;
@@ -1027,7 +1027,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                 col.name = col.derived_from.front();
             }
 
-            projections.push_back(std::move(col));
+            projections.emplace_back(std::move(col));
             continue;
         }
 
@@ -1040,7 +1040,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                 col.name = kExprSubquery;
             }
 
-            projections.push_back(std::move(col));
+            projections.emplace_back(std::move(col));
             continue;
         }
 
@@ -1049,7 +1049,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             std::vector<std::string> case_cols;
             collect_column_names(val, case_cols);
             for (auto& c : case_cols) {
-                col.derived_from.push_back(std::move(c));
+                col.derived_from.emplace_back(std::move(c));
             }
             col.expression = kExprCase;
             col.confidence = 0.7;
@@ -1060,7 +1060,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                 col.name = kExprCase;
             }
 
-            projections.push_back(std::move(col));
+            projections.emplace_back(std::move(col));
             continue;
         }
 
@@ -1069,7 +1069,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             std::vector<std::string> cast_cols;
             collect_column_names(val, cast_cols);
             for (auto& c : cast_cols) {
-                col.derived_from.push_back(std::move(c));
+                col.derived_from.emplace_back(std::move(c));
             }
             col.expression = kExprTypecast;
             col.confidence = 0.95;
@@ -1078,7 +1078,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                 col.name = col.derived_from.front();
             }
 
-            projections.push_back(std::move(col));
+            projections.emplace_back(std::move(col));
             continue;
         }
 
@@ -1100,7 +1100,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                 col.name = col.expression;
             }
 
-            projections.push_back(std::move(col));
+            projections.emplace_back(std::move(col));
             continue;
         }
 
@@ -1109,7 +1109,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             std::vector<std::string> coalesce_cols;
             collect_column_names(val, coalesce_cols);
             for (auto& c : coalesce_cols) {
-                col.derived_from.push_back(std::move(c));
+                col.derived_from.emplace_back(std::move(c));
             }
             col.expression = kExprCoalesce;
             col.confidence = 0.85;
@@ -1120,7 +1120,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                 col.name = kExprCoalesce;
             }
 
-            projections.push_back(std::move(col));
+            projections.emplace_back(std::move(col));
             continue;
         }
 
@@ -1129,7 +1129,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
             std::vector<std::string> fallback_cols;
             collect_column_names(val, fallback_cols);
             for (auto& c : fallback_cols) {
-                col.derived_from.push_back(std::move(c));
+                col.derived_from.emplace_back(std::move(c));
             }
             col.expression = kExprUnknown;
             col.confidence = 0.5;
@@ -1140,7 +1140,7 @@ std::vector<ProjectionColumn> SQLAnalyzer::extract_projections(void* parse_tree)
                 col.name = kExprUnknown;
             }
 
-            projections.push_back(std::move(col));
+            projections.emplace_back(std::move(col));
         }
     }
 

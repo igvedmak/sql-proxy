@@ -1,4 +1,5 @@
 #include "core/pipeline.hpp"
+#include "core/pipeline_builder.hpp"
 #include "core/utils.hpp"
 #include "core/database_type.hpp"
 #include "config/config_loader.hpp"
@@ -228,7 +229,7 @@ int main(int argc, char* argv[]) {
             allow_select.action = Decision::ALLOW;
             allow_select.users = {"*"};
             allow_select.scope.operations = {StatementType::SELECT};
-            policies.push_back(allow_select);
+            policies.emplace_back(std::move(allow_select));
 
             Policy block_ddl;
             block_ddl.name = "block_all_ddl";
@@ -240,7 +241,7 @@ int main(int argc, char* argv[]) {
                 StatementType::ALTER_TABLE,
                 StatementType::DROP_TABLE
             };
-            policies.push_back(block_ddl);
+            policies.emplace_back(std::move(block_ddl));
 
             // Hardcoded users
             users["admin"] = UserInfo{"admin", {"admin"}};
@@ -589,32 +590,30 @@ int main(int argc, char* argv[]) {
                 arc_cfg.latency_target_ms, arc_cfg.throttle_threshold_ms, arc_cfg.adjustment_interval_seconds));
         }
 
-        // Create pipeline (with Tier 5 + Tier B + Tier C + Tier F + Tier G components)
-        auto pipeline = std::make_shared<Pipeline>(
-            parser,
-            policy_engine,
-            active_rate_limiter,
-            executor,
-            classifier,
-            audit_emitter,
-            query_rewriter,
-            nullptr,  // router
-            nullptr,  // prepared
-            injection_detector,
-            anomaly_detector,
-            lineage_tracker,
-            column_encryptor,
-            schema_manager,
-            tenant_manager,
-            audit_sampler,
-            result_cache,
-            slow_query_tracker,
-            circuit_breaker,
-            pool,
-            parse_cache,
-            query_cost_estimator,
-            g_adaptive_rate_controller
-        );
+        // Create pipeline via builder (with Tier 5 + Tier B + Tier C + Tier F + Tier G components)
+        auto pipeline = PipelineBuilder()
+            .with_parser(parser)
+            .with_policy_engine(policy_engine)
+            .with_rate_limiter(active_rate_limiter)
+            .with_executor(executor)
+            .with_classifier(classifier)
+            .with_audit_emitter(audit_emitter)
+            .with_rewriter(query_rewriter)
+            .with_injection_detector(injection_detector)
+            .with_anomaly_detector(anomaly_detector)
+            .with_lineage_tracker(lineage_tracker)
+            .with_column_encryptor(column_encryptor)
+            .with_schema_manager(schema_manager)
+            .with_tenant_manager(tenant_manager)
+            .with_audit_sampler(audit_sampler)
+            .with_result_cache(result_cache)
+            .with_slow_query_tracker(slow_query_tracker)
+            .with_circuit_breaker(circuit_breaker)
+            .with_connection_pool(pool)
+            .with_parse_cache(parse_cache)
+            .with_query_cost_estimator(query_cost_estimator)
+            .with_adaptive_rate_controller(g_adaptive_rate_controller)
+            .build();
 
         // Tier F: Retry with backoff
         if (config_result.success && config_result.config.retry.enabled) {

@@ -62,7 +62,7 @@ size_t find_keyword(std::string_view sql, const char* keyword) {
             // Check word boundary before
             if (i > 0 && std::isalnum(static_cast<unsigned char>(sql[i - 1]))) continue;
             // Check word boundary after
-            size_t after = i + kw_len;
+            const size_t after = i + kw_len;
             if (after < sql.size() && std::isalnum(static_cast<unsigned char>(sql[after]))) continue;
             if (!in_string_literal(sql, i)) return i;
         }

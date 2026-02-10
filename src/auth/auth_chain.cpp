@@ -3,7 +3,7 @@
 namespace sqlproxy {
 
 void AuthChain::add_provider(std::shared_ptr<IAuthProvider> provider) {
-    providers_.push_back(std::move(provider));
+    providers_.emplace_back(std::move(provider));
 }
 
 IAuthProvider::AuthResult AuthChain::authenticate(

@@ -489,6 +489,10 @@ private:
     // Helper: parse action string to Decision enum
     static std::optional<Decision> parse_action(const std::string& action_str);
 
+    // Shared extraction + validation (eliminates duplication between load_from_file/string)
+    [[nodiscard]] static ProxyConfig extract_all_sections(const JsonValue& root);
+    [[nodiscard]] static LoadResult validate_and_return(ProxyConfig config);
+
     // Semantic validation (called after parsing)
     [[nodiscard]] static std::vector<std::string> validate_config(const ProxyConfig& config);
 };

@@ -243,152 +243,134 @@ void AuditEmitter::writer_thread_func() {
 }
 
 // ============================================================================
-// JSON Serialization
+// JSON Serialization — Section Builders
 // ============================================================================
 
-std::string AuditEmitter::to_json(const AuditRecord& record) {
-    std::string result;
-    result += "{";
+namespace {
 
-    // Event tracking
-    result += std::format("\"audit_id\":\"{}\",\"sequence_num\":{},",
-                          record.audit_id, record.sequence_num);
+void append_event_tracking(std::string& out, const AuditRecord& r) {
+    out += std::format("\"audit_id\":\"{}\",\"sequence_num\":{},",
+                       r.audit_id, r.sequence_num);
+    if (!r.trace_id.empty()) {
+        out += std::format("\"trace_id\":\"{}\",\"span_id\":\"{}\",\"parent_span_id\":\"{}\",",
+                           r.trace_id, r.span_id, r.parent_span_id);
+    }
+    out += std::format("\"timestamp\":\"{}\",\"received_at\":\"{}\",",
+                       utils::format_timestamp(r.timestamp),
+                       utils::format_timestamp(r.received_at));
+}
 
-    // Distributed tracing
-    if (!record.trace_id.empty()) {
-        result += std::format("\"trace_id\":\"{}\",\"span_id\":\"{}\",\"parent_span_id\":\"{}\",",
-                              record.trace_id, record.span_id, record.parent_span_id);
+void append_request_context(std::string& out, const AuditRecord& r) {
+    out += std::format("\"user\":\"{}\",\"database\":\"{}\",", r.user, r.database_name);
+    if (!r.session_id.empty()) {
+        out += std::format("\"session_id\":\"{}\",", r.session_id);
+    }
+    if (!r.source_ip.empty()) {
+        out += std::format("\"source_ip\":\"{}\",", r.source_ip);
     }
 
-    // Timestamps
-    result += std::format("\"timestamp\":\"{}\",\"received_at\":\"{}\",",
-                          utils::format_timestamp(record.timestamp),
-                          utils::format_timestamp(record.received_at));
-
-    // Request context
-    result += std::format("\"user\":\"{}\",\"database\":\"{}\",",
-                          record.user, record.database_name);
-    if (!record.session_id.empty()) {
-        result += std::format("\"session_id\":\"{}\",", record.session_id);
-    }
-    if (!record.source_ip.empty()) {
-        result += std::format("\"source_ip\":\"{}\",", record.source_ip);
-    }
-
-    // SQL
     std::string escaped_sql;
-    escaped_sql.reserve(record.sql.size());
-    for (const char c : record.sql) {
+    escaped_sql.reserve(r.sql.size());
+    for (const char c : r.sql) {
         if (c == '"') escaped_sql += '\\';
         escaped_sql += c;
     }
-    result += std::format("\"sql\":\"{}\",", escaped_sql);
+    out += std::format("\"sql\":\"{}\",", escaped_sql);
+    out += std::format("\"fingerprint_hash\":{},", r.fingerprint.hash);
+    out += std::format("\"statement_type\":\"{}\",", statement_type_to_string(r.statement_type));
+}
 
-    // Fingerprint
-    result += std::format("\"fingerprint_hash\":{},", record.fingerprint.hash);
-
-    // Statement type
-    result += std::format("\"statement_type\":\"{}\",", statement_type_to_string(record.statement_type));
-
-    // Tables
-    result += "\"tables\":[";
-    for (size_t i = 0; i < record.tables.size(); ++i) {
-        if (i > 0) result += ",";
-        result += std::format("\"{}\"", record.tables[i]);
+void append_string_array(std::string& out, std::string_view key,
+                         const std::vector<std::string>& items) {
+    out += '"';
+    out += key;
+    out += "\":[";
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i > 0) out += ',';
+        out += std::format("\"{}\"", items[i]);
     }
-    result += "],";
+    out += "],";
+}
 
-    // Columns filtered
-    result += "\"columns_filtered\":[";
-    for (size_t i = 0; i < record.columns_filtered.size(); ++i) {
-        if (i > 0) result += ",";
-        result += std::format("\"{}\"", record.columns_filtered[i]);
+void append_policy_decision(std::string& out, const AuditRecord& r) {
+    append_string_array(out, "tables", r.tables);
+    append_string_array(out, "columns_filtered", r.columns_filtered);
+    out += std::format("\"decision\":\"{}\",\"matched_policy\":\"{}\",\"rule_specificity\":{},",
+                       decision_to_string(r.decision), r.matched_policy, r.rule_specificity);
+    if (!r.block_reason.empty()) {
+        out += std::format("\"block_reason\":\"{}\",", r.block_reason);
     }
-    result += "],";
+}
 
-    // Policy decision
-    result += std::format("\"decision\":\"{}\",\"matched_policy\":\"{}\",\"rule_specificity\":{},",
-                          decision_to_string(record.decision),
-                          record.matched_policy,
-                          record.rule_specificity);
-    if (!record.block_reason.empty()) {
-        result += std::format("\"block_reason\":\"{}\",", record.block_reason);
+void append_execution_results(std::string& out, const AuditRecord& r) {
+    out += std::format("\"execution_success\":{},\"error_code\":\"{}\",",
+                       utils::booltostr(r.execution_success),
+                       error_code_to_string(r.error_code));
+    if (r.execution_success) {
+        out += std::format("\"rows_returned\":{},", r.rows_returned);
     }
-
-    // Execution results
-    result += std::format("\"execution_success\":{},\"error_code\":\"{}\",",
-                          utils::booltostr(record.execution_success),
-                          error_code_to_string(record.error_code));
-
-    if (record.execution_success) {
-        result += std::format("\"rows_returned\":{},", record.rows_returned);
+    if (r.rows_affected > 0) {
+        out += std::format("\"rows_affected\":{},", r.rows_affected);
     }
-    if (record.rows_affected > 0) {
-        result += std::format("\"rows_affected\":{},", record.rows_affected);
+}
+
+void append_classifications(std::string& out, const AuditRecord& r) {
+    append_string_array(out, "classifications", r.detected_classifications);
+    out += std::format("\"has_pii\":{},",
+                       utils::booltostr(!r.detected_classifications.empty()));
+}
+
+void append_performance(std::string& out, const AuditRecord& r) {
+    out += std::format(
+        "\"total_duration_us\":{},\"parse_time_us\":{},\"policy_time_us\":{},"
+        "\"execution_time_us\":{},\"classification_time_us\":{},\"proxy_overhead_us\":{},",
+        r.total_duration.count(), r.parse_time.count(), r.policy_time.count(),
+        r.execution_time.count(), r.classification_time.count(), r.proxy_overhead.count());
+}
+
+void append_operational(std::string& out, const AuditRecord& r) {
+    out += std::format("\"rate_limited\":{},\"cache_hit\":{},\"circuit_breaker_tripped\":{},",
+                       utils::booltostr(r.rate_limited),
+                       utils::booltostr(r.cache_hit),
+                       utils::booltostr(r.circuit_breaker_tripped));
+    if (r.shadow_blocked) {
+        out += std::format("\"shadow_blocked\":true,\"shadow_policy\":\"{}\",", r.shadow_policy);
     }
-
-    // PII Classifications
-    result += "\"classifications\":[";
-    for (size_t i = 0; i < record.detected_classifications.size(); ++i) {
-        if (i > 0) result += ",";
-        result += std::format("\"{}\"", record.detected_classifications[i]);
-    }
-    result += std::format("],\"has_pii\":{},",
-                          utils::booltostr(!record.detected_classifications.empty()));
-
-    // Performance
-    result += std::format("\"total_duration_us\":{},\"parse_time_us\":{},\"policy_time_us\":{},\"execution_time_us\":{},\"classification_time_us\":{},\"proxy_overhead_us\":{},",
-                          record.total_duration.count(),
-                          record.parse_time.count(),
-                          record.policy_time.count(),
-                          record.execution_time.count(),
-                          record.classification_time.count(),
-                          record.proxy_overhead.count());
-
-    // Operational flags
-    result += std::format("\"rate_limited\":{},\"cache_hit\":{},\"circuit_breaker_tripped\":{},",
-                          utils::booltostr(record.rate_limited),
-                          utils::booltostr(record.cache_hit),
-                          utils::booltostr(record.circuit_breaker_tripped));
-
-    // Shadow mode
-    if (record.shadow_blocked) {
-        result += std::format("\"shadow_blocked\":true,\"shadow_policy\":\"{}\",",
-                              record.shadow_policy);
-    }
-
-    // Per-layer tracing spans (Tier G)
-    if (!record.spans.empty()) {
-        result += "\"spans\":[";
-        for (size_t i = 0; i < record.spans.size(); ++i) {
-            if (i > 0) result += ",";
-            result += std::format("{{\"id\":\"{}\",\"op\":\"{}\",\"dur_us\":{}}}",
-                                  record.spans[i].span_id,
-                                  record.spans[i].operation,
-                                  record.spans[i].duration_us);
+    if (!r.spans.empty()) {
+        out += "\"spans\":[";
+        for (size_t i = 0; i < r.spans.size(); ++i) {
+            if (i > 0) out += ',';
+            out += std::format("{{\"id\":\"{}\",\"op\":\"{}\",\"dur_us\":{}}}",
+                               r.spans[i].span_id, r.spans[i].operation, r.spans[i].duration_us);
         }
-        result += "],";
+        out += "],";
     }
+    out += std::format("\"priority\":\"{}\",", priority_to_string(r.priority));
+}
 
-    // Request priority (Tier G)
-    {
-        static const char* kPriorityNames[] = {"background", "low", "normal", "high"};
-        const char* pname = (record.priority <= 3) ? kPriorityNames[record.priority] : "normal";
-        result += std::format("\"priority\":\"{}\",", pname);
-    }
-
-    // Integrity (hash chain)
-    if (!record.record_hash.empty()) {
-        result += std::format("\"record_hash\":\"{}\",\"previous_hash\":\"{}\"",
-                              record.record_hash, record.previous_hash);
+void append_integrity(std::string& out, const AuditRecord& r) {
+    if (!r.record_hash.empty()) {
+        out += std::format("\"record_hash\":\"{}\",\"previous_hash\":\"{}\"",
+                           r.record_hash, r.previous_hash);
     } else {
-        // Remove trailing comma
-        if (!result.empty() && result.back() == ',') {
-            result.pop_back();
-        }
+        if (!out.empty() && out.back() == ',') out.pop_back();
     }
+}
 
-    result += "}";
+} // anonymous namespace
+
+std::string AuditEmitter::to_json(const AuditRecord& record) {
+    std::string result;
+    result += '{';
+    append_event_tracking(result, record);
+    append_request_context(result, record);
+    append_policy_decision(result, record);
+    append_execution_results(result, record);
+    append_classifications(result, record);
+    append_performance(result, record);
+    append_operational(result, record);
+    append_integrity(result, record);
+    result += '}';
     return result;
 }
 

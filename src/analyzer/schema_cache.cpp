@@ -258,11 +258,11 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
         const char* nullable_raw = PQgetvalue(res.get(), row, COL_IS_NULLABLE);
 
         // Build the qualified key: "schema.table" (lowercased)
-        std::string schema_name = utils::to_lower(schema_raw ? schema_raw : policy::kDefaultSchema.data());
-        std::string table_name  = utils::to_lower(table_raw  ? table_raw  : "");
-        std::string column_name = utils::to_lower(column_raw ? column_raw : "");
-        std::string data_type   = utils::to_lower(type_raw   ? type_raw   : "");
-        std::string nullable_str = nullable_raw ? nullable_raw : std::string(db::kYes);
+        const std::string schema_name = utils::to_lower(schema_raw ? schema_raw : policy::kDefaultSchema.data());
+        const std::string table_name  = utils::to_lower(table_raw  ? table_raw  : "");
+        const std::string column_name = utils::to_lower(column_raw ? column_raw : "");
+        const std::string data_type   = utils::to_lower(type_raw   ? type_raw   : "");
+        const std::string nullable_str = nullable_raw ? nullable_raw : std::string(db::kYes);
 
         // Construct the map key
         std::string key;
@@ -302,7 +302,7 @@ std::shared_ptr<::sqlproxy::SchemaMap> SchemaCache::load_from_database(
         // Record the column index for fast name-based lookup
         const size_t col_index = current_table->columns.size();
         current_table->column_index[col.name] = col_index;
-        current_table->columns.push_back(std::move(col));
+        current_table->columns.emplace_back(std::move(col));
     }
 
     // Don't forget the last table

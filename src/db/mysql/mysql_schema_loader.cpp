@@ -84,7 +84,7 @@ std::shared_ptr<SchemaMap> MysqlSchemaLoader::load_schema(
 
         const size_t col_index = current_table->columns.size();
         current_table->column_index[col.name] = col_index;
-        current_table->columns.push_back(std::move(col));
+        current_table->columns.emplace_back(std::move(col));
     }
 
     // Save last table

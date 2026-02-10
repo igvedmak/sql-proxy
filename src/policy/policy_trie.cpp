@@ -42,9 +42,9 @@ void PolicyTrie::insert(const Policy& policy) {
     std::string schema = policy.scope.schema.value_or(policy::kWildcard);
     std::string table = policy.scope.table.value_or(policy::kWildcard);
 
-    path.push_back(db);
-    path.push_back(schema);
-    path.push_back(table);
+    path.emplace_back(std::move(db));
+    path.emplace_back(std::move(schema));
+    path.emplace_back(std::move(table));
 
     // Walk trie and insert at leaf
     PolicyTrieNode* current = &root_;

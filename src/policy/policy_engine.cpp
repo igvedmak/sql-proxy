@@ -181,7 +181,7 @@ std::vector<ColumnPolicyDecision> PolicyEngine::evaluate_columns(
             }
         }
 
-        decisions.push_back(std::move(decision));
+        decisions.emplace_back(std::move(decision));
     }
 
     return decisions;

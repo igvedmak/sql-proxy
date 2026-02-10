@@ -175,7 +175,7 @@ void WireSession::handle_password(const WireFrame& frame) {
         return;
     }
 
-    std::string password = WireBuffer::read_string(frame.payload.data(), frame.payload.size());
+    const std::string password = WireBuffer::read_string(frame.payload.data(), frame.payload.size());
 
     if (password != expected_password_) {
         send_error("Password authentication failed", "28P01");

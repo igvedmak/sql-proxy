@@ -27,53 +27,8 @@
 
 namespace sqlproxy {
 
-Pipeline::Pipeline(
-    std::shared_ptr<ISqlParser> parser,
-    std::shared_ptr<PolicyEngine> policy_engine,
-    std::shared_ptr<IRateLimiter> rate_limiter,
-    std::shared_ptr<IQueryExecutor> executor,
-    std::shared_ptr<ClassifierRegistry> classifier,
-    std::shared_ptr<AuditEmitter> audit_emitter,
-    std::shared_ptr<QueryRewriter> rewriter,
-    std::shared_ptr<DatabaseRouter> router,
-    std::shared_ptr<PreparedStatementTracker> prepared,
-    std::shared_ptr<SqlInjectionDetector> injection_detector,
-    std::shared_ptr<AnomalyDetector> anomaly_detector,
-    std::shared_ptr<LineageTracker> lineage_tracker,
-    std::shared_ptr<ColumnEncryptor> column_encryptor,
-    std::shared_ptr<SchemaManager> schema_manager,
-    std::shared_ptr<TenantManager> tenant_manager,
-    std::shared_ptr<AuditSampler> audit_sampler,
-    std::shared_ptr<ResultCache> result_cache,
-    std::shared_ptr<SlowQueryTracker> slow_query_tracker,
-    std::shared_ptr<CircuitBreaker> circuit_breaker,
-    std::shared_ptr<IConnectionPool> connection_pool,
-    std::shared_ptr<ParseCache> parse_cache,
-    std::shared_ptr<QueryCostEstimator> query_cost_estimator,
-    std::shared_ptr<AdaptiveRateController> adaptive_rate_controller)
-    : parser_(std::move(parser)),
-      policy_engine_(std::move(policy_engine)),
-      rate_limiter_(std::move(rate_limiter)),
-      executor_(std::move(executor)),
-      classifier_(std::move(classifier)),
-      audit_emitter_(std::move(audit_emitter)),
-      rewriter_(std::move(rewriter)),
-      router_(std::move(router)),
-      prepared_(std::move(prepared)),
-      injection_detector_(std::move(injection_detector)),
-      anomaly_detector_(std::move(anomaly_detector)),
-      lineage_tracker_(std::move(lineage_tracker)),
-      column_encryptor_(std::move(column_encryptor)),
-      schema_manager_(std::move(schema_manager)),
-      tenant_manager_(std::move(tenant_manager)),
-      audit_sampler_(std::move(audit_sampler)),
-      result_cache_(std::move(result_cache)),
-      slow_query_tracker_(std::move(slow_query_tracker)),
-      circuit_breaker_(std::move(circuit_breaker)),
-      connection_pool_(std::move(connection_pool)),
-      parse_cache_(std::move(parse_cache)),
-      query_cost_estimator_(std::move(query_cost_estimator)),
-      adaptive_rate_controller_(std::move(adaptive_rate_controller)) {}
+Pipeline::Pipeline(PipelineComponents components)
+    : c_(std::move(components)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -105,12 +60,12 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
     // Tenant resolution: if multi-tenant enabled, override pipeline components
     // (policy_engine, rate_limiter, audit_emitter are swapped per-tenant)
-    std::shared_ptr<PolicyEngine> active_policy_engine = policy_engine_;
-    std::shared_ptr<IRateLimiter> active_rate_limiter = rate_limiter_;
-    std::shared_ptr<AuditEmitter> active_audit_emitter = audit_emitter_;
+    std::shared_ptr<PolicyEngine> active_policy_engine = c_.policy_engine;
+    std::shared_ptr<IRateLimiter> active_rate_limiter = c_.rate_limiter;
+    std::shared_ptr<AuditEmitter> active_audit_emitter = c_.audit_emitter;
 
-    if (tenant_manager_ && !ctx.tenant_id.empty()) {
-        const auto tenant_ctx = tenant_manager_->resolve(ctx.tenant_id);
+    if (c_.tenant_manager && !ctx.tenant_id.empty()) {
+        const auto tenant_ctx = c_.tenant_manager->resolve(ctx.tenant_id);
         if (tenant_ctx) {
             if (tenant_ctx->policy_engine) active_policy_engine = tenant_ctx->policy_engine;
             if (tenant_ctx->rate_limiter) active_rate_limiter = tenant_ctx->rate_limiter;
@@ -143,10 +98,10 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     }
 
     // Layer 2.5: Result cache lookup (only for SELECTs)
-    if (result_cache_ && result_cache_->is_enabled() &&
+    if (c_.result_cache && c_.result_cache->is_enabled() &&
         ctx.analysis.statement_type == StatementType::SELECT &&
         ctx.fingerprint.has_value()) {
-        const auto cached = result_cache_->get(
+        const auto cached = c_.result_cache->get(
             ctx.fingerprint->hash, ctx.user, ctx.database);
         if (cached) {
             ctx.query_result = std::move(*cached);
@@ -212,13 +167,13 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     }
 
     // Report latency to adaptive rate controller
-    if (adaptive_rate_controller_) {
-        adaptive_rate_controller_->observe_latency(
+    if (c_.adaptive_rate_controller) {
+        c_.adaptive_rate_controller->observe_latency(
             static_cast<uint64_t>(ctx.execution_time.count()));
     }
 
     // Layer 5.01: Slow query tracking
-    if (slow_query_tracker_ && slow_query_tracker_->is_enabled()) {
+    if (c_.slow_query_tracker && c_.slow_query_tracker->is_enabled()) {
         SlowQueryRecord sq;
         sq.user = ctx.user;
         sq.database = ctx.database;
@@ -229,38 +184,38 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         if (ctx.fingerprint.has_value()) {
             sq.fingerprint = ctx.fingerprint->normalized;
         }
-        slow_query_tracker_->record_if_slow(sq);
+        c_.slow_query_tracker->record_if_slow(sq);
     }
 
     // Layer 5.02: Parse cache DDL invalidation
-    if (parse_cache_ && ctx.query_result.success &&
+    if (c_.parse_cache && ctx.query_result.success &&
         stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL) &&
         ctx.statement_info &&
         ctx.statement_info->parsed.ddl_object_name.has_value()) {
-        parse_cache_->invalidate_table(*ctx.statement_info->parsed.ddl_object_name);
+        c_.parse_cache->invalidate_table(*ctx.statement_info->parsed.ddl_object_name);
     }
 
     // Layer 5.05: Cache result (only for successful SELECTs)
-    if (result_cache_ && result_cache_->is_enabled() &&
+    if (c_.result_cache && c_.result_cache->is_enabled() &&
         ctx.query_result.success &&
         ctx.analysis.statement_type == StatementType::SELECT &&
         ctx.fingerprint.has_value()) {
-        result_cache_->put(ctx.fingerprint->hash, ctx.user, ctx.database,
+        c_.result_cache->put(ctx.fingerprint->hash, ctx.user, ctx.database,
                            ctx.query_result);
     }
 
     // Write-invalidation (clear cache for modified database)
-    if (result_cache_ && stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kWrite | stmt_mask::kDDL)) {
-        result_cache_->invalidate(ctx.database);
+    if (c_.result_cache && stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kWrite | stmt_mask::kDDL)) {
+        c_.result_cache->invalidate(ctx.database);
     }
 
     // Layer 5.1: Record DDL change (after successful execution)
-    if (schema_manager_ && stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL)) {
+    if (c_.schema_manager && stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL)) {
         std::string table_name;
         if (!ctx.analysis.source_tables.empty()) {
             table_name = ctx.analysis.source_tables[0].table;
         }
-        schema_manager_->record_change(ctx.user, ctx.database, table_name,
+        c_.schema_manager->record_change(ctx.user, ctx.database, table_name,
             ctx.sql, ctx.analysis.statement_type);
     }
 
@@ -290,7 +245,7 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
 bool Pipeline::check_rate_limit(RequestContext& ctx) {
     ScopedSpan span(ctx, "sql_proxy.rate_limit");
-    const auto result = rate_limiter_->check(ctx.user, ctx.database);
+    const auto result = c_.rate_limiter->check(ctx.user, ctx.database);
     ctx.rate_limit_result = result;  // Always store for response headers
     if (!result.allowed) {
         ctx.rate_limited = true;
@@ -315,9 +270,9 @@ bool Pipeline::parse_query(RequestContext& ctx) {
     utils::Timer timer;
 
     // Resolve parser via router (per-database), fallback to default
-    ISqlParser* active_parser = parser_.get();
-    if (router_) {
-        const auto routed = router_->get_parser(ctx.database);
+    ISqlParser* active_parser = c_.parser.get();
+    if (c_.router) {
+        const auto routed = c_.router->get_parser(ctx.database);
         if (routed) active_parser = routed.get();
     }
 
@@ -353,7 +308,7 @@ bool Pipeline::evaluate_policy(RequestContext& ctx) {
     ScopedSpan span(ctx, "sql_proxy.policy");
     utils::Timer timer;
 
-    ctx.policy_result = policy_engine_->evaluate(
+    ctx.policy_result = c_.policy_engine->evaluate(
         ctx.user,
         ctx.roles,
         ctx.database,
@@ -373,9 +328,9 @@ bool Pipeline::evaluate_policy(RequestContext& ctx) {
 }
 
 void Pipeline::rewrite_query(RequestContext& ctx) {
-    if (!rewriter_) return;
+    if (!c_.rewriter) return;
 
-    std::string rewritten = rewriter_->rewrite(
+    std::string rewritten = c_.rewriter->rewrite(
         ctx.sql, ctx.user, ctx.roles, ctx.database,
         ctx.analysis, ctx.user_attributes);
 
@@ -390,11 +345,11 @@ bool Pipeline::execute_query(RequestContext& ctx) {
     ScopedSpan span(ctx, "sql_proxy.execute");
     // Resolve executor via router (per-database), fallback to default
     IQueryExecutor* exec = nullptr;
-    if (router_) {
-        const auto routed = router_->get_executor(ctx.database);
+    if (c_.router) {
+        const auto routed = c_.router->get_executor(ctx.database);
         if (routed) exec = routed.get();
     }
-    if (!exec) exec = executor_.get();
+    if (!exec) exec = c_.executor.get();
 
     if (!exec) {
         // No executor configured - return mock success
@@ -417,7 +372,7 @@ void Pipeline::apply_column_policies(RequestContext& ctx) {
 
     utils::Timer timer;
 
-    ctx.column_decisions = policy_engine_->evaluate_columns(
+    ctx.column_decisions = c_.policy_engine->evaluate_columns(
         ctx.user, ctx.roles, ctx.database, ctx.analysis,
         ctx.query_result.column_names);
 
@@ -441,7 +396,7 @@ void Pipeline::apply_column_policies(RequestContext& ctx) {
 
     for (size_t i = 0; i < ctx.query_result.column_names.size(); ++i) {
         if (!blocked_indices.contains(i)) {
-            new_columns.push_back(std::move(ctx.query_result.column_names[i]));
+            new_columns.emplace_back(std::move(ctx.query_result.column_names[i]));
             if (i < ctx.query_result.column_type_oids.size()) {
                 new_type_oids.push_back(ctx.query_result.column_type_oids[i]);
             }
@@ -454,7 +409,7 @@ void Pipeline::apply_column_policies(RequestContext& ctx) {
         new_row.reserve(new_columns.size());
         for (size_t i = 0; i < row.size(); ++i) {
             if (!blocked_indices.contains(i)) {
-                new_row.push_back(std::move(row[i]));
+                new_row.emplace_back(std::move(row[i]));
             }
         }
         row = std::move(new_row);
@@ -469,7 +424,7 @@ void Pipeline::apply_column_policies(RequestContext& ctx) {
     surviving.reserve(ctx.column_decisions.size() - blocked_indices.size());
     for (size_t i = 0; i < ctx.column_decisions.size(); ++i) {
         if (!blocked_indices.contains(i)) {
-            surviving.push_back(std::move(ctx.column_decisions[i]));
+            surviving.emplace_back(std::move(ctx.column_decisions[i]));
         }
     }
     ctx.column_decisions = std::move(surviving);
@@ -488,13 +443,13 @@ void Pipeline::apply_masking(RequestContext& ctx) {
 
 void Pipeline::classify_results(RequestContext& ctx) {
     ScopedSpan span(ctx, "sql_proxy.classify");
-    if (!classifier_ || !ctx.query_result.success) {
+    if (!c_.classifier || !ctx.query_result.success) {
         return;
     }
 
     utils::Timer timer;
 
-    ctx.classification_result = classifier_->classify(
+    ctx.classification_result = c_.classifier->classify(
         ctx.query_result,
         ctx.analysis
     );
@@ -502,93 +457,106 @@ void Pipeline::classify_results(RequestContext& ctx) {
     ctx.classification_time = timer.elapsed_us();
 }
 
-void Pipeline::emit_audit(const RequestContext& ctx) {
-    if (!audit_emitter_) {
-        return;
+namespace {
+
+AuditRecord build_audit_record(const RequestContext& ctx) {
+    AuditRecord r;
+
+    // Tracing
+    r.trace_id = ctx.trace_context.trace_id;
+    r.span_id = ctx.trace_context.span_id;
+    r.parent_span_id = ctx.trace_context.parent_span_id;
+
+    // Request context
+    r.timestamp = ctx.received_at;
+    r.user = ctx.user;
+    r.source_ip = ctx.source_ip;
+    r.database_name = ctx.database;
+    r.sql = ctx.sql;
+
+    // Fingerprint
+    if (ctx.fingerprint.has_value()) {
+        r.fingerprint.hash = ctx.fingerprint->hash;
+        r.fingerprint.normalized = ctx.fingerprint->normalized;
     }
 
+    // Statement type
+    if (ctx.statement_info) {
+        r.statement_type = ctx.statement_info->parsed.type;
+    }
+
+    // Policy
+    r.decision = ctx.rate_limited ? Decision::BLOCK : ctx.policy_result.decision;
+    r.matched_policy = ctx.policy_result.matched_policy;
+    r.block_reason = ctx.policy_result.reason;
+    r.shadow_blocked = ctx.policy_result.shadow_blocked;
+    r.shadow_policy = ctx.policy_result.shadow_policy;
+
+    // Execution
+    r.execution_success = ctx.query_result.success;
+    r.error_code = ctx.query_result.error_code;
+    r.error_message = ctx.query_result.error_message;
+    r.rows_returned = ctx.query_result.rows.size();
+
+    // Classification
+    r.detected_classifications = ctx.classification_result.get_classified_types();
+
+    // Performance
+    r.parse_time = ctx.parse_time;
+    r.policy_time = ctx.policy_time;
+    r.execution_time = ctx.execution_time;
+    r.classification_time = ctx.classification_time;
+    const auto elapsed = std::chrono::steady_clock::now() - ctx.started_at;
+    r.total_duration = std::chrono::duration_cast<std::chrono::microseconds>(elapsed);
+
+    // Operational
+    r.rate_limited = ctx.rate_limited;
+    r.cache_hit = ctx.cache_hit;
+
+    // Masking / query rewriting
+    for (const auto& m : ctx.masking_applied) {
+        r.masked_columns.push_back(m.column_name);
+    }
+    r.sql_rewritten = ctx.sql_rewritten;
+    if (ctx.sql_rewritten) {
+        r.original_sql = ctx.original_sql;
+    }
+
+    // Security
+    r.threat_level = ctx.injection_result.threat_level;
+    r.injection_patterns = ctx.injection_result.patterns_matched;
+    r.injection_blocked = ctx.injection_result.should_block;
+    r.anomaly_score = ctx.anomaly_result.anomaly_score;
+    r.anomalies = ctx.anomaly_result.anomalies;
+
+    // Spans
+    for (const auto& s : ctx.spans) {
+        r.spans.push_back({s.span_id, s.operation, s.duration_us()});
+    }
+
+    // Priority
+    r.priority = ctx.priority;
+
+    return r;
+}
+
+} // anonymous namespace
+
+void Pipeline::emit_audit(const RequestContext& ctx) {
+    if (!c_.audit_emitter) return;
+
     // Audit sampling check (before building the record)
-    if (audit_sampler_ && audit_sampler_->is_enabled()) {
+    if (c_.audit_sampler && c_.audit_sampler->is_enabled()) {
         const uint64_t fp = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
-        StatementType st = ctx.statement_info
+        const auto st = ctx.statement_info
             ? ctx.statement_info->parsed.type : StatementType::UNKNOWN;
-        Decision decision = ctx.rate_limited ? Decision::BLOCK : ctx.policy_result.decision;
-        if (!audit_sampler_->should_sample(st, decision, ctx.query_result.error_code, fp)) {
+        const auto decision = ctx.rate_limited ? Decision::BLOCK : ctx.policy_result.decision;
+        if (!c_.audit_sampler->should_sample(st, decision, ctx.query_result.error_code, fp)) {
             return;
         }
     }
 
-    AuditRecord record;
-    record.trace_id = ctx.trace_context.trace_id;
-    record.span_id = ctx.trace_context.span_id;
-    record.parent_span_id = ctx.trace_context.parent_span_id;
-    record.timestamp = ctx.received_at;
-    record.user = ctx.user;
-    record.source_ip = ctx.source_ip;
-    record.database_name = ctx.database;
-    record.sql = ctx.sql;
-
-    if (ctx.fingerprint.has_value()) {
-        record.fingerprint.hash = ctx.fingerprint->hash;
-        record.fingerprint.normalized = ctx.fingerprint->normalized;
-    }
-
-    if (ctx.statement_info) {
-        record.statement_type = ctx.statement_info->parsed.type;
-    }
-
-    record.decision = ctx.rate_limited ? Decision::BLOCK : ctx.policy_result.decision;
-    record.matched_policy = ctx.policy_result.matched_policy;
-    record.block_reason = ctx.policy_result.reason;
-
-    // Shadow mode
-    record.shadow_blocked = ctx.policy_result.shadow_blocked;
-    record.shadow_policy = ctx.policy_result.shadow_policy;
-
-    record.execution_success = ctx.query_result.success;
-    record.error_code = ctx.query_result.error_code;
-    record.error_message = ctx.query_result.error_message;
-    record.rows_returned = ctx.query_result.rows.size();
-
-    record.detected_classifications = ctx.classification_result.get_classified_types();
-
-    record.parse_time = ctx.parse_time;
-    record.policy_time = ctx.policy_time;
-    record.execution_time = ctx.execution_time;
-    record.classification_time = ctx.classification_time;
-
-    const auto elapsed = std::chrono::steady_clock::now() - ctx.started_at;
-    record.total_duration = std::chrono::duration_cast<std::chrono::microseconds>(elapsed);
-
-    record.rate_limited = ctx.rate_limited;
-    record.cache_hit = ctx.cache_hit;
-
-    // Masking / query rewriting audit fields
-    for (const auto& m : ctx.masking_applied) {
-        record.masked_columns.push_back(m.column_name);
-    }
-    record.sql_rewritten = ctx.sql_rewritten;
-    if (ctx.sql_rewritten) {
-        record.original_sql = ctx.original_sql;
-    }
-
-    // Security fields
-    record.threat_level = SqlInjectionDetector::threat_level_to_string(
-        ctx.injection_result.threat_level);
-    record.injection_patterns = ctx.injection_result.patterns_matched;
-    record.injection_blocked = ctx.injection_result.should_block;
-    record.anomaly_score = ctx.anomaly_result.anomaly_score;
-    record.anomalies = ctx.anomaly_result.anomalies;
-
-    // Per-layer tracing spans (Tier G)
-    for (const auto& s : ctx.spans) {
-        record.spans.push_back({s.span_id, s.operation, s.duration_us()});
-    }
-
-    // Request priority (Tier G)
-    record.priority = ctx.priority;
-
-    audit_emitter_->emit(std::move(record));
+    c_.audit_emitter->emit(build_audit_record(ctx));
 }
 
 ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
@@ -635,7 +603,7 @@ ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
 }
 
 bool Pipeline::check_injection(RequestContext& ctx) {
-    if (!injection_detector_) return true;
+    if (!c_.injection_detector) return true;
 
     utils::Timer timer;
 
@@ -644,7 +612,7 @@ bool Pipeline::check_injection(RequestContext& ctx) {
         normalized = ctx.fingerprint->normalized;
     }
 
-    ctx.injection_result = injection_detector_->analyze(
+    ctx.injection_result = c_.injection_detector->analyze(
         ctx.sql, normalized, ctx.statement_info->parsed);
 
     ctx.injection_check_time = timer.elapsed_us();
@@ -659,7 +627,7 @@ bool Pipeline::check_injection(RequestContext& ctx) {
 }
 
 void Pipeline::check_anomaly(RequestContext& ctx) {
-    if (!anomaly_detector_) return;
+    if (!c_.anomaly_detector) return;
 
     // Collect table names from analysis
     std::vector<std::string> tables;
@@ -671,21 +639,21 @@ void Pipeline::check_anomaly(RequestContext& ctx) {
     const uint64_t fp_hash = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
 
     // Check for anomalies (read-only scoring)
-    ctx.anomaly_result = anomaly_detector_->check(ctx.user, tables, fp_hash);
+    ctx.anomaly_result = c_.anomaly_detector->check(ctx.user, tables, fp_hash);
 
     // Record this query in the user's profile (updates state)
-    anomaly_detector_->record(ctx.user, tables, fp_hash);
+    c_.anomaly_detector->record(ctx.user, tables, fp_hash);
 }
 
 void Pipeline::decrypt_columns(RequestContext& ctx) {
-    if (!column_encryptor_ || !column_encryptor_->is_enabled()) return;
+    if (!c_.column_encryptor || !c_.column_encryptor->is_enabled()) return;
     if (!ctx.query_result.success || ctx.query_result.rows.empty()) return;
 
-    column_encryptor_->decrypt_result(ctx.query_result, ctx.database, ctx.analysis);
+    c_.column_encryptor->decrypt_result(ctx.query_result, ctx.database, ctx.analysis);
 }
 
 void Pipeline::record_lineage(RequestContext& ctx) {
-    if (!lineage_tracker_) return;
+    if (!c_.lineage_tracker) return;
     if (!ctx.query_result.success) return;
 
     // Record lineage for each classified column
@@ -717,18 +685,18 @@ void Pipeline::record_lineage(RequestContext& ctx) {
             event.query_fingerprint = ctx.fingerprint->normalized;
         }
 
-        lineage_tracker_->record(event);
+        c_.lineage_tracker->record(event);
     }
 }
 
 bool Pipeline::intercept_ddl(RequestContext& ctx) {
-    if (!schema_manager_) return true;
+    if (!c_.schema_manager) return true;
     if (!ctx.statement_info) return true;
 
     // Only intercept DDL statements
     if (!stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL)) return true;
 
-    const bool allowed = schema_manager_->intercept_ddl(
+    const bool allowed = c_.schema_manager->intercept_ddl(
         ctx.user, ctx.database, ctx.sql, ctx.analysis.statement_type);
 
     if (!allowed) {
@@ -742,12 +710,12 @@ bool Pipeline::intercept_ddl(RequestContext& ctx) {
 }
 
 bool Pipeline::check_query_cost(RequestContext& ctx) {
-    if (!query_cost_estimator_ || !query_cost_estimator_->is_enabled()) return true;
+    if (!c_.query_cost_estimator || !c_.query_cost_estimator->is_enabled()) return true;
 
     // Only check cost for SELECT statements
     if (ctx.analysis.statement_type != StatementType::SELECT) return true;
 
-    const auto estimate = query_cost_estimator_->estimate(ctx.sql);
+    const auto estimate = c_.query_cost_estimator->estimate(ctx.sql);
     if (estimate.is_rejected()) {
         ctx.query_result.success = false;
         ctx.query_result.error_code = ErrorCode::QUERY_TOO_EXPENSIVE;

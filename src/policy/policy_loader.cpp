@@ -142,7 +142,7 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
                     if (col.is_string()) {
                         std::string col_str = col.get<std::string>();
                         if (!col_str.empty()) {
-                            policy.scope.columns.push_back(std::move(col_str));
+                            policy.scope.columns.emplace_back(std::move(col_str));
                         }
                     }
                 }
@@ -180,7 +180,7 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
                 return LoadResult::error(std::format("Policy '{}': {}", policy.name, error_msg));
             }
 
-            policies.push_back(std::move(policy));
+            policies.emplace_back(std::move(policy));
         }
 
         return LoadResult::ok(std::move(policies));

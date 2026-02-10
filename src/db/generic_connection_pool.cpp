@@ -21,7 +21,7 @@ GenericConnectionPool::GenericConnectionPool(
         if (conn) {
             std::lock_guard<std::mutex> lock(mutex_);
             created_at_[conn.get()] = std::chrono::steady_clock::now();
-            idle_connections_.push_back(std::move(conn));
+            idle_connections_.emplace_back(std::move(conn));
         } else {
             utils::log::warn(std::format("Failed to create connection {} during pool initialization for database '{}'", i + 1, db_name_));
         }
@@ -228,7 +228,7 @@ void GenericConnectionPool::return_connection(std::unique_ptr<IDbConnection> con
     // Return to idle pool
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        idle_connections_.push_back(std::move(conn));
+        idle_connections_.emplace_back(std::move(conn));
     }
 
     semaphore_.release();

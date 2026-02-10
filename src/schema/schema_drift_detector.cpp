@@ -58,7 +58,7 @@ std::vector<SchemaDriftDetector::ColumnSnapshot> SchemaDriftDetector::fetch_curr
 
     if (!pool_) return result;
 
-    auto conn_handle = pool_->acquire(std::chrono::milliseconds{5000});
+    const auto conn_handle = pool_->acquire(std::chrono::milliseconds{5000});
     if (!conn_handle || !conn_handle->is_valid()) return result;
 
     const std::string sql = std::format(
@@ -68,7 +68,7 @@ std::vector<SchemaDriftDetector::ColumnSnapshot> SchemaDriftDetector::fetch_curr
         "ORDER BY table_name, ordinal_position",
         config_.schema_name);
 
-    auto db_result = conn_handle->get()->execute(sql);
+    const auto db_result = conn_handle->get()->execute(sql);
     if (!db_result.success || db_result.rows.empty()) {
         return result;
     }
@@ -81,7 +81,7 @@ std::vector<SchemaDriftDetector::ColumnSnapshot> SchemaDriftDetector::fetch_curr
         col.column_name = row[1];
         col.data_type = row[2];
         col.is_nullable = (row[3] == "YES");
-        result.push_back(std::move(col));
+        result.emplace_back(std::move(col));
     }
 
     return result;
@@ -122,7 +122,7 @@ void SchemaDriftDetector::detect_drift(const std::vector<ColumnSnapshot>& curren
             event.table_name = cur->table_name;
             event.column_name = cur->column_name;
             event.new_type = cur->data_type;
-            drift_events_.push_back(std::move(event));
+            drift_events_.emplace_back(std::move(event));
             total_drifts_.fetch_add(1, std::memory_order_relaxed);
         } else if (it->second->data_type != cur->data_type) {
             // Type changed
@@ -133,7 +133,7 @@ void SchemaDriftDetector::detect_drift(const std::vector<ColumnSnapshot>& curren
             event.column_name = cur->column_name;
             event.old_type = it->second->data_type;
             event.new_type = cur->data_type;
-            drift_events_.push_back(std::move(event));
+            drift_events_.emplace_back(std::move(event));
             total_drifts_.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -147,7 +147,7 @@ void SchemaDriftDetector::detect_drift(const std::vector<ColumnSnapshot>& curren
             event.table_name = base->table_name;
             event.column_name = base->column_name;
             event.old_type = base->data_type;
-            drift_events_.push_back(std::move(event));
+            drift_events_.emplace_back(std::move(event));
             total_drifts_.fetch_add(1, std::memory_order_relaxed);
         }
     }

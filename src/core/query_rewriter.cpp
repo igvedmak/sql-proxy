@@ -131,7 +131,7 @@ std::string QueryRewriter::expand_template(
         size_t pos = 0;
         while ((pos = result.find(prefix, pos)) != std::string::npos) {
             // Find end of attribute key (alphanumeric + underscore)
-            size_t key_start = pos + prefix.size();
+            const size_t key_start = pos + prefix.size();
             size_t key_end = key_start;
             while (key_end < result.size() &&
                    (std::isalnum(result[key_end]) || result[key_end] == '_')) {
@@ -158,10 +158,10 @@ std::string QueryRewriter::inject_where(
     // Find WHERE clause (case-insensitive)
     std::string lower = utils::to_lower(sql);
 
-    size_t where_pos = lower.find(" where ");
+    const size_t where_pos = lower.find(" where ");
     if (where_pos != std::string::npos) {
         // WHERE exists → append AND (condition) after WHERE
-        size_t insert_pos = where_pos + 7; // after " where "
+        const size_t insert_pos = where_pos + 7; // after " where "
 
         std::string result = sql.substr(0, insert_pos);
         result += "(";
@@ -178,14 +178,14 @@ std::string QueryRewriter::inject_where(
 
     size_t insert_pos = sql.size();
     for (const auto& term : terminators) {
-        size_t pos = lower.find(term);
+        const size_t pos = lower.find(term);
         if (pos != std::string::npos && pos < insert_pos) {
             insert_pos = pos;
         }
     }
 
     // Also check for trailing semicolon
-    size_t semi = sql.rfind(';');
+    const size_t semi = sql.rfind(';');
     if (semi != std::string::npos && semi < insert_pos) {
         insert_pos = semi;
     }
@@ -204,14 +204,14 @@ std::string QueryRewriter::enforce_limit(
     const std::string& sql, int limit_value) {
 
     // Check if LIMIT already exists (case-insensitive)
-    std::string lower = utils::to_lower(sql);
+    const std::string lower = utils::to_lower(sql);
     if (lower.contains(" limit ")) {
         return {};  // Already has LIMIT
     }
 
     // Find insertion point (before trailing semicolon or end)
     size_t insert_pos = sql.size();
-    size_t semi = sql.rfind(';');
+    const size_t semi = sql.rfind(';');
     if (semi != std::string::npos) {
         insert_pos = semi;
     }

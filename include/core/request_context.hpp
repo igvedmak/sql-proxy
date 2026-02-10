@@ -91,7 +91,7 @@ struct RequestContext {
     std::vector<Span> spans;
 
     // Request priority (Tier G)
-    uint8_t priority = 2;  // Default: NORMAL
+    PriorityLevel priority = PriorityLevel::NORMAL;
 
     RequestContext()
         : request_id(utils::generate_uuid()),

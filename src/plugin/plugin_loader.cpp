@@ -79,7 +79,7 @@ bool PluginRegistry::load_plugin(const PluginConfig& config) {
     if (config.type == "classifier") {
         // Resolve factory: ClassifierPlugin* create_classifier_plugin()
         using FactoryFn = ClassifierPlugin* (*)();
-        auto factory = reinterpret_cast<FactoryFn>(plugin->resolve("create_classifier_plugin"));
+        const auto factory = reinterpret_cast<FactoryFn>(plugin->resolve("create_classifier_plugin"));
         if (!factory) {
             utils::log::error(std::format("Plugin [{}]: missing create_classifier_plugin symbol", config.path));
             return false;
@@ -92,7 +92,7 @@ bool PluginRegistry::load_plugin(const PluginConfig& config) {
         }
 
         // Validate API version
-        auto info = cp->get_info(cp->instance);
+        const auto info = cp->get_info(cp->instance);
         if (info.api_version != SQLPROXY_PLUGIN_API_VERSION) {
             utils::log::error(std::format("Plugin [{}]: API version mismatch (got {}, expected {})",
                 config.path, info.api_version, SQLPROXY_PLUGIN_API_VERSION));
@@ -108,7 +108,7 @@ bool PluginRegistry::load_plugin(const PluginConfig& config) {
     } else if (config.type == "audit_sink") {
         // Resolve factory: AuditSinkPlugin* create_audit_sink_plugin()
         using FactoryFn = AuditSinkPlugin* (*)();
-        auto factory = reinterpret_cast<FactoryFn>(plugin->resolve("create_audit_sink_plugin"));
+        const auto factory = reinterpret_cast<FactoryFn>(plugin->resolve("create_audit_sink_plugin"));
         if (!factory) {
             utils::log::error(std::format("Plugin [{}]: missing create_audit_sink_plugin symbol", config.path));
             return false;
@@ -120,7 +120,7 @@ bool PluginRegistry::load_plugin(const PluginConfig& config) {
             return false;
         }
 
-        auto info = asp->get_info(asp->instance);
+        const auto info = asp->get_info(asp->instance);
         if (info.api_version != SQLPROXY_PLUGIN_API_VERSION) {
             utils::log::error(std::format("Plugin [{}]: API version mismatch", config.path));
             if (asp->destroy) asp->destroy(asp->instance);
@@ -137,7 +137,7 @@ bool PluginRegistry::load_plugin(const PluginConfig& config) {
         return false;
     }
 
-    plugins_.push_back(std::move(plugin));
+    plugins_.emplace_back(std::move(plugin));
     return true;
 }
 

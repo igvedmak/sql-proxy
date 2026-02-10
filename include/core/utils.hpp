@@ -7,7 +7,9 @@
 #include <sstream>
 #include <cstdio>
 #include <iostream>
+#include <limits>
 #include <mutex>
+#include <type_traits>
 
 namespace sqlproxy::utils {
 
@@ -63,6 +65,28 @@ inline std::chrono::system_clock::time_point now() {
 inline constexpr const char* booltostr(bool x) { return x ? "true" : "false"; }
 
 // ============================================================================
+// Type-Safe Range Check (eliminates impossible comparisons at compile time)
+// ============================================================================
+
+template<auto Lo, auto Hi, typename T>
+constexpr bool in_range(T value) {
+    using Common = std::common_type_t<T, decltype(Lo), decltype(Hi)>;
+    bool below = false;
+    bool above = false;
+    if constexpr (static_cast<Common>(std::numeric_limits<T>::min()) >= static_cast<Common>(Lo)) {
+        (void)value; // T can never be below Lo
+    } else {
+        below = static_cast<Common>(value) < static_cast<Common>(Lo);
+    }
+    if constexpr (static_cast<Common>(std::numeric_limits<T>::max()) <= static_cast<Common>(Hi)) {
+        (void)value; // T can never exceed Hi
+    } else {
+        above = static_cast<Common>(value) > static_cast<Common>(Hi);
+    }
+    return !below && !above;
+}
+
+// ============================================================================
 // String Utilities
 // ============================================================================
 
@@ -88,7 +112,7 @@ inline std::vector<std::string> split(const std::string& str, char delimiter) {
     std::istringstream iss(str);
     std::string token;
     while (std::getline(iss, token, delimiter)) {
-        tokens.push_back(token);
+        tokens.emplace_back(std::move(token));
     }
     return tokens;
 }

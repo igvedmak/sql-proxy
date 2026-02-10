@@ -121,7 +121,7 @@ DbResultSet PgConnection::process_tuples_result(PGresult* res) {
             const char* val = PQgetvalue(res, i, j);
             row.push_back(val ? val : "");
         }
-        result.rows.push_back(std::move(row));
+        result.rows.emplace_back(std::move(row));
     }
 
     return result;

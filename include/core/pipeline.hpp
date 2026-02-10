@@ -3,6 +3,7 @@
 #include "audit/audit_emitter.hpp"
 #include "core/types.hpp"
 #include "core/request_context.hpp"
+#include "core/pipeline_builder.hpp"
 #include "db/isql_parser.hpp"
 #include "db/iquery_executor.hpp"
 #include "policy/policy_engine.hpp"
@@ -11,26 +12,6 @@
 #include <memory>
 
 namespace sqlproxy {
-
-// Forward declarations
-class ClassifierRegistry;
-class QueryRewriter;
-class DatabaseRouter;
-class PreparedStatementTracker;
-class SqlInjectionDetector;
-class AnomalyDetector;
-class LineageTracker;
-class ColumnEncryptor;
-class SchemaManager;
-class TenantManager;
-class AuditSampler;
-class ResultCache;
-class SlowQueryTracker;
-class CircuitBreaker;
-class IConnectionPool;
-class ParseCache;
-class QueryCostEstimator;
-class AdaptiveRateController;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -50,33 +31,9 @@ class AdaptiveRateController;
 class Pipeline {
 public:
     /**
-     * @brief Construct pipeline with components
+     * @brief Construct pipeline from components struct (preferred)
      */
-    Pipeline(
-        std::shared_ptr<ISqlParser> parser,
-        std::shared_ptr<PolicyEngine> policy_engine,
-        std::shared_ptr<IRateLimiter> rate_limiter,
-        std::shared_ptr<IQueryExecutor> executor,
-        std::shared_ptr<ClassifierRegistry> classifier,
-        std::shared_ptr<AuditEmitter> audit_emitter,
-        std::shared_ptr<QueryRewriter> rewriter = nullptr,
-        std::shared_ptr<DatabaseRouter> router = nullptr,
-        std::shared_ptr<PreparedStatementTracker> prepared = nullptr,
-        std::shared_ptr<SqlInjectionDetector> injection_detector = nullptr,
-        std::shared_ptr<AnomalyDetector> anomaly_detector = nullptr,
-        std::shared_ptr<LineageTracker> lineage_tracker = nullptr,
-        std::shared_ptr<ColumnEncryptor> column_encryptor = nullptr,
-        std::shared_ptr<SchemaManager> schema_manager = nullptr,
-        std::shared_ptr<TenantManager> tenant_manager = nullptr,
-        std::shared_ptr<AuditSampler> audit_sampler = nullptr,
-        std::shared_ptr<ResultCache> result_cache = nullptr,
-        std::shared_ptr<SlowQueryTracker> slow_query_tracker = nullptr,
-        std::shared_ptr<CircuitBreaker> circuit_breaker = nullptr,
-        std::shared_ptr<IConnectionPool> connection_pool = nullptr,
-        std::shared_ptr<ParseCache> parse_cache = nullptr,
-        std::shared_ptr<QueryCostEstimator> query_cost_estimator = nullptr,
-        std::shared_ptr<AdaptiveRateController> adaptive_rate_controller = nullptr
-    );
+    explicit Pipeline(PipelineComponents components);
 
     struct RetryConfig {
         bool enabled = false;
@@ -94,49 +51,16 @@ public:
      */
     ProxyResponse execute(const ProxyRequest& request);
 
-    /**
-     * @brief Get policy engine (for hot reload)
-     */
-    std::shared_ptr<PolicyEngine> get_policy_engine() const { return policy_engine_; }
-
-    /**
-     * @brief Get rate limiter (for metrics)
-     */
-    std::shared_ptr<IRateLimiter> get_rate_limiter() const { return rate_limiter_; }
-
-    /**
-     * @brief Get audit emitter (for metrics)
-     */
-    std::shared_ptr<AuditEmitter> get_audit_emitter() const { return audit_emitter_; }
-
-    /**
-     * @brief Get result cache (for metrics)
-     */
-    std::shared_ptr<ResultCache> get_result_cache() const { return result_cache_; }
-
-    /**
-     * @brief Get slow query tracker (for metrics/API)
-     */
-    std::shared_ptr<SlowQueryTracker> get_slow_query_tracker() const { return slow_query_tracker_; }
-
-    /**
-     * @brief Get circuit breaker (for health checks/metrics)
-     */
-    std::shared_ptr<CircuitBreaker> get_circuit_breaker() const { return circuit_breaker_; }
-
-    /**
-     * @brief Get connection pool (for health checks/metrics)
-     */
-    std::shared_ptr<IConnectionPool> get_connection_pool() const { return connection_pool_; }
-
-    /**
-     * @brief Get parse cache (for DDL invalidation/metrics)
-     */
-    std::shared_ptr<ParseCache> get_parse_cache() const { return parse_cache_; }
-
-    std::shared_ptr<QueryCostEstimator> get_query_cost_estimator() const { return query_cost_estimator_; }
-
-    std::shared_ptr<AdaptiveRateController> get_adaptive_rate_controller() const { return adaptive_rate_controller_; }
+    std::shared_ptr<PolicyEngine> get_policy_engine() const { return c_.policy_engine; }
+    std::shared_ptr<IRateLimiter> get_rate_limiter() const { return c_.rate_limiter; }
+    std::shared_ptr<AuditEmitter> get_audit_emitter() const { return c_.audit_emitter; }
+    std::shared_ptr<ResultCache> get_result_cache() const { return c_.result_cache; }
+    std::shared_ptr<SlowQueryTracker> get_slow_query_tracker() const { return c_.slow_query_tracker; }
+    std::shared_ptr<CircuitBreaker> get_circuit_breaker() const { return c_.circuit_breaker; }
+    std::shared_ptr<IConnectionPool> get_connection_pool() const { return c_.connection_pool; }
+    std::shared_ptr<ParseCache> get_parse_cache() const { return c_.parse_cache; }
+    std::shared_ptr<QueryCostEstimator> get_query_cost_estimator() const { return c_.query_cost_estimator; }
+    std::shared_ptr<AdaptiveRateController> get_adaptive_rate_controller() const { return c_.adaptive_rate_controller; }
 
     struct Stats {
         uint64_t total_requests;
@@ -151,130 +75,28 @@ public:
     }
 
 private:
-    /**
-     * @brief Layer 1: Ingress - rate limit and validate
-     */
     bool check_rate_limit(RequestContext& ctx);
-
-    /**
-     * @brief Layer 2: Parse + Cache
-     */
     bool parse_query(RequestContext& ctx);
-
-    /**
-     * @brief Layer 3: Analyze
-     */
     bool analyze_query(RequestContext& ctx);
-
-    /**
-     * @brief Layer 4: Policy evaluation
-     */
     bool evaluate_policy(RequestContext& ctx);
-
-    /**
-     * @brief Layer 5: Execute query
-     */
     bool execute_query(RequestContext& ctx);
-
-    /**
-     * @brief Layer 6: Classify results
-     */
     void classify_results(RequestContext& ctx);
-
-    /**
-     * @brief Layer 7: Emit audit record
-     */
     void emit_audit(const RequestContext& ctx);
-
-    /**
-     * @brief Layer 4.5: Rewrite query (RLS + enforce_limit)
-     */
     void rewrite_query(RequestContext& ctx);
-
-    /**
-     * @brief Layer 5.5: Apply column-level access control
-     */
     void apply_column_policies(RequestContext& ctx);
-
-    /**
-     * @brief Layer 5.6: Apply data masking to allowed columns
-     */
     void apply_masking(RequestContext& ctx);
-
-    /**
-     * @brief Build response from context
-     */
     ProxyResponse build_response(const RequestContext& ctx);
-
-    /**
-     * @brief Handle PREPARE statement - parse inner SQL, register in tracker
-     */
     void handle_prepare(RequestContext& ctx);
-
-    /**
-     * @brief Handle EXECUTE statement - look up cached parse info
-     */
     void handle_execute(RequestContext& ctx);
-
-    /**
-     * @brief Handle DEALLOCATE statement - remove from tracker
-     */
     void handle_deallocate(RequestContext& ctx);
-
-    /**
-     * @brief Layer 3.5: SQL injection detection (can block)
-     */
     bool check_injection(RequestContext& ctx);
-
-    /**
-     * @brief Layer 3.7: Anomaly detection (informational, never blocks)
-     */
     void check_anomaly(RequestContext& ctx);
-
-    /**
-     * @brief Layer 5.3: Decrypt encrypted columns (transparent)
-     */
     void decrypt_columns(RequestContext& ctx);
-
-    /**
-     * @brief Layer 6.5: Record data lineage for PII columns
-     */
     void record_lineage(RequestContext& ctx);
-
-    /**
-     * @brief Layer 4.1: Schema DDL interception (can block if approval required)
-     */
     bool intercept_ddl(RequestContext& ctx);
-
-    /**
-     * @brief Layer 4.8: Query cost estimation (can block expensive queries)
-     */
     bool check_query_cost(RequestContext& ctx);
 
-    const std::shared_ptr<ISqlParser> parser_;
-    const std::shared_ptr<PolicyEngine> policy_engine_;
-    const std::shared_ptr<IRateLimiter> rate_limiter_;
-    const std::shared_ptr<IQueryExecutor> executor_;
-    const std::shared_ptr<ClassifierRegistry> classifier_;
-    const std::shared_ptr<AuditEmitter> audit_emitter_;
-    const std::shared_ptr<QueryRewriter> rewriter_;
-    const std::shared_ptr<DatabaseRouter> router_;
-    const std::shared_ptr<PreparedStatementTracker> prepared_;
-    const std::shared_ptr<SqlInjectionDetector> injection_detector_;
-    const std::shared_ptr<AnomalyDetector> anomaly_detector_;
-    const std::shared_ptr<LineageTracker> lineage_tracker_;
-    const std::shared_ptr<ColumnEncryptor> column_encryptor_;
-    const std::shared_ptr<SchemaManager> schema_manager_;
-    const std::shared_ptr<TenantManager> tenant_manager_;
-    const std::shared_ptr<AuditSampler> audit_sampler_;
-    const std::shared_ptr<ResultCache> result_cache_;
-    const std::shared_ptr<SlowQueryTracker> slow_query_tracker_;
-    const std::shared_ptr<CircuitBreaker> circuit_breaker_;
-    const std::shared_ptr<IConnectionPool> connection_pool_;
-    const std::shared_ptr<ParseCache> parse_cache_;
-    const std::shared_ptr<QueryCostEstimator> query_cost_estimator_;
-    const std::shared_ptr<AdaptiveRateController> adaptive_rate_controller_;
-
+    PipelineComponents c_;
     RetryConfig retry_config_;
 
     mutable std::atomic<uint64_t> total_requests_{0};

@@ -212,7 +212,7 @@ void AlertEvaluator::resolve_alert(const std::string& rule_name) {
 
     Alert resolved = it->second;
     resolved.resolved = true;
-    alert_history_.push_back(resolved);
+    alert_history_.emplace_back(std::move(resolved));
     active_alerts_.erase(it);
 
     alerts_resolved_count_.fetch_add(1, std::memory_order_relaxed);
@@ -232,7 +232,7 @@ void AlertEvaluator::write_alert_log(const Alert& alert) {
 
 void AlertEvaluator::send_webhook(const Alert& alert) {
     try {
-        std::string json = alert_to_json(alert);
+        const std::string json = alert_to_json(alert);
 
         // Parse URL
         std::string url = config_.webhook.url;
@@ -249,7 +249,7 @@ void AlertEvaluator::send_webhook(const Alert& alert) {
             port = 80;
         }
 
-        auto path_pos = url.find('/');
+        const auto path_pos = url.find('/');
         if (path_pos != std::string::npos) {
             path = url.substr(path_pos);
             url = url.substr(0, path_pos);

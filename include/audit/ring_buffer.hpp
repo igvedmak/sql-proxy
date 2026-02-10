@@ -134,7 +134,7 @@ public:
 
             // Move data out into the batch
             if (slot.data.has_value()) {
-                batch.push_back(std::move(*slot.data));
+                batch.emplace_back(std::move(*slot.data));
                 slot.data.reset();
             }
 

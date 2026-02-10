@@ -30,7 +30,7 @@ jt make_array() { jt j; j = array_t{}; return j; }
 jt make_null() { return jt{}; }
 
 void json_push(jt& arr, jt val) {
-    arr.get_array().push_back(std::move(val));
+    arr.get_array().emplace_back(std::move(val));
 }
 
 jt& json_back(jt& arr) {
@@ -822,12 +822,12 @@ std::vector<DatabaseConfig> ConfigLoader::extract_databases(const JsonValue& roo
                 replica.health_check_query = json_string(r, "health_check_query", "SELECT 1");
                 replica.weight = json_int(r, "weight", 1);
                 if (!replica.connection_string.empty()) {
-                    cfg.replicas.push_back(std::move(replica));
+                    cfg.replicas.emplace_back(std::move(replica));
                 }
             }
         }
 
-        result.push_back(std::move(cfg));
+        result.emplace_back(std::move(cfg));
     }
     return result;
 }
@@ -956,7 +956,7 @@ std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
         // Optional: shadow mode (log-only, don't enforce)
         policy.shadow = json_bool(p, "shadow", false);
 
-        result.push_back(std::move(policy));
+        result.emplace_back(std::move(policy));
     }
 
     return result;
@@ -988,7 +988,7 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const JsonValue& root) {
             limit.tokens_per_second = json_uint32(u, kTokensPerSecond, 100);
             limit.burst_capacity = json_uint32(u, kBurstCapacity, 20);
             if (!limit.user.empty()) {
-                cfg.per_user.push_back(std::move(limit));
+                cfg.per_user.emplace_back(std::move(limit));
             }
         }
     }
@@ -1010,7 +1010,7 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const JsonValue& root) {
             limit.tokens_per_second = json_uint32(db, kTokensPerSecond, 30000);
             limit.burst_capacity = json_uint32(db, kBurstCapacity, 5000);
             if (!limit.database.empty()) {
-                cfg.per_database.push_back(std::move(limit));
+                cfg.per_database.emplace_back(std::move(limit));
             }
         }
     }
@@ -1026,7 +1026,7 @@ RateLimitingConfig ConfigLoader::extract_rate_limiting(const JsonValue& root) {
             limit.tokens_per_second = json_uint32(upd, kTokensPerSecond, 100);
             limit.burst_capacity = json_uint32(upd, kBurstCapacity, 20);
             if (!limit.user.empty() && !limit.database.empty()) {
-                cfg.per_user_per_database.push_back(std::move(limit));
+                cfg.per_user_per_database.emplace_back(std::move(limit));
             }
         }
     }
@@ -1142,7 +1142,7 @@ std::vector<ClassifierConfig> ConfigLoader::extract_classifiers(const JsonValue&
         cfg.confidence_threshold = json_double(c, "confidence_threshold", 0.0);
 
         if (!cfg.type.empty()) {
-            result.push_back(std::move(cfg));
+            result.emplace_back(std::move(cfg));
         }
     }
 
@@ -1238,7 +1238,7 @@ EncryptionConfig ConfigLoader::extract_encryption(const JsonValue& root) {
             entry.table = json_string(c, "table", "");
             entry.column = json_string(c, "column", "");
             if (!entry.column.empty()) {
-                cfg.columns.push_back(std::move(entry));
+                cfg.columns.emplace_back(std::move(entry));
             }
         }
     }
@@ -1279,7 +1279,7 @@ std::vector<RlsRule> extract_rls_rules(const JsonValue& root) {
         rule.users = json_string_array(r, "users");
         rule.roles = json_string_array(r, "roles");
         if (!rule.condition.empty()) {
-            result.push_back(std::move(rule));
+            result.emplace_back(std::move(rule));
         }
     }
     return result;
@@ -1301,7 +1301,7 @@ std::vector<RewriteRule> extract_rewrite_rules(const JsonValue& root) {
         rule.users = json_string_array(r, "users");
         rule.roles = json_string_array(r, "roles");
         if (!rule.type.empty()) {
-            result.push_back(std::move(rule));
+            result.emplace_back(std::move(rule));
         }
     }
     return result;
@@ -1332,7 +1332,7 @@ std::vector<PluginConfigEntry> ConfigLoader::extract_plugins(const JsonValue& ro
         entry.type = json_string(p, kType, "");
         entry.config = json_string(p, "config", "");
         if (!entry.path.empty() && !entry.type.empty()) {
-            result.push_back(std::move(entry));
+            result.emplace_back(std::move(entry));
         }
     }
     return result;
@@ -1411,7 +1411,7 @@ AlertingConfig ConfigLoader::extract_alerting(const JsonValue& root) {
             rule.cooldown = std::chrono::seconds(json_int(r, "cooldown_seconds", 300));
             rule.severity = json_string(r, "severity", "warning");
             rule.enabled = json_bool(r, kEnabled, true);
-            cfg.rules.push_back(std::move(rule));
+            cfg.rules.emplace_back(std::move(rule));
         }
     }
 
@@ -1449,56 +1449,65 @@ AuthConfig ConfigLoader::extract_auth(const JsonValue& root) {
     return cfg;
 }
 
+// ---- Shared extraction + validation ----------------------------------------
+
+ProxyConfig ConfigLoader::extract_all_sections(const JsonValue& json) {
+    ProxyConfig config;
+    config.server = extract_server(json);
+    config.logging = extract_logging(json);
+    config.databases = extract_databases(json);
+    config.users = extract_users(json);
+    config.policies = extract_policies(json);
+    config.rate_limiting = extract_rate_limiting(json);
+    config.cache = extract_cache(json);
+    config.audit = extract_audit(json);
+    config.classifiers = extract_classifiers(json);
+    config.circuit_breaker = extract_circuit_breaker(json);
+    config.allocator = extract_allocator(json);
+    config.metrics = extract_metrics(json);
+    config.config_watcher = extract_config_watcher(json);
+    config.rls_rules = extract_rls_rules(json);
+    config.rewrite_rules = extract_rewrite_rules(json);
+    config.security = extract_security(json);
+    config.encryption = extract_encryption(json);
+    config.tenants = extract_tenants(json);
+    config.plugins = extract_plugins(json);
+    config.schema_management = extract_schema_management(json);
+    config.wire_protocol = extract_wire_protocol(json);
+    config.graphql = extract_graphql(json);
+    config.binary_rpc = extract_binary_rpc(json);
+    config.alerting = extract_alerting(json);
+    config.auth = extract_auth(json);
+    config.audit_sampling = extract_audit_sampling(json);
+    config.result_cache = extract_result_cache(json);
+    config.slow_query = extract_slow_query(json);
+    config.query_cost = extract_query_cost(json);
+    config.schema_drift = extract_schema_drift(json);
+    config.retry = extract_retry(json);
+    config.request_timeout = extract_request_timeout(json);
+    config.audit_encryption = extract_audit_encryption(json);
+    config.tracing = extract_tracing(json);
+    config.adaptive_rate_limiting = extract_adaptive_rate_limiting(json);
+    config.priority = extract_priority(json);
+    return config;
+}
+
+ConfigLoader::LoadResult ConfigLoader::validate_and_return(ProxyConfig config) {
+    auto errors = validate_config(config);
+    if (!errors.empty()) {
+        std::string combined = "Config validation failed:";
+        for (const auto& err : errors) { combined += "\n  - "; combined += err; }
+        return ConfigLoader::LoadResult::error(std::move(combined));
+    }
+    return ConfigLoader::LoadResult::ok(std::move(config));
+}
+
 // ---- Public API ------------------------------------------------------------
 
 ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_path) {
     try {
         const auto json = toml::parse_file(config_path);
-        ProxyConfig config;
-        config.server = extract_server(json);
-        config.logging = extract_logging(json);
-        config.databases = extract_databases(json);
-        config.users = extract_users(json);
-        config.policies = extract_policies(json);
-        config.rate_limiting = extract_rate_limiting(json);
-        config.cache = extract_cache(json);
-        config.audit = extract_audit(json);
-        config.classifiers = extract_classifiers(json);
-        config.circuit_breaker = extract_circuit_breaker(json);
-        config.allocator = extract_allocator(json);
-        config.metrics = extract_metrics(json);
-        config.config_watcher = extract_config_watcher(json);
-        config.rls_rules = extract_rls_rules(json);
-        config.rewrite_rules = extract_rewrite_rules(json);
-        config.security = extract_security(json);
-        config.encryption = extract_encryption(json);
-        config.tenants = extract_tenants(json);
-        config.plugins = extract_plugins(json);
-        config.schema_management = extract_schema_management(json);
-        config.wire_protocol = extract_wire_protocol(json);
-        config.graphql = extract_graphql(json);
-        config.binary_rpc = extract_binary_rpc(json);
-        config.alerting = extract_alerting(json);
-        config.auth = extract_auth(json);
-        config.audit_sampling = extract_audit_sampling(json);
-        config.result_cache = extract_result_cache(json);
-        config.slow_query = extract_slow_query(json);
-        config.query_cost = extract_query_cost(json);
-        config.schema_drift = extract_schema_drift(json);
-        config.retry = extract_retry(json);
-        config.request_timeout = extract_request_timeout(json);
-        config.audit_encryption = extract_audit_encryption(json);
-        config.tracing = extract_tracing(json);
-        config.adaptive_rate_limiting = extract_adaptive_rate_limiting(json);
-        config.priority = extract_priority(json);
-
-        auto errors = validate_config(config);
-        if (!errors.empty()) {
-            std::string combined = "Config validation failed:";
-            for (const auto& err : errors) { combined += "\n  - "; combined += err; }
-            return LoadResult::error(std::move(combined));
-        }
-        return LoadResult::ok(std::move(config));
+        return validate_and_return(extract_all_sections(json));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));
     }
@@ -1507,41 +1516,7 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
 ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_content) {
     try {
         const auto json = toml::parse_string(toml_content);
-        ProxyConfig config;
-        config.server = extract_server(json);
-        config.logging = extract_logging(json);
-        config.databases = extract_databases(json);
-        config.users = extract_users(json);
-        config.policies = extract_policies(json);
-        config.rate_limiting = extract_rate_limiting(json);
-        config.cache = extract_cache(json);
-        config.audit = extract_audit(json);
-        config.classifiers = extract_classifiers(json);
-        config.circuit_breaker = extract_circuit_breaker(json);
-        config.allocator = extract_allocator(json);
-        config.metrics = extract_metrics(json);
-        config.config_watcher = extract_config_watcher(json);
-        config.rls_rules = extract_rls_rules(json);
-        config.rewrite_rules = extract_rewrite_rules(json);
-        config.security = extract_security(json);
-        config.encryption = extract_encryption(json);
-        config.alerting = extract_alerting(json);
-        config.auth = extract_auth(json);
-        config.audit_sampling = extract_audit_sampling(json);
-        config.result_cache = extract_result_cache(json);
-        config.slow_query = extract_slow_query(json);
-        config.audit_encryption = extract_audit_encryption(json);
-        config.tracing = extract_tracing(json);
-        config.adaptive_rate_limiting = extract_adaptive_rate_limiting(json);
-        config.priority = extract_priority(json);
-
-        auto errors = validate_config(config);
-        if (!errors.empty()) {
-            std::string combined = "Config validation failed:";
-            for (const auto& err : errors) { combined += "\n  - "; combined += err; }
-            return LoadResult::error(std::move(combined));
-        }
-        return LoadResult::ok(std::move(config));
+        return validate_and_return(extract_all_sections(json));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to parse config: {}", e.what()));
     }
@@ -1708,7 +1683,7 @@ std::vector<std::string> ConfigLoader::validate_config(const ProxyConfig& config
     std::vector<std::string> errors;
 
     // Server
-    if (config.server.port < 1 || config.server.port > 65535) {
+    if (!utils::in_range<1, 65535>(config.server.port)) {
         errors.push_back(std::format("server.port must be 1-65535, got {}", config.server.port));
     }
 

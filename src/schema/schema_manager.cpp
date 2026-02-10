@@ -43,7 +43,7 @@ void SchemaManager::record_change(const std::string& user, const std::string& db
     snapshot.status = std::string{ddl_status::kApplied};
 
     std::unique_lock lock(mutex_);
-    history_.push_back(std::move(snapshot));
+    history_.emplace_back(std::move(snapshot));
 
     // Bounded history
     while (history_.size() > config_.max_history_entries) {
@@ -83,7 +83,7 @@ bool SchemaManager::approve(const std::string& id, const std::string& admin) {
     snapshot.type = it->second.type;
     snapshot.status = std::string{ddl_status::kApproved};
 
-    history_.push_back(std::move(snapshot));
+    history_.emplace_back(std::move(snapshot));
     while (history_.size() > config_.max_history_entries) {
         history_.pop_front();
     }
@@ -111,7 +111,7 @@ bool SchemaManager::reject(const std::string& id, const std::string& admin) {
     snapshot.type = it->second.type;
     snapshot.status = std::string{ddl_status::kRejected};
 
-    history_.push_back(std::move(snapshot));
+    history_.emplace_back(std::move(snapshot));
     while (history_.size() > config_.max_history_entries) {
         history_.pop_front();
     }

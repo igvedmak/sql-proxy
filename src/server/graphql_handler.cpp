@@ -183,7 +183,7 @@ std::optional<GraphQLQuery> GraphQLHandler::parse(const std::string& query) cons
         if (field_end > 0) {
             GraphQLField field;
             field.name = std::string(sv.substr(0, field_end));
-            gql.fields.push_back(std::move(field));
+            gql.fields.emplace_back(std::move(field));
             sv.remove_prefix(field_end);
         }
         skip_ws();

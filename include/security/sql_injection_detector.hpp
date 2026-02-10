@@ -9,7 +9,8 @@ namespace sqlproxy {
 
 class SqlInjectionDetector {
 public:
-    enum class ThreatLevel { NONE, LOW, MEDIUM, HIGH, CRITICAL };
+    // ThreatLevel is now a top-level enum in core/types.hpp; alias for backward compatibility
+    using ThreatLevel = sqlproxy::ThreatLevel;
 
     struct DetectionResult {
         ThreatLevel threat_level = ThreatLevel::NONE;
