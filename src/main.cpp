@@ -39,6 +39,8 @@
 #include "audit/audit_sampler.hpp"
 #include "cache/result_cache.hpp"
 #include "core/slow_query_tracker.hpp"
+#include "core/query_cost_estimator.hpp"
+#include "schema/schema_drift_detector.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -62,6 +64,7 @@ std::shared_ptr<WireServer> g_wire_server;
 std::shared_ptr<BinaryRpcServer> g_binary_rpc_server;
 std::shared_ptr<AlertEvaluator> g_alert_evaluator;
 std::shared_ptr<ShutdownCoordinator> g_shutdown;
+std::shared_ptr<SchemaDriftDetector> g_schema_drift_detector;
 
 // =========================================================================
 // Explicit Backend Registration (ensures linker includes backend objects)
@@ -90,6 +93,9 @@ void signal_handler(int signal) {
     }
 
     // Stop background services
+    if (g_schema_drift_detector) {
+        g_schema_drift_detector->stop();
+    }
     if (g_alert_evaluator) {
         g_alert_evaluator->stop();
     }
@@ -512,7 +518,33 @@ int main(int argc, char* argv[]) {
                 sq_cfg.threshold_ms, sq_cfg.max_entries));
         }
 
-        // Create pipeline (with Tier 5 + Tier B + Tier C + Tier D components)
+        // Tier F: Query Cost Estimator
+        std::shared_ptr<QueryCostEstimator> query_cost_estimator;
+        if (config_result.success && config_result.config.query_cost.enabled) {
+            QueryCostEstimator::Config qc_cfg;
+            qc_cfg.enabled = true;
+            qc_cfg.max_cost = config_result.config.query_cost.max_cost;
+            qc_cfg.max_estimated_rows = config_result.config.query_cost.max_estimated_rows;
+            qc_cfg.log_estimates = config_result.config.query_cost.log_estimates;
+            query_cost_estimator = std::make_shared<QueryCostEstimator>(pool, qc_cfg);
+            utils::log::info(std::format("Query cost estimator: enabled (max_cost={:.0f}, max_rows={})",
+                qc_cfg.max_cost, qc_cfg.max_estimated_rows));
+        }
+
+        // Tier F: Schema Drift Detector
+        if (config_result.success && config_result.config.schema_drift.enabled) {
+            SchemaDriftDetector::Config sd_cfg;
+            sd_cfg.enabled = true;
+            sd_cfg.check_interval_seconds = config_result.config.schema_drift.check_interval_seconds;
+            sd_cfg.database = config_result.config.schema_drift.database;
+            sd_cfg.schema_name = config_result.config.schema_drift.schema_name;
+            g_schema_drift_detector = std::make_shared<SchemaDriftDetector>(pool, sd_cfg);
+            g_schema_drift_detector->start();
+            utils::log::info(std::format("Schema drift detector: enabled (interval={}s, schema={})",
+                sd_cfg.check_interval_seconds, sd_cfg.schema_name));
+        }
+
+        // Create pipeline (with Tier 5 + Tier B + Tier C + Tier F components)
         auto pipeline = std::make_shared<Pipeline>(
             parser,
             policy_engine,
@@ -534,8 +566,21 @@ int main(int argc, char* argv[]) {
             slow_query_tracker,
             circuit_breaker,
             pool,
-            parse_cache
+            parse_cache,
+            query_cost_estimator
         );
+
+        // Tier F: Retry with backoff
+        if (config_result.success && config_result.config.retry.enabled) {
+            Pipeline::RetryConfig rc;
+            rc.enabled = true;
+            rc.max_retries = config_result.config.retry.max_retries;
+            rc.initial_backoff_ms = config_result.config.retry.initial_backoff_ms;
+            rc.max_backoff_ms = config_result.config.retry.max_backoff_ms;
+            pipeline->set_retry_config(rc);
+            utils::log::info(std::format("Retry: enabled (max_retries={}, initial_backoff={}ms)",
+                rc.max_retries, rc.initial_backoff_ms));
+        }
 
         // GraphQL Handler
         std::shared_ptr<GraphQLHandler> graphql_handler;
@@ -603,6 +648,11 @@ int main(int argc, char* argv[]) {
         }
         g_shutdown = std::make_shared<ShutdownCoordinator>(shutdown_cfg);
         g_server->set_shutdown_coordinator(g_shutdown);
+
+        // Tier F: Schema drift detector
+        if (g_schema_drift_detector) {
+            g_server->set_schema_drift_detector(g_schema_drift_detector);
+        }
 
         // Tier E: Brute force protection
         if (config_result.success && config_result.config.security.brute_force_enabled) {

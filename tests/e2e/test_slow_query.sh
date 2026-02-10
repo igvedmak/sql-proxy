@@ -1,7 +1,6 @@
 #!/bin/bash
 # E2E Tests: Slow Query Tracking
-# Tests slow query API endpoint
-# Auto-detects if slow query tracking is enabled; skips metric test gracefully if not.
+# Tests slow query API endpoint and metrics
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_helpers.sh"
@@ -22,18 +21,10 @@ run_test_status "Slow query API returns 200" \
     "-H 'Authorization: Bearer $ADMIN_TOKEN' $BASE_URL/api/v1/slow-queries" \
     "200"
 
-# Test 2: Slow query metric in Prometheus (only present when slow_query enabled)
-TOTAL=$((TOTAL + 1))
-echo -e "${BLUE}[TEST $TOTAL]${NC} Slow query metric present"
-
-if curl -s "$BASE_URL/metrics" | grep -q "sql_proxy_slow_queries_total"; then
-    echo -e "  ${GREEN}PASS${NC}"
-    PASSED=$((PASSED + 1))
-else
-    echo -e "  ${YELLOW}SKIP${NC} (slow query tracking not enabled in config)"
-    PASSED=$((PASSED + 1))
-fi
-echo ""
+# Test 2: Slow query metric in Prometheus
+run_test "Slow query metric present" \
+    "curl -s $BASE_URL/metrics" \
+    "sql_proxy_slow_queries_total"
 
 print_summary "Slow Query Tracking"
 return $FAILED 2>/dev/null || exit $FAILED

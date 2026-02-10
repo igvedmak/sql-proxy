@@ -29,6 +29,7 @@ class SlowQueryTracker;
 class CircuitBreaker;
 class IConnectionPool;
 class ParseCache;
+class QueryCostEstimator;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -71,8 +72,18 @@ public:
         std::shared_ptr<SlowQueryTracker> slow_query_tracker = nullptr,
         std::shared_ptr<CircuitBreaker> circuit_breaker = nullptr,
         std::shared_ptr<IConnectionPool> connection_pool = nullptr,
-        std::shared_ptr<ParseCache> parse_cache = nullptr
+        std::shared_ptr<ParseCache> parse_cache = nullptr,
+        std::shared_ptr<QueryCostEstimator> query_cost_estimator = nullptr
     );
+
+    struct RetryConfig {
+        bool enabled = false;
+        int max_retries = 1;
+        int initial_backoff_ms = 100;
+        int max_backoff_ms = 2000;
+    };
+
+    void set_retry_config(RetryConfig config) { retry_config_ = config; }
 
     /**
      * @brief Execute request through pipeline
@@ -120,6 +131,8 @@ public:
      * @brief Get parse cache (for DDL invalidation/metrics)
      */
     std::shared_ptr<ParseCache> get_parse_cache() const { return parse_cache_; }
+
+    std::shared_ptr<QueryCostEstimator> get_query_cost_estimator() const { return query_cost_estimator_; }
 
     struct Stats {
         uint64_t total_requests;
@@ -229,6 +242,11 @@ private:
      */
     bool intercept_ddl(RequestContext& ctx);
 
+    /**
+     * @brief Layer 4.8: Query cost estimation (can block expensive queries)
+     */
+    bool check_query_cost(RequestContext& ctx);
+
     const std::shared_ptr<ISqlParser> parser_;
     const std::shared_ptr<PolicyEngine> policy_engine_;
     const std::shared_ptr<IRateLimiter> rate_limiter_;
@@ -250,6 +268,9 @@ private:
     const std::shared_ptr<CircuitBreaker> circuit_breaker_;
     const std::shared_ptr<IConnectionPool> connection_pool_;
     const std::shared_ptr<ParseCache> parse_cache_;
+    const std::shared_ptr<QueryCostEstimator> query_cost_estimator_;
+
+    RetryConfig retry_config_;
 
     mutable std::atomic<uint64_t> total_requests_{0};
     mutable std::atomic<uint64_t> requests_blocked_{0};

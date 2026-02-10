@@ -295,6 +295,33 @@ struct ProxyConfig {
         uint32_t threshold_ms = 500;
         size_t max_entries = 1000;
     } slow_query;
+
+    // Tier F (P1/P2 Roadmap features)
+    struct QueryCostConfig {
+        bool enabled = false;
+        double max_cost = 100000.0;
+        uint64_t max_estimated_rows = 1000000;
+        bool log_estimates = false;
+    } query_cost;
+
+    struct SchemaDriftConfig {
+        bool enabled = false;
+        int check_interval_seconds = 600;
+        std::string database = "testdb";
+        std::string schema_name = "public";
+    } schema_drift;
+
+    struct RetryConfig {
+        bool enabled = false;
+        int max_retries = 1;
+        int initial_backoff_ms = 100;
+        int max_backoff_ms = 2000;
+    } retry;
+
+    struct RequestTimeoutConfig {
+        bool enabled = true;
+        uint32_t timeout_ms = 30000;
+    } request_timeout;
 };
 
 // ============================================================================
@@ -422,6 +449,12 @@ private:
 
     // Tier C extractors
     static ProxyConfig::SlowQueryConfig extract_slow_query(const JsonValue& root);
+
+    // Tier F extractors
+    static ProxyConfig::QueryCostConfig extract_query_cost(const JsonValue& root);
+    static ProxyConfig::SchemaDriftConfig extract_schema_drift(const JsonValue& root);
+    static ProxyConfig::RetryConfig extract_retry(const JsonValue& root);
+    static ProxyConfig::RequestTimeoutConfig extract_request_timeout(const JsonValue& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

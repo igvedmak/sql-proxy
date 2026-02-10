@@ -41,16 +41,19 @@ bash tests/e2e/test_brute_force.sh
 | `test_masking.sh` | Data masking (partial, hash, column block) | 4 |
 | `test_query_features.sh` | Query rewriting, dry-run, RLS, tracing | 6 |
 | `test_sql_injection.sh` | SQL injection detection + encoding bypass | 6 |
-| `test_metrics.sh` | Prometheus metrics coverage | 12 |
+| `test_metrics.sh` | Prometheus metrics coverage | 14 |
 | `test_dashboard.sh` | Dashboard API (stats, policies, users, alerts) | 5 |
-| `test_compliance.sh` | Compliance endpoints (PII, security, lineage) | 3 |
+| `test_compliance.sh` | Compliance endpoints (PII, security, lineage, GDPR) | 5 |
 | `test_circuit_breaker.sh` | Circuit breaker events API | 2 |
 | `test_config.sh` | Config validation + hot-reload | 4 |
 | `test_slow_query.sh` | Slow query tracking | 2 |
 | `test_ip_allowlist.sh` | IP allowlisting per user (CIDR) | 4 |
 | `test_rate_limiting.sh` | Hierarchical rate limiting | 3 |
 | `test_brute_force.sh` | Brute force lockout + exponential backoff | 4 |
-| **Total** | | **~95** |
+| `test_schema_drift.sh` | Schema drift detection API + metrics | 6 |
+| `test_query_cost.sh` | Query cost estimation + EXPLAIN metrics | 4 |
+| `test_gdpr.sh` | GDPR data subject access endpoint | 6 |
+| **Total** | | **115** |
 
 ## Core Requirements Coverage
 
@@ -74,6 +77,10 @@ The file `config/proxy.toml` is a standalone config with all features enabled an
 - Result cache: enabled
 - Audit sampling: 100% sample rate
 - IP allowlist: `restricted_user` limited to `10.0.0.0/8` and `192.168.0.0/16`
+- Query cost estimation: enabled (`max_cost=100000`, `max_estimated_rows=1000000`)
+- Schema drift detection: enabled (`check_interval_seconds=60`)
+- Retry with backoff: enabled (`max_retries=2`, `initial_backoff_ms=100`)
+- Request timeout: enabled (`timeout_ms=30000`)
 
 ## Manual Feature Verification
 
@@ -281,6 +288,10 @@ curl http://localhost:8080/metrics
 # sql_proxy_circuit_breaker_transitions_total — CB state changes
 # sql_proxy_slow_queries_total          — Slow queries detected
 # sql_proxy_cache_hits_total            — Result cache hits
+# sql_proxy_query_cost_estimated_total  — Queries cost-estimated
+# sql_proxy_query_cost_rejected_total   — Queries rejected by cost
+# sql_proxy_schema_drifts_total         — Schema drifts detected
+# sql_proxy_schema_drift_checks_total   — Schema drift checks performed
 # sql_proxy_info{version="1.0.0"}       — Build info
 ```
 
@@ -439,6 +450,60 @@ When enabled, audit records are sampled at the configured rate. With `default_sa
 ```bash
 # Check audit metrics (should show emitted records)
 curl -s http://localhost:8080/metrics | grep audit_emitted
+```
+
+---
+
+### 21. Schema Drift Detection
+
+Background thread periodically snapshots `information_schema.columns` and diffs against baseline.
+
+```bash
+# View drift events (admin only)
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:8080/api/v1/schema/drift
+# {"drift_events":[],"total_drifts":0,"checks_performed":1,"enabled":true}
+
+# Check metrics
+curl -s http://localhost:8080/metrics | grep schema_drift
+# sql_proxy_schema_drifts_total 0
+# sql_proxy_schema_drift_checks_total 1
+```
+
+---
+
+### 22. Query Cost Estimation
+
+Runs `EXPLAIN` on SELECT queries before execution. Rejects queries exceeding cost/row thresholds.
+
+```bash
+# Normal SELECT — cost estimated but allowed
+curl -X POST http://localhost:8080/api/v1/query \
+  -H 'Content-Type: application/json' \
+  -d '{"user":"admin","database":"testdb","sql":"SELECT * FROM customers"}'
+# Succeeds — cost within thresholds
+
+# Check metrics
+curl -s http://localhost:8080/metrics | grep query_cost
+# sql_proxy_query_cost_estimated_total 1
+# sql_proxy_query_cost_rejected_total 0
+```
+
+---
+
+### 23. GDPR Data Subject Access
+
+Returns all PII access events for a specific user (GDPR Article 15 compliance).
+
+```bash
+# Get all PII access events for analyst
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  'http://localhost:8080/api/v1/compliance/data-subject-access?user=analyst'
+# {"subject":"analyst","events":[...],"total_events":N}
+
+# Missing user param — 400
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8080/api/v1/compliance/data-subject-access
+# {"success":false,"error":"Missing required parameter: user"}
 ```
 
 ---

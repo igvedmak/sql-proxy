@@ -39,7 +39,9 @@ Client Request
      ↓ ALLOW
 ④½ REWRITE ──────── Row-level security + enforce LIMIT
      ↓
-⑤ EXECUTE ────────── Connection pool + circuit breaker
+④⅞ COST CHECK ───── EXPLAIN-based query cost estimation
+     ↓
+⑤ EXECUTE ────────── Connection pool + circuit breaker + retry
      ↓
 ⑤½ POST-PROCESS ─── Decrypt → Column ACL → Data masking
      ↓
@@ -74,6 +76,7 @@ Response + Classifications
 - PII classification (email, phone, SSN, credit card)
 - Data masking (partial, hash, redact)
 - Data lineage tracking for GDPR/SOC2 compliance
+- GDPR data subject access endpoint (Article 15)
 - Prometheus metrics, W3C distributed tracing
 - Admin dashboard with real-time SSE metrics
 
@@ -81,6 +84,10 @@ Response + Classifications
 - Hierarchical rate limiting (Global → User → DB → User+DB)
 - Per-database circuit breakers and connection pools
 - Configurable alerting rules with webhook/syslog sinks
+- Request timeout with query cancellation
+- Retry with exponential backoff for transient failures
+- Query cost estimation (EXPLAIN-based rejection of expensive queries)
+- Schema drift detection (background monitoring for unauthorized changes)
 
 ## Configuration
 

@@ -82,6 +82,9 @@ echo -e "${CYAN}--- Feature-gated tests (require E2E config) ---${NC}"
 run_suite "test_slow_query.sh" "Slow Query Tracking"
 run_suite "test_ip_allowlist.sh" "IP Allowlisting"
 run_suite "test_brute_force.sh" "Brute Force Protection"
+run_suite "test_schema_drift.sh" "Schema Drift Detection"
+run_suite "test_query_cost.sh" "Query Cost Estimation"
+run_suite "test_gdpr.sh" "GDPR Data Subject Access"
 
 # Final summary
 echo ""

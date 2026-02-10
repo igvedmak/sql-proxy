@@ -20,6 +20,8 @@
 #include "security/ip_allowlist.hpp"
 #include "security/lineage_tracker.hpp"
 #include "schema/schema_manager.hpp"
+#include "schema/schema_drift_detector.hpp"
+#include "core/query_cost_estimator.hpp"
 
 // cpp-httplib is header-only — suppress its internal deprecation warnings
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -406,6 +408,8 @@ void HttpServer::start() {
                     httplib::StatusCode::BadRequest_400,           // INVALID_REQUEST
                     httplib::StatusCode::PayloadTooLarge_413,      // RESULT_TOO_LARGE
                     httplib::StatusCode::Forbidden_403,            // SQLI_BLOCKED
+                    httplib::StatusCode::RequestTimeout_408,       // QUERY_TIMEOUT
+                    httplib::StatusCode::Forbidden_403,            // QUERY_TOO_EXPENSIVE
                 };
                 const size_t idx = static_cast<size_t>(response.error_code);
                 res.status = (idx < std::size(kErrorToHttp))
@@ -721,6 +725,32 @@ void HttpServer::start() {
             "# TYPE sql_proxy_ip_blocked_total counter\n"
             "sql_proxy_ip_blocked_total {}\n\n",
             s_ip_blocks.load(std::memory_order_relaxed));
+
+        // --- Query cost estimator stats ---
+        const auto cost_estimator = pipeline_->get_query_cost_estimator();
+        if (cost_estimator && cost_estimator->is_enabled()) {
+            output += std::format(
+                "# HELP sql_proxy_query_cost_rejected_total Queries rejected by cost estimator\n"
+                "# TYPE sql_proxy_query_cost_rejected_total counter\n"
+                "sql_proxy_query_cost_rejected_total {}\n\n"
+                "# HELP sql_proxy_query_cost_estimated_total Queries estimated by cost estimator\n"
+                "# TYPE sql_proxy_query_cost_estimated_total counter\n"
+                "sql_proxy_query_cost_estimated_total {}\n\n",
+                cost_estimator->total_rejected(), cost_estimator->total_estimated());
+        }
+
+        // --- Schema drift stats ---
+        if (schema_drift_detector_ && schema_drift_detector_->is_enabled()) {
+            output += std::format(
+                "# HELP sql_proxy_schema_drifts_total Total schema drifts detected\n"
+                "# TYPE sql_proxy_schema_drifts_total counter\n"
+                "sql_proxy_schema_drifts_total {}\n\n"
+                "# HELP sql_proxy_schema_drift_checks_total Schema drift checks performed\n"
+                "# TYPE sql_proxy_schema_drift_checks_total counter\n"
+                "sql_proxy_schema_drift_checks_total {}\n\n",
+                schema_drift_detector_->total_drifts(),
+                schema_drift_detector_->checks_performed());
+        }
 
         // --- Build info ---
         output += "# HELP sql_proxy_info Build information\n"
@@ -1156,6 +1186,81 @@ void HttpServer::start() {
                 std::format(R"({{"success":false,"error":"{}"}})", e.what()),
                 http::kJsonContentType);
         }
+    });
+
+    // GET /api/v1/schema/drift - Schema drift events (admin only)
+    svr.Get("/api/v1/schema/drift", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!admin_token_.empty()) {
+            const auto auth = req.get_header_value(http::kAuthorizationHeader);
+            if (auth.size() <= http::kBearerPrefix.size() ||
+                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+                res.status = httplib::StatusCode::Unauthorized_401;
+                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
+                return;
+            }
+        }
+        if (!schema_drift_detector_ || !schema_drift_detector_->is_enabled()) {
+            res.set_content(R"({"drift_events":[],"total_drifts":0,"enabled":false})", http::kJsonContentType);
+            return;
+        }
+        const auto events = schema_drift_detector_->get_drift_events();
+        std::string json = std::format("{{\"drift_events\":[");
+        for (size_t i = 0; i < events.size(); ++i) {
+            if (i > 0) json += ",";
+            const auto& e = events[i];
+            json += std::format(
+                "{{\"timestamp\":\"{}\",\"change_type\":\"{}\",\"table\":\"{}\","
+                "\"column\":\"{}\",\"old_type\":\"{}\",\"new_type\":\"{}\"}}",
+                e.timestamp, e.change_type, e.table_name,
+                e.column_name, e.old_type, e.new_type);
+        }
+        json += std::format("],\"total_drifts\":{},\"checks_performed\":{},\"enabled\":true}}",
+            schema_drift_detector_->total_drifts(),
+            schema_drift_detector_->checks_performed());
+        res.set_content(json, http::kJsonContentType);
+    });
+
+    // GET /api/v1/compliance/data-subject-access - GDPR data subject access (admin only)
+    svr.Get("/api/v1/compliance/data-subject-access", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!admin_token_.empty()) {
+            const auto auth = req.get_header_value(http::kAuthorizationHeader);
+            if (auth.size() <= http::kBearerPrefix.size() ||
+                std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
+                std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+                res.status = httplib::StatusCode::Unauthorized_401;
+                res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
+                return;
+            }
+        }
+        if (!lineage_tracker_) {
+            res.status = httplib::StatusCode::ServiceUnavailable_503;
+            res.set_content(R"({"success":false,"error":"Lineage tracker not configured"})", http::kJsonContentType);
+            return;
+        }
+
+        const std::string subject_user = req.get_param_value("user");
+        if (subject_user.empty()) {
+            res.status = httplib::StatusCode::BadRequest_400;
+            res.set_content(R"({"success":false,"error":"Missing required parameter: user"})", http::kJsonContentType);
+            return;
+        }
+
+        const auto events = lineage_tracker_->get_events(subject_user, "", 1000);
+        std::string json = std::format("{{\"subject\":\"{}\",\"events\":[", subject_user);
+        for (size_t i = 0; i < events.size(); ++i) {
+            if (i > 0) json += ",";
+            const auto& e = events[i];
+            json += std::format(
+                "{{\"timestamp\":\"{}\",\"database\":\"{}\",\"table\":\"{}\","
+                "\"column\":\"{}\",\"classification\":\"{}\",\"access_type\":\"{}\","
+                "\"was_masked\":{}}}",
+                e.timestamp, e.database, e.table,
+                e.column, e.classification, e.access_type,
+                utils::booltostr(e.was_masked));
+        }
+        json += std::format("],\"total_events\":{}}}", events.size());
+        res.set_content(json, http::kJsonContentType);
     });
 
     // Register dashboard routes

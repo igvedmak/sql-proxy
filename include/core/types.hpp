@@ -81,7 +81,9 @@ enum class ErrorCode {
     INTERNAL_ERROR,
     INVALID_REQUEST,
     RESULT_TOO_LARGE,
-    SQLI_BLOCKED
+    SQLI_BLOCKED,
+    QUERY_TIMEOUT,
+    QUERY_TOO_EXPENSIVE
 };
 
 enum class FailureCategory {
@@ -792,6 +794,8 @@ inline const char* error_code_to_string(ErrorCode code) {
         case ErrorCode::INVALID_REQUEST: return "INVALID_REQUEST";
         case ErrorCode::RESULT_TOO_LARGE: return "RESULT_TOO_LARGE";
         case ErrorCode::SQLI_BLOCKED: return "SQLI_BLOCKED";
+        case ErrorCode::QUERY_TIMEOUT: return "QUERY_TIMEOUT";
+        case ErrorCode::QUERY_TOO_EXPENSIVE: return "QUERY_TOO_EXPENSIVE";
         default: return "UNKNOWN";
     }
 }

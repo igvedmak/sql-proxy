@@ -31,5 +31,16 @@ run_test_status "Data lineage endpoint returns 200" \
     "-H 'Authorization: Bearer $ADMIN_TOKEN' $BASE_URL/api/v1/compliance/lineage" \
     "200"
 
+# Test 4: GDPR data subject access endpoint
+run_test_status "Data subject access endpoint returns 200" \
+    "-H 'Authorization: Bearer $ADMIN_TOKEN' '$BASE_URL/api/v1/compliance/data-subject-access?user=analyst'" \
+    "200" \
+    '"subject":"analyst"'
+
+# Test 5: Data subject access requires user param
+run_test_status "Data subject access requires user param" \
+    "-H 'Authorization: Bearer $ADMIN_TOKEN' $BASE_URL/api/v1/compliance/data-subject-access" \
+    "400"
+
 print_summary "Compliance Endpoints"
 return $FAILED 2>/dev/null || exit $FAILED

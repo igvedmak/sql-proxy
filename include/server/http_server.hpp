@@ -20,6 +20,7 @@ class DashboardHandler;
 class AlertEvaluator;
 class BruteForceProtector;
 class ShutdownCoordinator;
+class SchemaDriftDetector;
 
 /**
  * @brief User information for authentication
@@ -109,6 +110,10 @@ public:
         brute_force_protector_ = std::move(bfp);
     }
 
+    void set_schema_drift_detector(std::shared_ptr<SchemaDriftDetector> sdd) {
+        schema_drift_detector_ = std::move(sdd);
+    }
+
 private:
     /**
      * @brief Validate user exists and resolve roles
@@ -152,6 +157,9 @@ private:
 
     // Tier E: Brute force protection
     std::shared_ptr<BruteForceProtector> brute_force_protector_;
+
+    // Tier F: Schema drift detector
+    std::shared_ptr<SchemaDriftDetector> schema_drift_detector_;
 };
 
 } // namespace sqlproxy

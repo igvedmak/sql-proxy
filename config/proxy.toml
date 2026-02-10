@@ -60,6 +60,13 @@ roles = ["auditor", "readonly"]
 api_key = "sk-auditor-key-fghij"
 description = "Auditor with limited read access"
 
+[[users]]
+name = "restricted_user"
+roles = ["analyst"]
+api_key = "sk-restricted-key-99999"
+allowed_ips = ["10.0.0.0/8", "192.168.0.0/16"]
+description = "User with IP allowlist restrictions"
+
 # ============================================================================
 # Access Control Policies
 # ============================================================================
@@ -327,6 +334,26 @@ num_shards = 16
 ttl_seconds = 300
 
 # ============================================================================
+# Result Cache (Tier B)
+# ============================================================================
+
+[result_cache]
+enabled = true
+max_entries = 100
+num_shards = 4
+ttl_seconds = 30
+max_result_size_bytes = 1048576
+
+# ============================================================================
+# Slow Query Tracking (Tier C)
+# ============================================================================
+
+[slow_query]
+enabled = true
+threshold_ms = 1
+max_entries = 100
+
+# ============================================================================
 # PII Classification Rules
 # ============================================================================
 
@@ -446,6 +473,13 @@ poll_interval_seconds = 5
 injection_detection = true
 anomaly_detection = true
 lineage_tracking = true
+
+[security.brute_force]
+enabled = true
+max_attempts = 3
+window_seconds = 60
+lockout_seconds = 2
+max_lockout_seconds = 10
 
 # ============================================================================
 # Column Encryption (Tier 4)
@@ -595,3 +629,41 @@ enabled = false
 host = "0.0.0.0"
 port = 9090
 max_connections = 50
+
+# ============================================================================
+# Query Cost Estimation (Tier F)
+# ============================================================================
+
+[query_cost]
+enabled = true
+max_cost = 100000.0
+max_estimated_rows = 1000000
+log_estimates = false
+
+# ============================================================================
+# Schema Drift Detection (Tier F)
+# ============================================================================
+
+[schema_drift]
+enabled = true
+check_interval_seconds = 60
+database = "testdb"
+schema_name = "public"
+
+# ============================================================================
+# Retry with Backoff (Tier F)
+# ============================================================================
+
+[retry]
+enabled = true
+max_retries = 2
+initial_backoff_ms = 100
+max_backoff_ms = 2000
+
+# ============================================================================
+# Request Timeout (Tier F)
+# ============================================================================
+
+[request_timeout]
+enabled = true
+timeout_ms = 30000

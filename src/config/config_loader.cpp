@@ -1483,6 +1483,10 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.audit_sampling = extract_audit_sampling(json);
         config.result_cache = extract_result_cache(json);
         config.slow_query = extract_slow_query(json);
+        config.query_cost = extract_query_cost(json);
+        config.schema_drift = extract_schema_drift(json);
+        config.retry = extract_retry(json);
+        config.request_timeout = extract_request_timeout(json);
 
         auto errors = validate_config(config);
         if (!errors.empty()) {
@@ -1581,6 +1585,56 @@ ProxyConfig::SlowQueryConfig ConfigLoader::extract_slow_query(const JsonValue& r
     cfg.enabled = json_bool(s, kEnabled, false);
     cfg.threshold_ms = json_uint32(s, "threshold_ms", 500);
     cfg.max_entries = json_size(s, "max_entries", 1000);
+    return cfg;
+}
+
+// ============================================================================
+// Tier F extractors
+// ============================================================================
+
+ProxyConfig::QueryCostConfig ConfigLoader::extract_query_cost(const JsonValue& root) {
+    ProxyConfig::QueryCostConfig cfg;
+    if (!root.contains("query_cost")) return cfg;
+    const auto s = root["query_cost"];
+
+    cfg.enabled = json_bool(s, kEnabled, false);
+    cfg.max_cost = json_double(s, "max_cost", 100000.0);
+    cfg.max_estimated_rows = static_cast<uint64_t>(json_int(s, "max_estimated_rows", 1000000));
+    cfg.log_estimates = json_bool(s, "log_estimates", false);
+    return cfg;
+}
+
+ProxyConfig::SchemaDriftConfig ConfigLoader::extract_schema_drift(const JsonValue& root) {
+    ProxyConfig::SchemaDriftConfig cfg;
+    if (!root.contains("schema_drift")) return cfg;
+    const auto s = root["schema_drift"];
+
+    cfg.enabled = json_bool(s, kEnabled, false);
+    cfg.check_interval_seconds = json_int(s, "check_interval_seconds", 600);
+    cfg.database = json_string(s, "database", "testdb");
+    cfg.schema_name = json_string(s, "schema_name", "public");
+    return cfg;
+}
+
+ProxyConfig::RetryConfig ConfigLoader::extract_retry(const JsonValue& root) {
+    ProxyConfig::RetryConfig cfg;
+    if (!root.contains("retry")) return cfg;
+    const auto s = root["retry"];
+
+    cfg.enabled = json_bool(s, kEnabled, false);
+    cfg.max_retries = json_int(s, "max_retries", 1);
+    cfg.initial_backoff_ms = json_int(s, "initial_backoff_ms", 100);
+    cfg.max_backoff_ms = json_int(s, "max_backoff_ms", 2000);
+    return cfg;
+}
+
+ProxyConfig::RequestTimeoutConfig ConfigLoader::extract_request_timeout(const JsonValue& root) {
+    ProxyConfig::RequestTimeoutConfig cfg;
+    if (!root.contains("request_timeout")) return cfg;
+    const auto s = root["request_timeout"];
+
+    cfg.enabled = json_bool(s, kEnabled, true);
+    cfg.timeout_ms = json_uint32(s, "timeout_ms", 30000);
     return cfg;
 }
 

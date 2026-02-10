@@ -6,19 +6,6 @@ This document outlines potential features and improvements for the SQL Proxy sys
 
 ## Performance Optimizations
 
-### 1. Query Cost Estimation Layer
-**Problem:** Expensive queries (e.g., full table scans on 10M+ rows) consume database resources before we know they're problematic.
-
-**Solution:** Add a Layer 3.8 between analysis and policy evaluation:
-- Run `EXPLAIN` on parsed queries (read-only operation)
-- Parse estimated cost, estimated rows, and scan types
-- Block queries exceeding configurable thresholds before execution
-- Return meaningful error: "Query rejected: estimated to scan 10M rows"
-
-**Impact:** Prevents runaway queries from consuming database resources
-
----
-
 ### 3. Request Prioritization
 **Problem:** All queries treated equally — an admin dashboard panel query waits behind a developer's `SELECT *` returning 100K rows.
 
@@ -91,38 +78,6 @@ This document outlines potential features and improvements for the SQL Proxy sys
 
 ---
 
-## Reliability Improvements
-
-### 13. Request Timeout & Cancellation
-**Problem:** A slow query holds a connection and thread indefinitely. No way to enforce proxy-level timeout.
-
-**Solution:**
-- Add `request_timeout` config (default: 30 seconds)
-- Start watchdog timer when query enters execution layer
-- On timeout: call `PQcancel()` to kill backend query
-- Return 408 Request Timeout to client
-- Log timeout events to audit
-- Add metric: `sql_proxy_requests_timeout_total`
-
-**Impact:** Prevents runaway queries from holding resources
-
----
-
-### 17. Retry with Backoff for Transient Failures
-**Problem:** Transient errors (connection refused during a 1-second failover) immediately count as failures.
-
-**Solution:**
-- For specific error types, retry once with exponential backoff:
-  - Connection refused: retry after 100ms
-  - Network timeout: retry after 200ms
-- Only count as failure if retry also fails
-- Limit retries to 1 to avoid cascading delays
-- Log retry attempts to audit
-
-**Impact:** Tolerates brief database unavailability without tripping breakers
-
----
-
 ## Observability Features
 
 ### 18. Per-Layer Distributed Tracing Spans
@@ -156,34 +111,6 @@ This document outlines potential features and improvements for the SQL Proxy sys
 - Support key rotation
 
 **Impact:** Encrypted audit trails meet compliance requirements
-
----
-
-### 26. GDPR Data Subject Access Report
-**Problem:** Under GDPR Article 15, individuals can request all data held about them. Need to find every PII access.
-
-**Solution:**
-- New endpoint: `GET /api/v1/compliance/data-subject-access?email=user@example.com`
-- Query lineage tracker for all events accessing PII matching the subject
-- Return: which users accessed their data, when, from what queries, whether masked
-- Include: table, column, timestamp, accessor user, query fingerprint
-- Export as JSON or PDF
-
-**Impact:** GDPR Article 15 compliance with one API call
-
----
-
-### 27. Schema Drift Detection
-**Problem:** Unauthorized DDL bypassing the proxy (direct database access) corrupts expectations. Policies/classifiers become stale.
-
-**Solution:**
-- Periodically snapshot database schema (every 10 minutes)
-- Compare against baseline stored in schema manager
-- Alert on differences: added/dropped/altered columns
-- Report in dashboard: "Column `customers.ssn` was dropped outside proxy"
-- Option to auto-sync policies on drift
-
-**Impact:** Catches unauthorized schema changes
 
 ---
 
@@ -401,14 +328,10 @@ Given a query, explain in plain English what it does and what data it accesses.
 - Wire protocol TLS (#12)
 
 **P1 (High Impact):**
-- Request timeout & cancellation (#13)
 - OAuth2/OIDC auth (#8)
 - Per-layer distributed tracing (#18)
 
-**P2 (Ops Excellence):**
-- Query cost estimation (#1)
-
-**P3 (Feature Expansion):**
+**P2 (Feature Expansion):**
 - GraphQL mutations (#37)
 - Per-tenant circuit breakers (#32)
 - Plugin hot-reload (#30)

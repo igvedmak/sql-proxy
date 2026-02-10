@@ -1,6 +1,7 @@
 #include "core/pipeline.hpp"
 #include "core/masking.hpp"
 #include "core/query_rewriter.hpp"
+#include "core/query_cost_estimator.hpp"
 #include "core/utils.hpp"
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
@@ -19,6 +20,7 @@
 #include "db/iconnection_pool.hpp"
 #include "parser/parse_cache.hpp"
 
+#include <thread>
 #include <unordered_set>
 
 namespace sqlproxy {
@@ -44,7 +46,8 @@ Pipeline::Pipeline(
     std::shared_ptr<SlowQueryTracker> slow_query_tracker,
     std::shared_ptr<CircuitBreaker> circuit_breaker,
     std::shared_ptr<IConnectionPool> connection_pool,
-    std::shared_ptr<ParseCache> parse_cache)
+    std::shared_ptr<ParseCache> parse_cache,
+    std::shared_ptr<QueryCostEstimator> query_cost_estimator)
     : parser_(std::move(parser)),
       policy_engine_(std::move(policy_engine)),
       rate_limiter_(std::move(rate_limiter)),
@@ -65,7 +68,8 @@ Pipeline::Pipeline(
       slow_query_tracker_(std::move(slow_query_tracker)),
       circuit_breaker_(std::move(circuit_breaker)),
       connection_pool_(std::move(connection_pool)),
-      parse_cache_(std::move(parse_cache)) {}
+      parse_cache_(std::move(parse_cache)),
+      query_cost_estimator_(std::move(query_cost_estimator)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -170,6 +174,11 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     // Layer 4.5: Query rewriting (RLS + enforce_limit)
     rewrite_query(ctx);
 
+    // Layer 4.8: Query cost estimation (can block expensive queries)
+    if (!check_query_cost(ctx)) {
+        return block_and_respond(ctx);
+    }
+
     // Dry-run mode: skip execution and everything after
     if (ctx.dry_run) {
         ctx.query_result.success = true;
@@ -177,10 +186,24 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         return build_response(ctx);
     }
 
-    // Layer 5: Execute
-    if (!execute_query(ctx)) {
-        emit_audit(ctx);
-        return build_response(ctx);
+    // Layer 5: Execute (with retry on transient failures)
+    {
+        bool exec_ok = execute_query(ctx);
+        if (!exec_ok && retry_config_.enabled &&
+            ctx.query_result.error_code == ErrorCode::DATABASE_ERROR) {
+            int backoff_ms = retry_config_.initial_backoff_ms;
+            for (int attempt = 0; attempt < retry_config_.max_retries; ++attempt) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+                ctx.query_result = {};
+                exec_ok = execute_query(ctx);
+                if (exec_ok) break;
+                backoff_ms = std::min(backoff_ms * 2, retry_config_.max_backoff_ms);
+            }
+        }
+        if (!exec_ok) {
+            emit_audit(ctx);
+            return build_response(ctx);
+        }
     }
 
     // Layer 5.01: Slow query tracking
@@ -688,6 +711,24 @@ bool Pipeline::intercept_ddl(RequestContext& ctx) {
         ctx.query_result.success = false;
         ctx.query_result.error_code = ErrorCode::ACCESS_DENIED;
         ctx.query_result.error_message = "DDL requires approval — submitted for review";
+        return false;
+    }
+    return true;
+}
+
+bool Pipeline::check_query_cost(RequestContext& ctx) {
+    if (!query_cost_estimator_ || !query_cost_estimator_->is_enabled()) return true;
+
+    // Only check cost for SELECT statements
+    if (ctx.analysis.statement_type != StatementType::SELECT) return true;
+
+    const auto estimate = query_cost_estimator_->estimate(ctx.sql);
+    if (estimate.is_rejected()) {
+        ctx.query_result.success = false;
+        ctx.query_result.error_code = ErrorCode::QUERY_TOO_EXPENSIVE;
+        ctx.query_result.error_message = std::format(
+            "Query too expensive: cost={:.1f} rows={} plan={}",
+            estimate.total_cost, estimate.estimated_rows, estimate.plan_type);
         return false;
     }
     return true;
