@@ -50,7 +50,6 @@ private:
      * @brief Classify by data pattern (Strategy 3)
      */
     std::optional<ClassificationType> classify_by_pattern(
-        const std::string& col_name,
         const std::vector<std::string>& sample_values
     ) const;
 

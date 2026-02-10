@@ -86,9 +86,6 @@ private:
     void apply_column_policies(RequestContext& ctx);
     void apply_masking(RequestContext& ctx);
     ProxyResponse build_response(const RequestContext& ctx);
-    void handle_prepare(RequestContext& ctx);
-    void handle_execute(RequestContext& ctx);
-    void handle_deallocate(RequestContext& ctx);
     bool check_injection(RequestContext& ctx);
     void check_anomaly(RequestContext& ctx);
     void decrypt_columns(RequestContext& ctx);

@@ -128,8 +128,8 @@ void VaultKeyManager::refresh_cache() const {
                         key_cache_[kid].active = (v == latest);
                     }
                 }
-            } catch (...) {
-                // Parse error
+            } catch (const std::exception& e) {
+                utils::log::error(std::format("Vault: failed to parse version '{}': {}", version_str, e.what()));
             }
         }
     }

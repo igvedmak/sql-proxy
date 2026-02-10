@@ -117,7 +117,7 @@ SqlInjectionDetector::DetectionResult SqlInjectionDetector::analyze(
     if (config_.encoding_detection_enabled) {
         const std::string decoded = decode_encodings(raw_sql);
         if (decoded != raw_sql) {
-            check_encoding_bypass(raw_sql, decoded, parsed, result);
+            check_encoding_bypass(decoded, parsed, result);
         }
     }
 
@@ -431,8 +431,7 @@ std::string SqlInjectionDetector::decode_encodings(std::string_view sql) const {
     return result;
 }
 
-void SqlInjectionDetector::check_encoding_bypass(
-    std::string_view raw, std::string_view decoded,
+void SqlInjectionDetector::check_encoding_bypass(std::string_view decoded,
     const ParsedQuery& parsed, DetectionResult& result) const {
 
     // The fact that decoded differs from raw is suspicious — flag it

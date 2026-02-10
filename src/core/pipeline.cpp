@@ -727,9 +727,4 @@ bool Pipeline::check_query_cost(RequestContext& ctx) {
     return true;
 }
 
-// Stubs for prepared statement handling
-void Pipeline::handle_prepare(RequestContext& /*ctx*/) {}
-void Pipeline::handle_execute(RequestContext& /*ctx*/) {}
-void Pipeline::handle_deallocate(RequestContext& /*ctx*/) {}
-
 } // namespace sqlproxy

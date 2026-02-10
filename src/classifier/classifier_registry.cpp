@@ -264,7 +264,7 @@ ClassificationResult ClassifierRegistry::classify(
             }
         }
 
-        const auto pattern_type = classify_by_pattern(col_name, sample_values);
+        const auto pattern_type = classify_by_pattern(sample_values);
         if (pattern_type.has_value()) {
             base_classifications[col_name] = *pattern_type;
             classification_result.classifications[col_name] =
@@ -305,7 +305,6 @@ std::optional<ClassificationType> ClassifierRegistry::classify_by_name(const std
 }
 
 std::optional<ClassificationType> ClassifierRegistry::classify_by_pattern(
-    [[maybe_unused]] const std::string& col_name,
     const std::vector<std::string>& sample_values) const {
 
     if (sample_values.empty()) {
