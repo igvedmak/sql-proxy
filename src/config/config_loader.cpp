@@ -1490,6 +1490,7 @@ ProxyConfig ConfigLoader::extract_all_sections(const JsonValue& json) {
     config.adaptive_rate_limiting = extract_adaptive_rate_limiting(json);
     config.priority = extract_priority(json);
     config.routes = extract_routes(json);
+    extract_features(json, config);
     return config;
 }
 
@@ -1706,6 +1707,20 @@ RouteConfig ConfigLoader::extract_routes(const JsonValue& root) {
     cfg.schema_drift       = json_string(routes, "schema_drift",       cfg.schema_drift);
     cfg.graphql            = json_string(routes, "graphql",            cfg.graphql);
     return cfg;
+}
+
+// ============================================================================
+// Feature Flags Extractor
+// ============================================================================
+
+void ConfigLoader::extract_features(const JsonValue& root, ProxyConfig& config) {
+    if (!root.contains("features")) return;
+    const auto feat = root["features"];
+
+    config.classification_enabled = json_bool(feat, "classification", config.classification_enabled);
+    config.masking_enabled        = json_bool(feat, "masking",        config.masking_enabled);
+    config.openapi_enabled        = json_bool(feat, "openapi",        config.openapi_enabled);
+    config.dry_run_enabled        = json_bool(feat, "dry_run",        config.dry_run_enabled);
 }
 
 // ============================================================================

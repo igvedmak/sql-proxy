@@ -164,4 +164,22 @@ struct RouteConfig {
     std::string graphql         = "/api/v1/graphql";
 };
 
+// ============================================================================
+// Feature Flags (aggregated enable/disable for route gating)
+// ============================================================================
+
+struct FeatureFlags {
+    bool dry_run = true;
+    bool openapi = true;
+    bool swagger_ui = true;
+    bool metrics = true;
+    bool slow_query = false;
+    bool schema_drift = false;
+    bool classification = true;
+    bool injection_detection = true;
+    bool lineage_tracking = true;
+    bool masking = true;
+    bool dashboard = true;
+};
+
 } // namespace sqlproxy

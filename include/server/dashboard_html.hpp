@@ -60,6 +60,8 @@ td{padding:6px 10px;border-bottom:1px solid var(--border)}
     <div class="stat-card"><div class="label">Allowed</div><div class="value green" id="s-allowed">--</div></div>
     <div class="stat-card"><div class="label">Blocked</div><div class="value red" id="s-blocked">--</div></div>
     <div class="stat-card"><div class="label">Rate Limited</div><div class="value yellow" id="s-ratelimit">--</div></div>
+    <div class="stat-card"><div class="label">Auth Rejected</div><div class="value red" id="s-authreject">--</div></div>
+    <div class="stat-card"><div class="label">Brute Force</div><div class="value red" id="s-bruteforce">--</div></div>
     <div class="stat-card"><div class="label">Audit Emitted</div><div class="value" id="s-emitted">--</div></div>
     <div class="stat-card"><div class="label">Audit Written</div><div class="value" id="s-written">--</div></div>
     <div class="stat-card"><div class="label">Audit Overflow</div><div class="value red" id="s-overflow">--</div></div>
@@ -130,6 +132,8 @@ function pushPoint(d) {
   document.getElementById('s-allowed').textContent = d.requests_allowed ?? '--';
   document.getElementById('s-blocked').textContent = d.requests_blocked ?? '--';
   document.getElementById('s-ratelimit').textContent = d.rate_limit_rejects ?? '--';
+  document.getElementById('s-authreject').textContent = d.auth_rejects ?? '--';
+  document.getElementById('s-bruteforce').textContent = d.brute_force_blocks ?? '--';
   document.getElementById('s-emitted').textContent = d.audit_emitted ?? '--';
   document.getElementById('s-written').textContent = d.audit_written ?? '--';
   document.getElementById('s-overflow').textContent = d.audit_overflow ?? '--';

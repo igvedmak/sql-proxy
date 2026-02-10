@@ -346,6 +346,12 @@ struct ProxyConfig {
 
     // Route paths (config-driven URL patterns)
     RouteConfig routes;
+
+    // Feature toggles (for features that lack their own [section].enabled)
+    bool classification_enabled = true;
+    bool masking_enabled = true;
+    bool openapi_enabled = true;
+    bool dry_run_enabled = true;
 };
 
 // ============================================================================
@@ -488,6 +494,9 @@ private:
 
     // Route config extractor
     static RouteConfig extract_routes(const JsonValue& root);
+
+    // Feature flags extractor
+    static void extract_features(const JsonValue& root, ProxyConfig& config);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

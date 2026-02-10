@@ -63,6 +63,9 @@ struct PipelineComponents {
     std::shared_ptr<ParseCache> parse_cache;
     std::shared_ptr<QueryCostEstimator> query_cost_estimator;
     std::shared_ptr<AdaptiveRateController> adaptive_rate_controller;
+
+    // Feature flags (non-component toggles)
+    bool masking_enabled = true;
 };
 
 /**
@@ -104,6 +107,7 @@ public:
     PipelineBuilder& with_parse_cache(std::shared_ptr<ParseCache> p)                    { c_.parse_cache = std::move(p); return *this; }
     PipelineBuilder& with_query_cost_estimator(std::shared_ptr<QueryCostEstimator> p)   { c_.query_cost_estimator = std::move(p); return *this; }
     PipelineBuilder& with_adaptive_rate_controller(std::shared_ptr<AdaptiveRateController> p) { c_.adaptive_rate_controller = std::move(p); return *this; }
+    PipelineBuilder& with_masking_enabled(bool enabled)                                       { c_.masking_enabled = enabled; return *this; }
 
     /**
      * @brief Build the Pipeline from accumulated components.

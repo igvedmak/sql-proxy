@@ -1,6 +1,7 @@
 #include "server/dashboard_handler.hpp"
 #include "server/dashboard_html.hpp"
 #include "server/http_constants.hpp"
+#include "server/http_server.hpp"
 #include "core/pipeline.hpp"
 #include "alerting/alert_evaluator.hpp"
 #include "server/rate_limiter.hpp"
@@ -63,7 +64,7 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
     // GET /dashboard/api/stats - Aggregate stats snapshot
     svr.Get("/dashboard/api/stats", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, admin_token)) {
-            res.status = 401;
+            res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
@@ -85,9 +86,14 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
                                + rl.database_rejects + rl.user_database_rejects;
         }
 
+        // HTTP-level rejects (before pipeline)
+        const auto hs = HttpServer::get_http_stats();
+
         json += std::format(
-            "\"requests_allowed\":{},\"requests_blocked\":{},\"rate_limit_rejects\":{},",
-            allowed, ps.requests_blocked, rate_limit_rejects);
+            "\"requests_allowed\":{},\"requests_blocked\":{},\"rate_limit_rejects\":{},"
+            "\"auth_rejects\":{},\"brute_force_blocks\":{},\"ip_blocks\":{},",
+            allowed, ps.requests_blocked, rate_limit_rejects,
+            hs.auth_rejects, hs.brute_force_blocks, hs.ip_blocks);
 
         // Audit stats
         const auto audit = pipeline_->get_audit_emitter();
@@ -116,7 +122,7 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
     // GET /dashboard/api/policies - List all policies
     svr.Get("/dashboard/api/policies", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, admin_token)) {
-            res.status = 401;
+            res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
@@ -155,7 +161,7 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
     // GET /dashboard/api/users - List all users
     svr.Get("/dashboard/api/users", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, admin_token)) {
-            res.status = 401;
+            res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
@@ -178,7 +184,7 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
     // GET /dashboard/api/alerts - Active alerts + history
     svr.Get("/dashboard/api/alerts", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth(req, admin_token)) {
-            res.status = 401;
+            res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
@@ -217,7 +223,7 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
     // GET /dashboard/api/metrics/stream - SSE real-time metrics
     svr.Get("/dashboard/api/metrics/stream", [this, &admin_token](const httplib::Request& req, httplib::Response& res) {
         if (!check_admin_auth_or_param(req, admin_token)) {
-            res.status = 401;
+            res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
         }
@@ -231,18 +237,29 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
                 for (int i = 0; i < 300; ++i) { // 300 events * 2s = 10 min max
                     std::string json = "{";
 
+                    // Pipeline stats: total requests and policy blocks
+                    const auto ps = pipeline_->get_stats();
+                    const uint64_t allowed = (ps.total_requests > ps.requests_blocked)
+                                     ? (ps.total_requests - ps.requests_blocked) : 0;
+
+                    // Rate limiter stats: rate limit rejects specifically
+                    uint64_t rate_limit_rejects = 0;
                     const auto rate_limiter = pipeline_->get_rate_limiter();
                     auto* rl = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter.get());
                     if (rl) {
                         const auto stats = rl->get_stats();
-                        const uint64_t rejects = stats.global_rejects + stats.user_rejects
-                                         + stats.database_rejects + stats.user_database_rejects;
-                        const uint64_t allowed = (stats.total_checks > rejects)
-                                         ? (stats.total_checks - rejects) : 0;
-                        json += std::format(
-                            "\"requests_allowed\":{},\"requests_blocked\":{},\"rate_limit_rejects\":{},",
-                            allowed, rejects, rejects);
+                        rate_limit_rejects = stats.global_rejects + stats.user_rejects
+                                           + stats.database_rejects + stats.user_database_rejects;
                     }
+
+                    // HTTP-level rejects (before pipeline)
+                    const auto hs = HttpServer::get_http_stats();
+
+                    json += std::format(
+                        "\"requests_allowed\":{},\"requests_blocked\":{},\"rate_limit_rejects\":{},"
+                        "\"auth_rejects\":{},\"brute_force_blocks\":{},\"ip_blocks\":{},",
+                        allowed, ps.requests_blocked, rate_limit_rejects,
+                        hs.auth_rejects, hs.brute_force_blocks, hs.ip_blocks);
 
                     const auto audit = pipeline_->get_audit_emitter();
                     if (audit) {

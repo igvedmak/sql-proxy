@@ -64,6 +64,8 @@ std::string_view parse_json_field(std::string_view json, std::string_view field)
 }
 
 std::atomic<uint64_t> s_ip_blocks{0};
+std::atomic<uint64_t> s_auth_rejects{0};
+std::atomic<uint64_t> s_brute_force_blocks{0};
 
 bool require_admin(std::string_view admin_token,
                    const httplib::Request& req, httplib::Response& res) {
@@ -164,13 +166,15 @@ HttpServer::HttpServer(
     std::shared_ptr<DashboardHandler> dashboard_handler,
     TlsConfig tls_config,
     ResponseCompressor::Config compressor_config,
-    RouteConfig routes)
+    RouteConfig routes,
+    FeatureFlags features)
     : pipeline_(std::move(pipeline)),
       host_(std::move(host)),
       port_(port),
       admin_token_(std::move(admin_token)),
       tls_config_(std::move(tls_config)),
       routes_(std::move(routes)),
+      features_(features),
       users_(std::move(users)),
       max_sql_length_(max_sql_length),
       compliance_reporter_(std::move(compliance_reporter)),
@@ -258,29 +262,45 @@ void HttpServer::stop() {
     utils::log::info("Server stopped");
 }
 
+HttpServer::HttpStats HttpServer::get_http_stats() {
+    return {
+        s_auth_rejects.load(std::memory_order_relaxed),
+        s_brute_force_blocks.load(std::memory_order_relaxed),
+        s_ip_blocks.load(std::memory_order_relaxed)
+    };
+}
+
 // ============================================================================
 // Route registration groups
 // ============================================================================
 
 void HttpServer::register_core_routes(httplib::Server& svr) {
-    svr.Get(routes_.openapi_spec, [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(OpenAPIHandler::get_spec_json(), "application/json");
-    });
-    svr.Get(routes_.swagger_ui, [](const httplib::Request&, httplib::Response& res) {
-        res.set_content(OpenAPIHandler::get_swagger_html(), "text/html");
-    });
     svr.Post(routes_.query, [this](const httplib::Request& req, httplib::Response& res) {
         handle_query(req, res);
-    });
-    svr.Post(routes_.dry_run, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_dry_run(req, res);
     });
     svr.Get(routes_.health, [this](const httplib::Request& req, httplib::Response& res) {
         handle_health(req, res);
     });
-    svr.Get(routes_.metrics, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_metrics(req, res);
-    });
+    if (features_.openapi) {
+        svr.Get(routes_.openapi_spec, [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(OpenAPIHandler::get_spec_json(), "application/json");
+        });
+    }
+    if (features_.swagger_ui) {
+        svr.Get(routes_.swagger_ui, [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(OpenAPIHandler::get_swagger_html(), "text/html");
+        });
+    }
+    if (features_.dry_run) {
+        svr.Post(routes_.dry_run, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_dry_run(req, res);
+        });
+    }
+    if (features_.metrics) {
+        svr.Get(routes_.metrics, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_metrics(req, res);
+        });
+    }
 }
 
 void HttpServer::register_admin_routes(httplib::Server& svr) {
@@ -290,48 +310,57 @@ void HttpServer::register_admin_routes(httplib::Server& svr) {
     svr.Post(routes_.config_validate, [this](const httplib::Request& req, httplib::Response& res) {
         handle_config_validate(req, res);
     });
-    svr.Get(routes_.slow_queries, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_slow_queries(req, res);
-    });
     svr.Get(routes_.circuit_breakers, [this](const httplib::Request& req, httplib::Response& res) {
         handle_circuit_breakers(req, res);
     });
+    if (features_.slow_query) {
+        svr.Get(routes_.slow_queries, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_slow_queries(req, res);
+        });
+    }
 }
 
 void HttpServer::register_compliance_routes(httplib::Server& svr) {
-    svr.Get(routes_.pii_report, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_pii_report(req, res);
-    });
-    svr.Get(routes_.security_summary, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_security_summary(req, res);
-    });
-    svr.Get(routes_.lineage, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_lineage(req, res);
-    });
+    if (features_.classification) {
+        svr.Get(routes_.pii_report, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_pii_report(req, res);
+        });
+    }
+    if (features_.injection_detection) {
+        svr.Get(routes_.security_summary, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_security_summary(req, res);
+        });
+    }
+    if (features_.lineage_tracking) {
+        svr.Get(routes_.lineage, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_lineage(req, res);
+        });
+    }
     svr.Get(routes_.data_subject_access, [this](const httplib::Request& req, httplib::Response& res) {
         handle_data_subject_access(req, res);
     });
 }
 
 void HttpServer::register_schema_routes(httplib::Server& svr) {
-    if (!schema_manager_) return;
-
-    svr.Get(routes_.schema_history, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_schema_history(req, res);
-    });
-    svr.Get(routes_.schema_pending, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_schema_pending(req, res);
-    });
-    svr.Post(routes_.schema_approve, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_schema_approve(req, res);
-    });
-    svr.Post(routes_.schema_reject, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_schema_reject(req, res);
-    });
-
-    svr.Get(routes_.schema_drift, [this](const httplib::Request& req, httplib::Response& res) {
-        handle_schema_drift(req, res);
-    });
+    if (schema_manager_) {
+        svr.Get(routes_.schema_history, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_schema_history(req, res);
+        });
+        svr.Get(routes_.schema_pending, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_schema_pending(req, res);
+        });
+        svr.Post(routes_.schema_approve, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_schema_approve(req, res);
+        });
+        svr.Post(routes_.schema_reject, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_schema_reject(req, res);
+        });
+    }
+    if (features_.schema_drift) {
+        svr.Get(routes_.schema_drift, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_schema_drift(req, res);
+        });
+    }
 }
 
 void HttpServer::register_optional_routes(httplib::Server& svr) {
@@ -340,7 +369,7 @@ void HttpServer::register_optional_routes(httplib::Server& svr) {
             handle_graphql(req, res);
         });
     }
-    if (dashboard_handler_) {
+    if (features_.dashboard && dashboard_handler_) {
         dashboard_handler_->register_routes(svr, admin_token_);
     }
 }
@@ -411,7 +440,8 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
             if (brute_force_protector_) {
                 const auto block = brute_force_protector_->is_blocked(source_ip, "");
                 if (block.blocked) {
-                    res.status = 429;
+                    s_brute_force_blocks.fetch_add(1, std::memory_order_relaxed);
+                    res.status = httplib::StatusCode::TooManyRequests_429;
                     res.set_header("Retry-After", std::format("{}", block.retry_after_seconds));
                     res.set_content(std::format(R"({{"success":false,"error":"{}"}})", block.reason), http::kJsonContentType);
                     return;
@@ -420,6 +450,7 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
 
             user_info = authenticate_api_key(api_key);
             if (!user_info) {
+                s_auth_rejects.fetch_add(1, std::memory_order_relaxed);
                 if (brute_force_protector_) brute_force_protector_->record_failure(source_ip, "");
                 res.status = httplib::StatusCode::Unauthorized_401;
                 res.set_content(R"({"success":false,"error":"Invalid API key"})", http::kJsonContentType);
@@ -439,6 +470,7 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
             if (brute_force_protector_) {
                 const auto block = brute_force_protector_->is_blocked(source_ip, user);
                 if (block.blocked) {
+                    s_brute_force_blocks.fetch_add(1, std::memory_order_relaxed);
                     res.status = httplib::StatusCode::TooManyRequests_429;
                     res.set_header("Retry-After", std::format("{}", block.retry_after_seconds));
                     res.set_content(std::format(R"({{"success":false,"error":"{}"}})", block.reason), http::kJsonContentType);
@@ -448,6 +480,7 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
 
             user_info = validate_user(user);
             if (!user_info) {
+                s_auth_rejects.fetch_add(1, std::memory_order_relaxed);
                 if (brute_force_protector_) brute_force_protector_->record_failure(source_ip, user);
                 res.status = httplib::StatusCode::Unauthorized_401;
                 res.set_content(

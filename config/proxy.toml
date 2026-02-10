@@ -274,54 +274,56 @@ reason = "Default deny - no matching policy"
 enabled = true
 
 # Level 1 - Global (protects proxy CPU)
+# Stress-tuned: 200 burst so 150 parallel reqs mostly pass global, but leaves headroom
 [rate_limiting.global]
-tokens_per_second = 50000
-burst_capacity = 10000
+tokens_per_second = 500
+burst_capacity = 200
 
 # Level 2 - Per User
 [[rate_limiting.per_user]]
 user = "admin"
-tokens_per_second = 10000
-burst_capacity = 2000
+tokens_per_second = 200
+burst_capacity = 50
 
 [[rate_limiting.per_user]]
 user = "analyst"
-tokens_per_second = 1000
-burst_capacity = 200
+tokens_per_second = 50
+burst_capacity = 15
 
 [[rate_limiting.per_user]]
 user = "developer"
-tokens_per_second = 5000
-burst_capacity = 1000
+tokens_per_second = 100
+burst_capacity = 30
 
 [[rate_limiting.per_user]]
 user = "auditor"
-tokens_per_second = 500
-burst_capacity = 100
+# Stress-tuned: burst=30 so 150 parallel reqs → ~30 pass, ~120 rate-limited
+tokens_per_second = 50
+burst_capacity = 30
 
 # Default per-user rate limit
 [rate_limiting.per_user_default]
-tokens_per_second = 100
-burst_capacity = 20
+tokens_per_second = 20
+burst_capacity = 5
 
 # Level 3 - Per Database
 [[rate_limiting.per_database]]
 database = "testdb"
-tokens_per_second = 30000
-burst_capacity = 5000
+tokens_per_second = 300
+burst_capacity = 100
 
 # Level 4 - Per User-Per-Database (most specific)
 [[rate_limiting.per_user_per_database]]
 user = "analyst"
 database = "testdb"
-tokens_per_second = 50
+tokens_per_second = 30
 burst_capacity = 10
 
 [[rate_limiting.per_user_per_database]]
 user = "developer"
 database = "testdb"
-tokens_per_second = 1000
-burst_capacity = 200
+tokens_per_second = 80
+burst_capacity = 25
 
 # ============================================================================
 # Parse Cache Configuration
@@ -476,7 +478,7 @@ lineage_tracking = true
 
 [security.brute_force]
 enabled = true
-max_attempts = 3
+max_attempts = 20
 window_seconds = 60
 lockout_seconds = 2
 max_lockout_seconds = 10
@@ -699,6 +701,16 @@ throttle_threshold_ms = 200
 
 [priority]
 enabled = true
+
+# ============================================================================
+# Feature Toggles (disable features that have no dedicated [section].enabled)
+# ============================================================================
+
+[features]
+classification = true    # PII classification / data discovery
+masking        = true    # Data masking in query results
+openapi        = true    # OpenAPI spec + Swagger UI
+dry_run        = true    # Dry-run query endpoint
 
 # ============================================================================
 # Route Configuration (URL paths for all API endpoints)

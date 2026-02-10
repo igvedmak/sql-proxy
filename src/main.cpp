@@ -346,7 +346,12 @@ int main(int argc, char* argv[]) {
         utils::log::info(std::format("Executor: {} with circuit breaker", database_type_to_string(db_type)));
 
         utils::log::info("[8/9] Classifier & audit initializing...");
-        auto classifier = std::make_shared<ClassifierRegistry>();
+        std::shared_ptr<ClassifierRegistry> classifier;
+        if (config_result.config.classification_enabled) {
+            classifier = std::make_shared<ClassifierRegistry>();
+        }
+        utils::log::info(std::format("Classification: {}",
+            config_result.config.classification_enabled ? "enabled" : "disabled"));
         std::shared_ptr<AuditEmitter> audit_emitter;
         if (config_result.success) {
             audit_emitter = std::make_shared<AuditEmitter>(audit_config);
@@ -376,31 +381,34 @@ int main(int argc, char* argv[]) {
         // =====================================================================
 
         // SQL Injection Detector
-        SqlInjectionDetector::Config sqli_config;
-        if (config_result.success) {
-            sqli_config.enabled = config_result.config.security.injection_detection_enabled;
+        std::shared_ptr<SqlInjectionDetector> injection_detector;
+        if (config_result.config.security.injection_detection_enabled) {
+            SqlInjectionDetector::Config sqli_config;
+            sqli_config.enabled = true;
+            injection_detector = std::make_shared<SqlInjectionDetector>(sqli_config);
         }
-        auto injection_detector = std::make_shared<SqlInjectionDetector>(sqli_config);
         utils::log::info(std::format("SQL injection detector: {}",
-            sqli_config.enabled ? "enabled" : "disabled"));
+            injection_detector ? "enabled" : "disabled"));
 
         // Anomaly Detector
-        AnomalyDetector::Config anomaly_config;
-        if (config_result.success) {
-            anomaly_config.enabled = config_result.config.security.anomaly_detection_enabled;
+        std::shared_ptr<AnomalyDetector> anomaly_detector;
+        if (config_result.config.security.anomaly_detection_enabled) {
+            AnomalyDetector::Config anomaly_config;
+            anomaly_config.enabled = true;
+            anomaly_detector = std::make_shared<AnomalyDetector>(anomaly_config);
         }
-        auto anomaly_detector = std::make_shared<AnomalyDetector>(anomaly_config);
         utils::log::info(std::format("Anomaly detector: {}",
-            anomaly_config.enabled ? "enabled" : "disabled"));
+            anomaly_detector ? "enabled" : "disabled"));
 
         // Data Lineage Tracker
-        LineageTracker::Config lineage_config;
-        if (config_result.success) {
-            lineage_config.enabled = config_result.config.security.lineage_tracking_enabled;
+        std::shared_ptr<LineageTracker> lineage_tracker;
+        if (config_result.config.security.lineage_tracking_enabled) {
+            LineageTracker::Config lineage_config;
+            lineage_config.enabled = true;
+            lineage_tracker = std::make_shared<LineageTracker>(lineage_config);
         }
-        auto lineage_tracker = std::make_shared<LineageTracker>(lineage_config);
         utils::log::info(std::format("Lineage tracker: {}",
-            lineage_config.enabled ? "enabled" : "disabled"));
+            lineage_tracker ? "enabled" : "disabled"));
 
         // Column Encryptor (with pluggable key manager)
         std::shared_ptr<IKeyManager> key_manager;  // Shared with audit encryptor
@@ -613,6 +621,7 @@ int main(int argc, char* argv[]) {
             .with_parse_cache(parse_cache)
             .with_query_cost_estimator(query_cost_estimator)
             .with_adaptive_rate_controller(g_adaptive_rate_controller)
+            .with_masking_enabled(config_result.config.masking_enabled)
             .build();
 
         // Tier F: Retry with backoff
@@ -679,12 +688,27 @@ int main(int argc, char* argv[]) {
             compressor_config.min_size_bytes = config_result.config.server.compression_min_size_bytes;
         }
 
+        // Build feature flags for route gating
+        const auto& cfg = config_result.config;
+        FeatureFlags features;
+        features.dry_run             = cfg.dry_run_enabled;
+        features.openapi             = cfg.openapi_enabled;
+        features.swagger_ui          = cfg.openapi_enabled;
+        features.metrics             = cfg.metrics.enabled;
+        features.slow_query          = cfg.slow_query.enabled;
+        features.schema_drift        = cfg.schema_drift.enabled;
+        features.classification      = cfg.classification_enabled;
+        features.injection_detection = cfg.security.injection_detection_enabled;
+        features.lineage_tracking    = cfg.security.lineage_tracking_enabled;
+        features.masking             = cfg.masking_enabled;
+        features.dashboard           = cfg.dashboard_enabled;
+
         // Create HTTP server (with Tier 2 + Tier 5 + Tier B components)
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
             config_result.config.server.admin_token, max_sql_length,
             compliance_reporter, lineage_tracker, schema_manager, graphql_handler,
             dashboard_handler, config_result.config.server.tls, compressor_config,
-            config_result.config.routes);
+            config_result.config.routes, features);
 
         // Tier B: Graceful shutdown coordinator
         ShutdownCoordinator::Config shutdown_cfg;

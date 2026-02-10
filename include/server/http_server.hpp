@@ -74,11 +74,19 @@ public:
         std::shared_ptr<DashboardHandler> dashboard_handler = nullptr,
         TlsConfig tls_config = {},
         ResponseCompressor::Config compressor_config = ResponseCompressor::Config{},
-        RouteConfig routes = {}
+        RouteConfig routes = {},
+        FeatureFlags features = {}
     );
 
     void start();
     void stop();
+
+    struct HttpStats {
+        uint64_t auth_rejects;
+        uint64_t brute_force_blocks;
+        uint64_t ip_blocks;
+    };
+    [[nodiscard]] static HttpStats get_http_stats();
 
     void update_users(std::unordered_map<std::string, UserInfo> new_users);
     void update_max_sql_length(size_t new_max) { max_sql_length_.store(new_max); }
@@ -136,6 +144,7 @@ private:
     const std::string admin_token_;
     const TlsConfig tls_config_;
     const RouteConfig routes_;
+    const FeatureFlags features_;
 
     // Hot-reloadable state
     std::unordered_map<std::string, UserInfo> users_;

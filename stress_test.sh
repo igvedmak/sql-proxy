@@ -191,6 +191,60 @@ for round in $(seq 1 "$ROUNDS"); do
     echo ""
 done
 
+# ---- Rate Limit Burst Test --------------------------------------------------
+# Wait for any brute-force lockout to expire before burst test
+echo -e "${CYAN}Waiting 3s for brute-force lockout to clear...${RESET}"
+sleep 3
+
+# Auditor: burst=30, tps=50. Send 150 parallel requests to trigger rate limiting.
+# Expected: ~30 allowed (burst), ~120 rate-limited (429)
+echo -e "${BOLD}--- Rate Limit Burst (150 parallel as auditor, burst=30) ---${RESET}"
+
+burst_allowed=0
+burst_ratelimited=0
+burst_other=0
+pids=()
+
+for i in $(seq 1 150); do
+    (
+        resp=$(curl -s --connect-timeout 5 --max-time 10 \
+            -w '\n%{http_code}' -X POST "$BASE_URL/api/v1/query" \
+            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer sk-auditor-key-fghij" \
+            -d '{"database":"testdb","sql":"SELECT 1"}' 2>/dev/null) || resp=$'\n000'
+        code=$(echo "$resp" | tail -1)
+        echo "$code" > "$RESULTS_DIR/burst_${i}"
+    ) &
+    pids+=($!)
+done
+
+for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null; done
+
+for f in "$RESULTS_DIR"/burst_*; do
+    code=$(cat "$f" 2>/dev/null)
+    case "$code" in
+        200) burst_allowed=$((burst_allowed + 1)) ;;
+        429) burst_ratelimited=$((burst_ratelimited + 1)) ;;
+        *)   burst_other=$((burst_other + 1)) ;;
+    esac
+    # Track in overall results
+    if [[ "$code" == "200" ]]; then
+        echo "allow" > "${f}_result"
+    elif [[ "$code" == "429" ]]; then
+        echo "ratelimited" > "${f}_result"
+    else
+        echo "error" > "${f}_result"
+    fi
+    rm -f "$f"
+done
+
+printf "  %-55s %b\n" "Burst allowed"  "${GREEN}${burst_allowed}${RESET}"
+printf "  %-55s %b\n" "Burst rate-limited" "${MAGENTA}${burst_ratelimited}${RESET}"
+if (( burst_other > 0 )); then
+    printf "  %-55s %b\n" "Burst other" "${RED}${burst_other}${RESET}"
+fi
+echo ""
+
 end_time=$(date +%s%N)
 elapsed_ms=$(( (end_time - start_time) / 1000000 ))
 elapsed_s=$(echo "scale=2; $elapsed_ms / 1000" | bc)

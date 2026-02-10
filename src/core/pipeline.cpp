@@ -432,6 +432,7 @@ void Pipeline::apply_column_policies(RequestContext& ctx) {
 
 void Pipeline::apply_masking(RequestContext& ctx) {
     ScopedSpan span(ctx, "sql_proxy.mask");
+    if (!c_.masking_enabled) return;
     if (!ctx.query_result.success || ctx.column_decisions.empty()) return;
 
     utils::Timer timer;
