@@ -1,5 +1,8 @@
 #include "server/http_server.hpp"
 #include "server/http_constants.hpp"
+#include "server/openapi_handler.hpp"
+#include "server/request_priority.hpp"
+#include "server/adaptive_rate_controller.hpp"
 #include "server/rate_limiter.hpp"
 #include "server/waitable_rate_limiter.hpp"
 #include "server/shutdown_coordinator.hpp"
@@ -224,6 +227,16 @@ void HttpServer::start() {
     }
     auto& svr = *svr_ptr;
 
+    // GET /openapi.json - OpenAPI 3.0 specification
+    svr.Get("/openapi.json", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(OpenAPIHandler::get_spec_json(), "application/json");
+    });
+
+    // GET /api/docs - Swagger UI
+    svr.Get("/api/docs", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(OpenAPIHandler::get_swagger_html(), "text/html");
+    });
+
     // POST /api/v1/query - Execute SELECT queries
     svr.Post("/api/v1/query", [this](const httplib::Request& req, httplib::Response& res) {
         // Shutdown guard: reject new requests during graceful shutdown
@@ -380,6 +393,12 @@ void HttpServer::start() {
             // Extract W3C trace headers
             proxy_req.traceparent = req.get_header_value("traceparent");
             proxy_req.tracestate = req.get_header_value("tracestate");
+
+            // Extract request priority (optional, default NORMAL=2)
+            const auto priority_sv = parse_json_field(req.body, "priority");
+            if (!priority_sv.empty()) {
+                proxy_req.priority = parse_priority(priority_sv);
+            }
 
             // Execute through pipeline
             const auto response = pipeline_->execute(proxy_req);
@@ -750,6 +769,31 @@ void HttpServer::start() {
                 "sql_proxy_schema_drift_checks_total {}\n\n",
                 schema_drift_detector_->total_drifts(),
                 schema_drift_detector_->checks_performed());
+        }
+
+        // --- Adaptive rate controller stats ---
+        const auto arc = pipeline_->get_adaptive_rate_controller();
+        if (arc) {
+            const auto arc_stats = arc->get_stats();
+            output += std::format(
+                "# HELP sql_proxy_adaptive_rate_current_tps Current adaptive rate limit TPS\n"
+                "# TYPE sql_proxy_adaptive_rate_current_tps gauge\n"
+                "sql_proxy_adaptive_rate_current_tps {}\n\n"
+                "# HELP sql_proxy_adaptive_rate_p95_us Approximate P95 latency (bucket midpoint ms)\n"
+                "# TYPE sql_proxy_adaptive_rate_p95_us gauge\n"
+                "sql_proxy_adaptive_rate_p95_us {}\n\n"
+                "# HELP sql_proxy_adaptive_rate_adjustments_total Rate adjustments performed\n"
+                "# TYPE sql_proxy_adaptive_rate_adjustments_total counter\n"
+                "sql_proxy_adaptive_rate_adjustments_total {}\n\n"
+                "# HELP sql_proxy_adaptive_rate_throttle_events_total Times reduced to 40%%\n"
+                "# TYPE sql_proxy_adaptive_rate_throttle_events_total counter\n"
+                "sql_proxy_adaptive_rate_throttle_events_total {}\n\n"
+                "# HELP sql_proxy_adaptive_rate_protect_events_total Times reduced to 10%%\n"
+                "# TYPE sql_proxy_adaptive_rate_protect_events_total counter\n"
+                "sql_proxy_adaptive_rate_protect_events_total {}\n\n",
+                arc_stats.current_tps, arc_stats.p95_bucket_ms,
+                arc_stats.adjustments_total,
+                arc_stats.throttle_events, arc_stats.protect_events);
         }
 
         // --- Build info ---

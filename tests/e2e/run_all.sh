@@ -86,6 +86,15 @@ run_suite "test_schema_drift.sh" "Schema Drift Detection"
 run_suite "test_query_cost.sh" "Query Cost Estimation"
 run_suite "test_gdpr.sh" "GDPR Data Subject Access"
 
+# --- Tier G suites (new features) ---
+echo ""
+echo -e "${CYAN}--- Tier G feature tests ---${NC}"
+run_suite "test_openapi.sh" "OpenAPI / Swagger"
+run_suite "test_audit_encryption.sh" "Audit Encryption"
+run_suite "test_tracing_spans.sh" "Tracing Spans"
+run_suite "test_adaptive_rate.sh" "Adaptive Rate Limiting"
+run_suite "test_priority.sh" "Request Prioritization"
+
 # Final summary
 echo ""
 echo "================================================================"

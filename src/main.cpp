@@ -41,6 +41,8 @@
 #include "core/slow_query_tracker.hpp"
 #include "core/query_cost_estimator.hpp"
 #include "schema/schema_drift_detector.hpp"
+#include "audit/audit_encryptor.hpp"
+#include "server/adaptive_rate_controller.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -65,6 +67,7 @@ std::shared_ptr<BinaryRpcServer> g_binary_rpc_server;
 std::shared_ptr<AlertEvaluator> g_alert_evaluator;
 std::shared_ptr<ShutdownCoordinator> g_shutdown;
 std::shared_ptr<SchemaDriftDetector> g_schema_drift_detector;
+std::shared_ptr<AdaptiveRateController> g_adaptive_rate_controller;
 
 // =========================================================================
 // Explicit Backend Registration (ensures linker includes backend objects)
@@ -93,6 +96,9 @@ void signal_handler(int signal) {
     }
 
     // Stop background services
+    if (g_adaptive_rate_controller) {
+        g_adaptive_rate_controller->stop();
+    }
     if (g_schema_drift_detector) {
         g_schema_drift_detector->stop();
     }
@@ -396,12 +402,12 @@ int main(int argc, char* argv[]) {
             lineage_config.enabled ? "enabled" : "disabled"));
 
         // Column Encryptor (with pluggable key manager)
+        std::shared_ptr<IKeyManager> key_manager;  // Shared with audit encryptor
         std::shared_ptr<ColumnEncryptor> column_encryptor;
         if (config_result.success && config_result.config.encryption.enabled) {
             const auto& enc_cfg = config_result.config.encryption;
 
             // Key manager factory
-            std::shared_ptr<IKeyManager> key_manager;
             if (enc_cfg.key_manager_provider == "vault") {
                 VaultKeyManagerConfig vault_cfg;
                 vault_cfg.vault_addr = enc_cfg.vault_addr;
@@ -544,7 +550,46 @@ int main(int argc, char* argv[]) {
                 sd_cfg.check_interval_seconds, sd_cfg.schema_name));
         }
 
-        // Create pipeline (with Tier 5 + Tier B + Tier C + Tier F components)
+        // =====================================================================
+        // Tier G: Audit encryption, adaptive rate limiting
+        // =====================================================================
+
+        // Audit encryption at rest
+        if (config_result.success && config_result.config.audit_encryption.enabled) {
+            // Reuse existing key_manager or create one for audit
+            std::shared_ptr<IKeyManager> audit_key_mgr = key_manager;
+            if (!audit_key_mgr) {
+                const auto& enc_cfg = config_result.config.encryption;
+                if (enc_cfg.key_manager_provider == "env") {
+                    audit_key_mgr = std::make_shared<EnvKeyManager>(enc_cfg.env_key_var);
+                } else {
+                    audit_key_mgr = std::make_shared<LocalKeyManager>(enc_cfg.key_file);
+                }
+            }
+            AuditEncryptor::Config ae_cfg;
+            ae_cfg.enabled = true;
+            ae_cfg.key_id = config_result.config.audit_encryption.key_id;
+            auto audit_enc = std::make_shared<AuditEncryptor>(audit_key_mgr, ae_cfg);
+            audit_emitter->set_encryptor(audit_enc);
+            utils::log::info(std::format("Audit encryption: enabled (key_id={})", ae_cfg.key_id));
+        }
+
+        // Adaptive rate limiting
+        if (config_result.success && config_result.config.adaptive_rate_limiting.enabled) {
+            AdaptiveRateController::Config arc_cfg;
+            arc_cfg.enabled = true;
+            arc_cfg.adjustment_interval_seconds = config_result.config.adaptive_rate_limiting.adjustment_interval_seconds;
+            arc_cfg.latency_target_ms = config_result.config.adaptive_rate_limiting.latency_target_ms;
+            arc_cfg.throttle_threshold_ms = config_result.config.adaptive_rate_limiting.throttle_threshold_ms;
+            g_adaptive_rate_controller = std::make_shared<AdaptiveRateController>(
+                rate_limiter, arc_cfg,
+                rate_config.global_tokens_per_second,
+                rate_config.global_burst_capacity);
+            utils::log::info(std::format("Adaptive rate limiting: enabled (target={}ms, throttle={}ms, interval={}s)",
+                arc_cfg.latency_target_ms, arc_cfg.throttle_threshold_ms, arc_cfg.adjustment_interval_seconds));
+        }
+
+        // Create pipeline (with Tier 5 + Tier B + Tier C + Tier F + Tier G components)
         auto pipeline = std::make_shared<Pipeline>(
             parser,
             policy_engine,
@@ -567,7 +612,8 @@ int main(int argc, char* argv[]) {
             circuit_breaker,
             pool,
             parse_cache,
-            query_cost_estimator
+            query_cost_estimator,
+            g_adaptive_rate_controller
         );
 
         // Tier F: Retry with backoff

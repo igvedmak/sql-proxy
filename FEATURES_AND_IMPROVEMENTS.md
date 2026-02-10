@@ -4,37 +4,6 @@ This document outlines potential features and improvements for the SQL Proxy sys
 
 ---
 
-## Performance Optimizations
-
-### 3. Request Prioritization
-**Problem:** All queries treated equally — an admin dashboard panel query waits behind a developer's `SELECT *` returning 100K rows.
-
-**Solution:**
-- Add priority tiers (HIGH, NORMAL, LOW) per user role
-- Implement priority queues in connection pool acquisition
-- High-priority requests bypass per-user rate limits (but not global)
-- Expose priority in configuration and per-request headers
-
-**Impact:** Ensures critical queries always complete quickly
-
----
-
-### 4. Adaptive Rate Limiting
-**Problem:** Static rate limits can't respond to database health — they allow too many requests when DB is slow or too few when it recovers.
-
-**Solution:**
-- Monitor database response latency (P95) in real-time
-- Automatically adjust rate limits based on health:
-  - Latency < 50ms → full rate (50K global QPS)
-  - Latency 50-200ms → throttle to 20K QPS
-  - Latency > 200ms → protect mode: 5K QPS
-  - Circuit breaker open → 0 QPS
-- Emit events when limits auto-adjust
-
-**Impact:** Self-regulating proxy that protects database automatically
-
----
-
 ## Security Enhancements
 
 ### 7. SCRAM-SHA-256 Authentication
@@ -75,42 +44,6 @@ This document outlines potential features and improvements for the SQL Proxy sys
 - Same certificate config as HTTP server
 
 **Impact:** Encrypted wire protocol connections
-
----
-
-## Observability Features
-
-### 18. Per-Layer Distributed Tracing Spans
-**Problem:** Trace context exists but no spans are emitted — can't see where time is spent in the pipeline.
-
-**Solution:**
-- Create OpenTelemetry-compatible span per layer:
-  - `sql_proxy.rate_limit` (52ns)
-  - `sql_proxy.parse` (500ns–50μs)
-  - `sql_proxy.policy` (5μs)
-  - `sql_proxy.execute` (1ms+)
-  - `sql_proxy.classify` (100ns)
-- Add attributes: user, database, statement_type, cache_hit
-- Export to Jaeger via OTLP
-- Parent span: entire request (HTTP or wire)
-
-**Impact:** Visual latency breakdown for debugging production issues
-
----
-
-## Compliance & Governance
-
-### 25. Audit Record Encryption at Rest
-**Problem:** Audit JSONL files contain raw SQL with potentially sensitive data. Disk access exposes query content.
-
-**Solution:**
-- Encrypt each audit record with AES-256-GCM before writing
-- Use separate audit encryption key (not the column encryption key)
-- Store IV per record, key ID in header
-- Tool to decrypt: `audit-decrypt --key-file audit.key audit.jsonl`
-- Support key rotation
-
-**Impact:** Encrypted audit trails meet compliance requirements
 
 ---
 
@@ -271,20 +204,6 @@ This document outlines potential features and improvements for the SQL Proxy sys
 
 ---
 
-### 40. OpenAPI / Swagger Endpoint
-**Problem:** No API documentation — teams must read source code to understand endpoints.
-
-**Solution:**
-- Generate OpenAPI 3.0 spec at compile time or runtime
-- Serve at `GET /api/docs` (Swagger UI)
-- Document all endpoints: `/api/v1/query`, `/api/v1/execute`, `/health`, `/metrics`, compliance endpoints
-- Include request/response schemas, authentication requirements
-- Auto-update on hot-reload
-
-**Impact:** Developer experience — self-documenting API
-
----
-
 ## Advanced / Future Features
 
 ### 41. Query Cost-Based Query Rewriting
@@ -329,7 +248,6 @@ Given a query, explain in plain English what it does and what data it accesses.
 
 **P1 (High Impact):**
 - OAuth2/OIDC auth (#8)
-- Per-layer distributed tracing (#18)
 
 **P2 (Feature Expansion):**
 - GraphQL mutations (#37)

@@ -13,12 +13,14 @@
 #include "schema/schema_manager.hpp"
 #include "tenant/tenant_manager.hpp"
 #include "tracing/trace_context.hpp"
+#include "tracing/span.hpp"
 #include "audit/audit_sampler.hpp"
 #include "cache/result_cache.hpp"
 #include "core/slow_query_tracker.hpp"
 #include "executor/circuit_breaker.hpp"
 #include "db/iconnection_pool.hpp"
 #include "parser/parse_cache.hpp"
+#include "server/adaptive_rate_controller.hpp"
 
 #include <thread>
 #include <unordered_set>
@@ -47,7 +49,8 @@ Pipeline::Pipeline(
     std::shared_ptr<CircuitBreaker> circuit_breaker,
     std::shared_ptr<IConnectionPool> connection_pool,
     std::shared_ptr<ParseCache> parse_cache,
-    std::shared_ptr<QueryCostEstimator> query_cost_estimator)
+    std::shared_ptr<QueryCostEstimator> query_cost_estimator,
+    std::shared_ptr<AdaptiveRateController> adaptive_rate_controller)
     : parser_(std::move(parser)),
       policy_engine_(std::move(policy_engine)),
       rate_limiter_(std::move(rate_limiter)),
@@ -69,7 +72,8 @@ Pipeline::Pipeline(
       circuit_breaker_(std::move(circuit_breaker)),
       connection_pool_(std::move(connection_pool)),
       parse_cache_(std::move(parse_cache)),
-      query_cost_estimator_(std::move(query_cost_estimator)) {}
+      query_cost_estimator_(std::move(query_cost_estimator)),
+      adaptive_rate_controller_(std::move(adaptive_rate_controller)) {}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -82,6 +86,7 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     ctx.user_attributes = request.user_attributes;
     ctx.tenant_id = request.tenant_id;
     ctx.dry_run = request.dry_run;
+    ctx.priority = request.priority;
 
     // Distributed tracing: parse incoming traceparent or generate new context
     if (!request.traceparent.empty()) {
@@ -206,6 +211,12 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         }
     }
 
+    // Report latency to adaptive rate controller
+    if (adaptive_rate_controller_) {
+        adaptive_rate_controller_->observe_latency(
+            static_cast<uint64_t>(ctx.execution_time.count()));
+    }
+
     // Layer 5.01: Slow query tracking
     if (slow_query_tracker_ && slow_query_tracker_->is_enabled()) {
         SlowQueryRecord sq;
@@ -278,6 +289,7 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 }
 
 bool Pipeline::check_rate_limit(RequestContext& ctx) {
+    ScopedSpan span(ctx, "sql_proxy.rate_limit");
     const auto result = rate_limiter_->check(ctx.user, ctx.database);
     ctx.rate_limit_result = result;  // Always store for response headers
     if (!result.allowed) {
@@ -299,6 +311,7 @@ bool Pipeline::check_rate_limit(RequestContext& ctx) {
 }
 
 bool Pipeline::parse_query(RequestContext& ctx) {
+    ScopedSpan span(ctx, "sql_proxy.parse");
     utils::Timer timer;
 
     // Resolve parser via router (per-database), fallback to default
@@ -337,6 +350,7 @@ bool Pipeline::analyze_query(RequestContext& ctx) {
 }
 
 bool Pipeline::evaluate_policy(RequestContext& ctx) {
+    ScopedSpan span(ctx, "sql_proxy.policy");
     utils::Timer timer;
 
     ctx.policy_result = policy_engine_->evaluate(
@@ -373,6 +387,7 @@ void Pipeline::rewrite_query(RequestContext& ctx) {
 }
 
 bool Pipeline::execute_query(RequestContext& ctx) {
+    ScopedSpan span(ctx, "sql_proxy.execute");
     // Resolve executor via router (per-database), fallback to default
     IQueryExecutor* exec = nullptr;
     if (router_) {
@@ -461,6 +476,7 @@ void Pipeline::apply_column_policies(RequestContext& ctx) {
 }
 
 void Pipeline::apply_masking(RequestContext& ctx) {
+    ScopedSpan span(ctx, "sql_proxy.mask");
     if (!ctx.query_result.success || ctx.column_decisions.empty()) return;
 
     utils::Timer timer;
@@ -471,6 +487,7 @@ void Pipeline::apply_masking(RequestContext& ctx) {
 }
 
 void Pipeline::classify_results(RequestContext& ctx) {
+    ScopedSpan span(ctx, "sql_proxy.classify");
     if (!classifier_ || !ctx.query_result.success) {
         return;
     }
@@ -562,6 +579,14 @@ void Pipeline::emit_audit(const RequestContext& ctx) {
     record.injection_blocked = ctx.injection_result.should_block;
     record.anomaly_score = ctx.anomaly_result.anomaly_score;
     record.anomalies = ctx.anomaly_result.anomalies;
+
+    // Per-layer tracing spans (Tier G)
+    for (const auto& s : ctx.spans) {
+        record.spans.push_back({s.span_id, s.operation, s.duration_us()});
+    }
+
+    // Request priority (Tier G)
+    record.priority = ctx.priority;
 
     audit_emitter_->emit(std::move(record));
 }

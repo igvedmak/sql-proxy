@@ -30,6 +30,7 @@ class CircuitBreaker;
 class IConnectionPool;
 class ParseCache;
 class QueryCostEstimator;
+class AdaptiveRateController;
 
 /**
  * @brief Pipeline coordinator - orchestrates 7-layer request flow
@@ -73,7 +74,8 @@ public:
         std::shared_ptr<CircuitBreaker> circuit_breaker = nullptr,
         std::shared_ptr<IConnectionPool> connection_pool = nullptr,
         std::shared_ptr<ParseCache> parse_cache = nullptr,
-        std::shared_ptr<QueryCostEstimator> query_cost_estimator = nullptr
+        std::shared_ptr<QueryCostEstimator> query_cost_estimator = nullptr,
+        std::shared_ptr<AdaptiveRateController> adaptive_rate_controller = nullptr
     );
 
     struct RetryConfig {
@@ -133,6 +135,8 @@ public:
     std::shared_ptr<ParseCache> get_parse_cache() const { return parse_cache_; }
 
     std::shared_ptr<QueryCostEstimator> get_query_cost_estimator() const { return query_cost_estimator_; }
+
+    std::shared_ptr<AdaptiveRateController> get_adaptive_rate_controller() const { return adaptive_rate_controller_; }
 
     struct Stats {
         uint64_t total_requests;
@@ -269,6 +273,7 @@ private:
     const std::shared_ptr<IConnectionPool> connection_pool_;
     const std::shared_ptr<ParseCache> parse_cache_;
     const std::shared_ptr<QueryCostEstimator> query_cost_estimator_;
+    const std::shared_ptr<AdaptiveRateController> adaptive_rate_controller_;
 
     RetryConfig retry_config_;
 

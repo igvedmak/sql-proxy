@@ -143,6 +143,13 @@ public:
     void reset_all() override;
 
     /**
+     * @brief Adjust global rate limit (used by adaptive rate controller)
+     * @param new_tps New tokens per second
+     * @param new_burst New burst capacity
+     */
+    void adjust_global_rate(uint32_t new_tps, uint32_t new_burst);
+
+    /**
      * @brief Get statistics
      */
     struct Stats {

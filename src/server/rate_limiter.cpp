@@ -218,6 +218,10 @@ void HierarchicalRateLimiter::set_user_database_limit(
         tokens_per_second, burst_capacity);
 }
 
+void HierarchicalRateLimiter::adjust_global_rate(uint32_t new_tps, uint32_t new_burst) {
+    global_bucket_ = std::make_unique<TokenBucket>(new_tps, new_burst);
+}
+
 void HierarchicalRateLimiter::reset_all() {
     global_bucket_->reset();
 

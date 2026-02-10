@@ -193,7 +193,9 @@ void AuditEmitter::writer_thread_func() {
             output.reserve(drained * 512);
 
             for (const auto& record : batch) {
-                output += to_json(record);
+                const std::string json = to_json(record);
+                output += (encryptor_ && encryptor_->is_enabled()) ? 
+                    encryptor_->encrypt(json) : json;
                 output += '\n';
             }
 
@@ -353,6 +355,26 @@ std::string AuditEmitter::to_json(const AuditRecord& record) {
     if (record.shadow_blocked) {
         result += std::format("\"shadow_blocked\":true,\"shadow_policy\":\"{}\",",
                               record.shadow_policy);
+    }
+
+    // Per-layer tracing spans (Tier G)
+    if (!record.spans.empty()) {
+        result += "\"spans\":[";
+        for (size_t i = 0; i < record.spans.size(); ++i) {
+            if (i > 0) result += ",";
+            result += std::format("{{\"id\":\"{}\",\"op\":\"{}\",\"dur_us\":{}}}",
+                                  record.spans[i].span_id,
+                                  record.spans[i].operation,
+                                  record.spans[i].duration_us);
+        }
+        result += "],";
+    }
+
+    // Request priority (Tier G)
+    {
+        static const char* kPriorityNames[] = {"background", "low", "normal", "high"};
+        const char* pname = (record.priority <= 3) ? kPriorityNames[record.priority] : "normal";
+        result += std::format("\"priority\":\"{}\",", pname);
     }
 
     // Integrity (hash chain)

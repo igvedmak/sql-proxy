@@ -2,6 +2,7 @@
 
 #include "audit/ring_buffer.hpp"
 #include "audit/audit_sink.hpp"
+#include "audit/audit_encryptor.hpp"
 #include "core/types.hpp"
 #include <atomic>
 #include <chrono>
@@ -86,6 +87,14 @@ public:
 
     static std::string compute_record_hash(const AuditRecord& record, const std::string& prev_hash);
 
+    void set_encryptor(std::shared_ptr<AuditEncryptor> encryptor) {
+        encryptor_ = std::move(encryptor);
+    }
+
+    [[nodiscard]] std::shared_ptr<AuditEncryptor> get_encryptor() const {
+        return encryptor_;
+    }
+
 private:
     void writer_thread_func();
     std::string to_json(const AuditRecord& record);
@@ -127,6 +136,9 @@ private:
     // -- Hash chain (writer thread only, no sync needed) --
     bool integrity_enabled_{true};
     std::string previous_hash_;
+
+    // -- Audit encryption (writer thread only) --
+    std::shared_ptr<AuditEncryptor> encryptor_;
 };
 
 } // namespace sqlproxy

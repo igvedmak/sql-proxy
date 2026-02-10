@@ -1487,6 +1487,10 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
         config.schema_drift = extract_schema_drift(json);
         config.retry = extract_retry(json);
         config.request_timeout = extract_request_timeout(json);
+        config.audit_encryption = extract_audit_encryption(json);
+        config.tracing = extract_tracing(json);
+        config.adaptive_rate_limiting = extract_adaptive_rate_limiting(json);
+        config.priority = extract_priority(json);
 
         auto errors = validate_config(config);
         if (!errors.empty()) {
@@ -1526,6 +1530,10 @@ ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_
         config.audit_sampling = extract_audit_sampling(json);
         config.result_cache = extract_result_cache(json);
         config.slow_query = extract_slow_query(json);
+        config.audit_encryption = extract_audit_encryption(json);
+        config.tracing = extract_tracing(json);
+        config.adaptive_rate_limiting = extract_adaptive_rate_limiting(json);
+        config.priority = extract_priority(json);
 
         auto errors = validate_config(config);
         if (!errors.empty()) {
@@ -1635,6 +1643,60 @@ ProxyConfig::RequestTimeoutConfig ConfigLoader::extract_request_timeout(const Js
 
     cfg.enabled = json_bool(s, kEnabled, true);
     cfg.timeout_ms = json_uint32(s, "timeout_ms", 30000);
+    return cfg;
+}
+
+// ============================================================================
+// Tier G Extractors
+// ============================================================================
+
+ProxyConfig::AuditEncryptionConfig ConfigLoader::extract_audit_encryption(const JsonValue& root) {
+    ProxyConfig::AuditEncryptionConfig cfg;
+    if (!root.contains("audit_encryption") && !root.contains("audit")) return cfg;
+
+    // Support both [audit_encryption] and [audit.encryption]
+    if (root.contains("audit_encryption")) {
+        const auto s = root["audit_encryption"];
+        cfg.enabled = json_bool(s, kEnabled, false);
+        cfg.key_id = json_string(s, "key_id", "audit-key-1");
+    } else if (root.contains("audit")) {
+        const auto a = root["audit"];
+        if (a.contains("encryption")) {
+            const auto s = a["encryption"];
+            cfg.enabled = json_bool(s, kEnabled, false);
+            cfg.key_id = json_string(s, "key_id", "audit-key-1");
+        }
+    }
+    return cfg;
+}
+
+ProxyConfig::TracingConfig ConfigLoader::extract_tracing(const JsonValue& root) {
+    ProxyConfig::TracingConfig cfg;
+    if (!root.contains("tracing")) return cfg;
+    const auto s = root["tracing"];
+
+    cfg.spans_enabled = json_bool(s, "spans_enabled", false);
+    return cfg;
+}
+
+ProxyConfig::AdaptiveRateLimitingConfig ConfigLoader::extract_adaptive_rate_limiting(const JsonValue& root) {
+    ProxyConfig::AdaptiveRateLimitingConfig cfg;
+    if (!root.contains("adaptive_rate_limiting")) return cfg;
+    const auto s = root["adaptive_rate_limiting"];
+
+    cfg.enabled = json_bool(s, kEnabled, false);
+    cfg.adjustment_interval_seconds = json_uint32(s, "adjustment_interval_seconds", 10);
+    cfg.latency_target_ms = json_uint32(s, "latency_target_ms", 50);
+    cfg.throttle_threshold_ms = json_uint32(s, "throttle_threshold_ms", 200);
+    return cfg;
+}
+
+ProxyConfig::PriorityConfig ConfigLoader::extract_priority(const JsonValue& root) {
+    ProxyConfig::PriorityConfig cfg;
+    if (!root.contains("priority")) return cfg;
+    const auto s = root["priority"];
+
+    cfg.enabled = json_bool(s, kEnabled, false);
     return cfg;
 }
 

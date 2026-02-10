@@ -9,6 +9,7 @@
 #include "security/sql_injection_detector.hpp"
 #include "security/anomaly_detector.hpp"
 #include "tracing/trace_context.hpp"
+#include "tracing/span.hpp"
 #include <memory>
 #include <chrono>
 
@@ -85,6 +86,12 @@ struct RequestContext {
 
     // Dry-run mode (evaluate policy but skip execution)
     bool dry_run = false;
+
+    // Per-layer tracing spans (Tier G)
+    std::vector<Span> spans;
+
+    // Request priority (Tier G)
+    uint8_t priority = 2;  // Default: NORMAL
 
     RequestContext()
         : request_id(utils::generate_uuid()),

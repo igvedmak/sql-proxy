@@ -516,6 +516,17 @@ struct AuditRecord {
     bool shadow_blocked = false;
     std::string shadow_policy;
 
+    // Per-layer tracing spans (Tier G)
+    struct SpanData {
+        std::string span_id;
+        std::string operation;
+        uint64_t duration_us = 0;
+    };
+    std::vector<SpanData> spans;
+
+    // Request priority (Tier G)
+    uint8_t priority = 2;  // 0=BACKGROUND, 1=LOW, 2=NORMAL, 3=HIGH
+
     AuditRecord()
         : audit_id(utils::generate_uuid()),
           sequence_num(0),
@@ -556,6 +567,7 @@ struct ProxyRequest {
     std::string tracestate;         // W3C tracestate header (propagated as-is)
     std::chrono::system_clock::time_point received_at;
     bool dry_run = false;           // Dry-run mode: evaluate but don't execute
+    uint8_t priority = 2;           // 0=BACKGROUND, 1=LOW, 2=NORMAL, 3=HIGH
 
     ProxyRequest()
         : request_id(utils::generate_uuid()),

@@ -667,3 +667,35 @@ max_backoff_ms = 2000
 [request_timeout]
 enabled = true
 timeout_ms = 30000
+
+# ============================================================================
+# Audit Encryption at Rest (Tier G)
+# ============================================================================
+
+[audit_encryption]
+enabled = false
+key_id = "audit-key-1"
+
+# ============================================================================
+# Per-Layer Distributed Tracing Spans (Tier G)
+# ============================================================================
+
+[tracing]
+spans_enabled = true
+
+# ============================================================================
+# Adaptive Rate Limiting (Tier G)
+# ============================================================================
+
+[adaptive_rate_limiting]
+enabled = false
+adjustment_interval_seconds = 10
+latency_target_ms = 50
+throttle_threshold_ms = 200
+
+# ============================================================================
+# Request Prioritization (Tier G)
+# ============================================================================
+
+[priority]
+enabled = true

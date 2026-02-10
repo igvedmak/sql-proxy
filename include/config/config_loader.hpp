@@ -322,6 +322,27 @@ struct ProxyConfig {
         bool enabled = true;
         uint32_t timeout_ms = 30000;
     } request_timeout;
+
+    // Tier G (Audit encryption, tracing, adaptive rate limiting, priority)
+    struct AuditEncryptionConfig {
+        bool enabled = false;
+        std::string key_id = "audit-key-1";
+    } audit_encryption;
+
+    struct TracingConfig {
+        bool spans_enabled = false;
+    } tracing;
+
+    struct AdaptiveRateLimitingConfig {
+        bool enabled = false;
+        uint32_t adjustment_interval_seconds = 10;
+        uint32_t latency_target_ms = 50;
+        uint32_t throttle_threshold_ms = 200;
+    } adaptive_rate_limiting;
+
+    struct PriorityConfig {
+        bool enabled = false;
+    } priority;
 };
 
 // ============================================================================
@@ -455,6 +476,12 @@ private:
     static ProxyConfig::SchemaDriftConfig extract_schema_drift(const JsonValue& root);
     static ProxyConfig::RetryConfig extract_retry(const JsonValue& root);
     static ProxyConfig::RequestTimeoutConfig extract_request_timeout(const JsonValue& root);
+
+    // Tier G extractors
+    static ProxyConfig::AuditEncryptionConfig extract_audit_encryption(const JsonValue& root);
+    static ProxyConfig::TracingConfig extract_tracing(const JsonValue& root);
+    static ProxyConfig::AdaptiveRateLimitingConfig extract_adaptive_rate_limiting(const JsonValue& root);
+    static ProxyConfig::PriorityConfig extract_priority(const JsonValue& root);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);

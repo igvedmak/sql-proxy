@@ -78,16 +78,24 @@ Response + Classifications
 - Data lineage tracking for GDPR/SOC2 compliance
 - GDPR data subject access endpoint (Article 15)
 - Prometheus metrics, W3C distributed tracing
+- Per-layer tracing spans (rate_limit, parse, policy, execute, classify, mask)
 - Admin dashboard with real-time SSE metrics
+- OpenAPI 3.0 spec + Swagger UI at `/api/docs`
 
 **Resilience**
 - Hierarchical rate limiting (Global → User → DB → User+DB)
+- Adaptive rate limiting (auto-adjust based on DB latency P95)
+- Request prioritization (HIGH/NORMAL/LOW/BACKGROUND with weighted tokens)
 - Per-database circuit breakers and connection pools
 - Configurable alerting rules with webhook/syslog sinks
 - Request timeout with query cancellation
 - Retry with exponential backoff for transient failures
 - Query cost estimation (EXPLAIN-based rejection of expensive queries)
 - Schema drift detection (background monitoring for unauthorized changes)
+
+**Compliance**
+- AES-256-GCM audit record encryption at rest
+- Hash chain integrity for tamper-evident audit logs
 
 ## Configuration
 
