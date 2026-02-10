@@ -7,8 +7,11 @@ A high-performance C++23 SQL proxy service for PostgreSQL with SQL analysis, acc
 **Build and run with Docker (uses Ninja for fast builds):**
 
 ```bash
-docker compose build
-docker compose up
+# Core mode — exercise requirements only (SQL analysis, policies, users, execution, classification, audit)
+docker compose --profile core up
+
+# Full mode — all features (rate limiting, RLS, masking, injection detection, tracing, etc.)
+docker compose --profile full up
 ```
 
 The service will be available at http://localhost:8080

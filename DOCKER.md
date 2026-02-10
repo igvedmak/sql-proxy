@@ -7,42 +7,58 @@ Complete guide for building, running, and testing the SQL Proxy using Docker.
 - Docker installed and running
 - Docker Compose v2+
 
-## Build
+## Run Modes
 
-Build the Docker image with all dependencies:
+The proxy supports two run modes via Docker Compose profiles:
+
+### Core Mode — Exercise Requirements Only
+
+Runs only the 6 core requirements: SQL analysis, access policies, user management, query execution, PII classification (Email/Phone), and audit logging.
+
+```bash
+docker compose --profile core up
+```
+
+Uses `config/proxy_core.toml` — minimal config with no RLS, masking, encryption, injection detection, tracing, alerting, or schema drift.
+
+### Full Mode — All Features
+
+Runs the full proxy with all features enabled (rate limiting, RLS, masking, injection detection, tracing, alerting, etc.).
+
+```bash
+docker compose --profile full up
+```
+
+Uses `config/proxy.toml` — complete config with all tiers enabled.
+
+### Build Only
+
+Build the Docker image without starting:
 
 ```bash
 docker compose build
 ```
 
 This will:
-- Install all system dependencies (PostgreSQL, Drogon, OpenSSL, etc.)
+- Install all system dependencies (PostgreSQL, OpenSSL, etc.)
 - Build libpg_query from source
 - Compile the SQL Proxy service
 - Create a minimal runtime image (~200MB)
 
-## Run the Service
-
-Start the SQL Proxy and PostgreSQL database:
-
-```bash
-docker compose up -d
-```
-
-The service will be available at:
-- **SQL Proxy**: http://localhost:8080
-- **PostgreSQL**: localhost:5432
-
 ## Stop the Service
 
 ```bash
-docker compose down
+docker compose --profile core down
+# or
+docker compose --profile full down
 ```
 
 To stop and remove volumes (resets database data):
 
 ```bash
-docker compose down -v
+docker compose --profile core down -v
+# or
+docker compose --profile full down -v
 ```
 
 ## Testing
@@ -108,8 +124,8 @@ If the proxy and database are already running:
 If you modify files in `sql/` (e.g., adding columns), the running database won't pick up the changes automatically because PostgreSQL init scripts only run on first volume creation. To apply schema changes:
 
 ```bash
-docker compose down -v       # Remove volumes (drops old database)
-docker compose up -d         # Recreate with updated schema
+docker compose --profile full down -v   # Remove volumes (drops old database)
+docker compose --profile full up -d     # Recreate with updated schema
 ```
 
 Or apply manually without losing data:
@@ -123,7 +139,7 @@ docker exec -i sql_proxy_postgres psql -U postgres -d testdb -c \
 
 ```bash
 docker compose build
-docker compose up -d
+docker compose --profile full up -d   # or --profile core
 ```
 
 Use `--no-cache` only if dependency layers need refreshing.
@@ -131,14 +147,18 @@ Use `--no-cache` only if dependency layers need refreshing.
 ## View Logs
 
 ```bash
-docker compose logs -f proxy
+docker compose --profile full logs -f proxy
+# or for core mode:
+docker compose --profile core logs -f proxy-core
+# PostgreSQL logs (always available):
 docker compose logs -f postgres
 ```
 
 ## Configuration
 
 Edit configuration files in the `config/` directory:
-- `proxy.toml` - Main proxy configuration (policies, rate limits, security, encryption)
+- `proxy.toml` — Full proxy configuration (policies, rate limits, security, encryption, all tiers)
+- `proxy_core.toml` — Minimal core configuration (6 exercise requirements only)
 
 Configuration is mounted read-only into the container. The proxy reads it at startup. To hot-reload policies without restart:
 
