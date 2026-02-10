@@ -17,17 +17,17 @@ FAKE_KEY="sk-brute-force-test-$(date +%s)"
 
 # Test 1: Lockout after max_attempts failed auth
 TOTAL=$((TOTAL + 1))
-echo -e "${BLUE}[TEST $TOTAL]${NC} Lockout after 3 failed attempts"
+echo -e "${BLUE}[TEST $TOTAL]${NC} Lockout after 20 failed attempts"
 
-# Send 3 failed auth attempts
-for i in $(seq 1 3); do
+# Send 20 failed auth attempts (matches config max_attempts = 20)
+for i in $(seq 1 20); do
     curl -s -X POST "$BASE_URL/api/v1/query" \
         -H 'Content-Type: application/json' \
         -H "Authorization: Bearer $FAKE_KEY" \
         -d '{"database":"testdb","sql":"SELECT 1"}' > /dev/null
 done
 
-# 4th attempt should be blocked with 429
+# 21st attempt should be blocked with 429
 response=$(curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/v1/query" \
     -H 'Content-Type: application/json' \
     -H "Authorization: Bearer $FAKE_KEY" \
@@ -35,7 +35,7 @@ response=$(curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/v1/query" \
 http_code=$(echo "$response" | tail -1)
 body=$(echo "$response" | sed '$d')
 
-echo -e "  ${YELLOW}Status after 4th attempt:${NC} $http_code"
+echo -e "  ${YELLOW}Status after 21st attempt:${NC} $http_code"
 echo -e "  ${YELLOW}Body:${NC} $(echo "$body" | head -c 200)"
 
 if [ "$http_code" = "429" ]; then

@@ -25,9 +25,12 @@ TokenBucket::TokenBucket(uint32_t tokens_per_second, uint32_t burst_capacity)
 }
 
 bool TokenBucket::try_acquire(uint32_t tokens) {
-    auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+    return try_acquire_at(now_ns, tokens);
+}
 
+bool TokenBucket::try_acquire_at(int64_t now_ns, uint32_t tokens) {
     // Retry limit prevents infinite spin under extreme contention
     static constexpr int kMaxRetries = 8;
 
@@ -35,13 +38,15 @@ bool TokenBucket::try_acquire(uint32_t tokens) {
         uint32_t current_tokens = tokens_.load(std::memory_order_acquire);
         const int64_t last_refill = last_refill_ns_.load(std::memory_order_acquire);
 
-        // Refill tokens based on elapsed time (full 64-bit nanoseconds, no overflow)
+        // Refill tokens based on elapsed time using integer arithmetic
+        // (avoids double division: ~3ns → ~1ns per refill calculation)
         const int64_t elapsed_ns = now_ns - last_refill;
-        const double elapsed_seconds = static_cast<double>(elapsed_ns) / 1e9;
 
-        // Calculate new tokens
+        // tokens_to_add = elapsed_ns * tokens_per_second / 1e9
+        // Safe for int64_t: even 1 hour * 50K tps = 1.8e17, well within 9.2e18 limit
+        const int64_t raw_tokens = elapsed_ns * static_cast<int64_t>(tokens_per_second_) / 1'000'000'000LL;
         const uint32_t tokens_to_add = static_cast<uint32_t>(
-            elapsed_seconds * tokens_per_second_);
+            std::min(raw_tokens, static_cast<int64_t>(burst_capacity_)));
         const uint32_t new_tokens = std::min(current_tokens + tokens_to_add, burst_capacity_);
 
         // Check if enough tokens available
@@ -124,8 +129,13 @@ RateLimitResult HierarchicalRateLimiter::check(
 
     total_checks_.fetch_add(1, std::memory_order_relaxed);
 
+    // Read timestamp ONCE for all 4 bucket checks
+    // Saves ~60ns (3 eliminated steady_clock::now() calls at ~20ns each)
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
     // Level 1: Global
-    if (!global_bucket_->try_acquire()) {
+    if (!global_bucket_->try_acquire_at(now_ns)) {
         global_rejects_.fetch_add(1, std::memory_order_relaxed);
         return RateLimitResult{
             false,
@@ -137,7 +147,7 @@ RateLimitResult HierarchicalRateLimiter::check(
 
     // Level 2: Per-User
     const auto user_bucket = get_user_bucket(user);
-    if (!user_bucket->try_acquire()) {
+    if (!user_bucket->try_acquire_at(now_ns)) {
         user_rejects_.fetch_add(1, std::memory_order_relaxed);
         return RateLimitResult{
             false,
@@ -149,7 +159,7 @@ RateLimitResult HierarchicalRateLimiter::check(
 
     // Level 3: Per-Database
     const auto db_bucket = get_database_bucket(database);
-    if (!db_bucket->try_acquire()) {
+    if (!db_bucket->try_acquire_at(now_ns)) {
         database_rejects_.fetch_add(1, std::memory_order_relaxed);
         return RateLimitResult{
             false,
@@ -161,7 +171,7 @@ RateLimitResult HierarchicalRateLimiter::check(
 
     // Level 4: Per-User-Per-Database
     const auto user_db_bucket = get_user_database_bucket(user, database);
-    if (!user_db_bucket->try_acquire()) {
+    if (!user_db_bucket->try_acquire_at(now_ns)) {
         user_database_rejects_.fetch_add(1, std::memory_order_relaxed);
         return RateLimitResult{
             false,

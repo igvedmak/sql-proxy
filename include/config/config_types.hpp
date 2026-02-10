@@ -162,6 +162,14 @@ struct RouteConfig {
 
     // Optional
     std::string graphql         = "/api/v1/graphql";
+
+    // Dashboard
+    std::string dashboard           = "/dashboard";
+    std::string dashboard_stats     = "/dashboard/api/stats";
+    std::string dashboard_policies  = "/dashboard/api/policies";
+    std::string dashboard_users     = "/dashboard/api/users";
+    std::string dashboard_alerts    = "/dashboard/api/alerts";
+    std::string dashboard_stream    = "/dashboard/api/metrics/stream";
 };
 
 // ============================================================================

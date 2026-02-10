@@ -26,6 +26,10 @@ The service will be available at http://localhost:8080
 ./stress_test.sh 10
 ```
 
+## Demo
+
+<video src="demo.mp4" width="100%" autoplay loop muted playsinline></video>
+
 ## Documentation
 
 - [DOCKER.md](DOCKER.md) - Build, run, test, and deploy instructions

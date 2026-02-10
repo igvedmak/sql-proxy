@@ -669,7 +669,8 @@ int main(int argc, char* argv[]) {
                 dash_users.emplace_back(name, info.roles);
             }
             dashboard_handler = std::make_shared<DashboardHandler>(
-                pipeline, g_alert_evaluator, std::move(dash_users));
+                pipeline, g_alert_evaluator, std::move(dash_users),
+                config_result.config.routes);
         }
         utils::log::info("Dashboard: enabled at /dashboard");
 

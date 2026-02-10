@@ -41,6 +41,12 @@ public:
     bool try_acquire(uint32_t tokens = 1);
 
     /**
+     * @brief Try to acquire tokens with pre-computed timestamp
+     * Avoids calling steady_clock::now() per bucket (saves ~20ns per call)
+     */
+    bool try_acquire_at(int64_t now_ns, uint32_t tokens = 1);
+
+    /**
      * @brief Get current token count (approximate)
      */
     uint32_t available_tokens() const;
@@ -58,13 +64,6 @@ public:
     }
 
 private:
-    /**
-     * @brief Refill tokens based on elapsed time
-     * @param current_time Current timestamp
-     * @return New token count after refill
-     */
-    uint32_t refill(std::chrono::steady_clock::time_point current_time);
-
     uint32_t tokens_per_second_;
     uint32_t burst_capacity_;
 

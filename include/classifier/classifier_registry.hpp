@@ -34,23 +34,25 @@ public:
 
 private:
     /**
-     * @brief Classify by column name (Strategy 1)
+     * @brief Classify by column name (Strategy 1) — allocation-free
      */
-    std::optional<ClassificationType> classify_by_name(const std::string& col_name) const;
+    std::optional<ClassificationType> classify_by_name(std::string_view col_name) const;
 
     /**
      * @brief Classify by PostgreSQL type OID (Strategy 2)
      */
     static std::optional<ClassificationType> classify_by_type_oid(
-        const std::string& col_name,
+        std::string_view col_name,
         uint32_t type_oid
     );
 
     /**
-     * @brief Classify by data pattern (Strategy 3)
+     * @brief Classify by data pattern scanning rows directly (Strategy 3)
+     * Avoids copying sample values into a temporary vector.
      */
     std::optional<ClassificationType> classify_by_pattern(
-        const std::vector<std::string>& sample_values
+        const QueryResult& result,
+        size_t col_index
     ) const;
 
     /**

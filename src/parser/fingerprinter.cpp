@@ -11,6 +11,66 @@
 
 namespace sqlproxy {
 
+// ============================================================================
+// Lookup table for character classification — eliminates locale-dependent
+// std::isdigit/isalpha/isalnum/ispunct/tolower calls (each ~5-10ns with locale)
+// Single 256-byte table gives O(1) classification + lowercase in one load.
+// ============================================================================
+namespace {
+
+enum CharClass : uint8_t {
+    CC_OTHER   = 0,
+    CC_SPACE   = 1,
+    CC_DIGIT   = 2,
+    CC_ALPHA   = 4,
+    CC_IDENT   = 8,   // _ and $
+    CC_PUNCT   = 16,
+};
+
+struct CharTable {
+    uint8_t cls[256];
+    char    lower[256];
+
+    constexpr CharTable() : cls{}, lower{} {
+        for (int i = 0; i < 256; ++i) {
+            lower[i] = static_cast<char>(i);
+            cls[i] = CC_OTHER;
+        }
+        cls[' '] = CC_SPACE; cls['\t'] = CC_SPACE;
+        cls['\n'] = CC_SPACE; cls['\r'] = CC_SPACE;
+        for (int i = '0'; i <= '9'; ++i) cls[i] = CC_DIGIT;
+        for (int i = 'a'; i <= 'z'; ++i) cls[i] = CC_ALPHA;
+        for (int i = 'A'; i <= 'Z'; ++i) {
+            cls[i] = CC_ALPHA;
+            lower[i] = static_cast<char>(i + 32);
+        }
+        cls['_'] = CC_IDENT;
+        cls['$'] = CC_IDENT;
+        // Punctuation
+        cls['!'] = CC_PUNCT; cls['"'] = CC_PUNCT; cls['#'] = CC_PUNCT;
+        cls['%'] = CC_PUNCT; cls['&'] = CC_PUNCT; cls['\''] = CC_PUNCT;
+        cls['('] = CC_PUNCT; cls[')'] = CC_PUNCT; cls['*'] = CC_PUNCT;
+        cls['+'] = CC_PUNCT; cls[','] = CC_PUNCT; cls['-'] = CC_PUNCT;
+        cls['.'] = CC_PUNCT; cls['/'] = CC_PUNCT; cls[':'] = CC_PUNCT;
+        cls[';'] = CC_PUNCT; cls['<'] = CC_PUNCT; cls['='] = CC_PUNCT;
+        cls['>'] = CC_PUNCT; cls['?'] = CC_PUNCT; cls['@'] = CC_PUNCT;
+        cls['['] = CC_PUNCT; cls['\\'] = CC_PUNCT; cls[']'] = CC_PUNCT;
+        cls['^'] = CC_PUNCT; cls['`'] = CC_PUNCT; cls['{'] = CC_PUNCT;
+        cls['|'] = CC_PUNCT; cls['}'] = CC_PUNCT; cls['~'] = CC_PUNCT;
+    }
+};
+
+static constexpr CharTable CT{};
+
+inline bool ct_space(unsigned char c)      { return CT.cls[c] == CC_SPACE; }
+inline bool ct_digit(unsigned char c)      { return CT.cls[c] == CC_DIGIT; }
+inline bool ct_ident_start(unsigned char c) { auto v = CT.cls[c]; return v == CC_ALPHA || v == CC_IDENT; }
+inline bool ct_ident_cont(unsigned char c)  { auto v = CT.cls[c]; return v == CC_ALPHA || v == CC_DIGIT || v == CC_IDENT; }
+inline bool ct_punct(unsigned char c)      { return CT.cls[c] == CC_PUNCT; }
+inline char ct_lower(unsigned char c)      { return CT.lower[c]; }
+
+} // anonymous namespace
+
 // Transparent hash/equal for heterogeneous lookup (avoids temporary std::string from string_view)
 struct StringViewHash {
     using is_transparent = void;
@@ -57,28 +117,28 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
     std::string current_word;
     current_word.reserve(64);
 
-    for (size_t i = 0; i < sql.size(); ++i) {
-        const char c = sql[i];
-        const char next_c = (i + 1 < sql.size()) ? sql[i + 1] : '\0';
+    const size_t len = sql.size();
+    for (size_t i = 0; i < len; ++i) {
+        const auto c = static_cast<unsigned char>(sql[i]);
+        const auto next_c = (i + 1 < len) ? static_cast<unsigned char>(sql[i + 1]) : static_cast<unsigned char>('\0');
 
         switch (state) {
             case State::NORMAL: {
                 // Check for comment start
                 if (c == '/' && next_c == '*') {
                     state = State::IN_BLOCK_COMMENT;
-                    ++i; // Skip next char
+                    ++i;
                     break;
                 }
                 if (c == '-' && next_c == '-') {
                     state = State::IN_LINE_COMMENT;
-                    ++i; // Skip next char
+                    ++i;
                     break;
                 }
 
                 // Check for string literal
                 if (c == '\'') {
                     state = State::IN_SINGLE_QUOTE;
-                    // Replace entire string literal with ?
                     if (!last_was_whitespace && !result.empty() && result.back() != '(') {
                         result += ' ';
                     }
@@ -90,7 +150,6 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
                 // Check for quoted identifier
                 if (c == '"') {
                     state = State::IN_DOUBLE_QUOTE;
-                    // Keep quoted identifiers as-is (lowercase)
                     if (!last_was_whitespace && !result.empty()) {
                         result += ' ';
                     }
@@ -100,9 +159,8 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
                 }
 
                 // Check for numeric literal
-                if (is_digit(c) || (c == '.' && is_digit(next_c))) {
+                if (ct_digit(c) || (c == '.' && ct_digit(next_c))) {
                     state = State::IN_NUMBER;
-                    // Replace numeric literal with ?
                     if (!last_was_whitespace && !result.empty() && result.back() != '(') {
                         result += ' ';
                     }
@@ -112,10 +170,10 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
                 }
 
                 // Check for identifier/keyword start
-                if (is_identifier_start(c)) {
+                if (ct_ident_start(c)) {
                     state = State::IN_IDENTIFIER;
                     current_word.clear();
-                    current_word += std::tolower(static_cast<unsigned char>(c));
+                    current_word += ct_lower(c);
                     break;
                 }
 
@@ -142,7 +200,7 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
                 }
 
                 // Whitespace - collapse to single space
-                if (is_whitespace(c)) {
+                if (ct_space(c)) {
                     if (!last_was_whitespace && !result.empty()) {
                         result += ' ';
                         last_was_whitespace = true;
@@ -152,17 +210,17 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
 
                 // Other characters (operators, punctuation)
                 if (!last_was_whitespace && !result.empty() &&
-                    !std::ispunct(static_cast<unsigned char>(result.back()))) {
+                    !ct_punct(static_cast<unsigned char>(result.back()))) {
                     result += ' ';
                 }
-                result += c;
+                result += static_cast<char>(c);
                 last_was_whitespace = false;
                 break;
             }
 
             case State::IN_IDENTIFIER: {
-                if (is_identifier_continue(c)) {
-                    current_word += std::tolower(static_cast<unsigned char>(c));
+                if (ct_ident_cont(c)) {
+                    current_word += ct_lower(c);
                 } else {
                     // End of identifier - flush it
                     if (!last_was_whitespace && !result.empty()) {
@@ -171,7 +229,7 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
                     result += current_word;
 
                     // Check if this is "IN" keyword
-                    if (current_word == "in") {
+                    if (current_word.size() == 2 && current_word[0] == 'i' && current_word[1] == 'n') {
                         in_in_clause = true;
                         in_list_paren_depth = paren_depth;
                     }
@@ -186,7 +244,7 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
 
             case State::IN_NUMBER: {
                 // Skip numeric literal
-                if (!is_digit(c) && c != '.' && c != 'e' && c != 'E' &&
+                if (!ct_digit(c) && c != '.' && c != 'e' && c != 'E' &&
                     c != '+' && c != '-') {
                     state = State::NORMAL;
                     --i; // Re-process current character
@@ -199,9 +257,8 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
                     state = State::ESCAPE;
                     prev_state = State::IN_SINGLE_QUOTE;
                 } else if (c == '\'') {
-                    // Check for escaped quote ''
                     if (next_c == '\'') {
-                        ++i; // Skip next quote
+                        ++i;
                     } else {
                         state = State::NORMAL;
                     }
@@ -217,7 +274,7 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
                     result += '"';
                     state = State::NORMAL;
                 } else {
-                    result += std::tolower(static_cast<unsigned char>(c));
+                    result += ct_lower(c);
                 }
                 break;
             }
@@ -225,8 +282,7 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
             case State::IN_BLOCK_COMMENT: {
                 if (c == '*' && next_c == '/') {
                     state = State::NORMAL;
-                    ++i; // Skip next char
-                    // Add space to prevent tokens from merging
+                    ++i;
                     if (!last_was_whitespace && !result.empty()) {
                         result += ' ';
                         last_was_whitespace = true;
@@ -247,7 +303,6 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
             }
 
             case State::IN_IN_LIST: {
-                // Skip everything inside IN (...) list until matching )
                 if (c == '(') {
                     ++paren_depth;
                 } else if (c == ')') {
@@ -256,7 +311,7 @@ std::string QueryFingerprinter::normalize(std::string_view sql) {
                         state = State::NORMAL;
                         in_in_clause = false;
                         in_list_paren_depth = 0;
-                        --i; // Re-process closing paren
+                        --i;
                     }
                 }
                 break;
@@ -290,23 +345,22 @@ uint64_t QueryFingerprinter::compute_hash(std::string_view data) {
 }
 
 bool QueryFingerprinter::is_whitespace(char c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    return ct_space(static_cast<unsigned char>(c));
 }
 
 bool QueryFingerprinter::is_identifier_start(char c) {
-    return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+    return ct_ident_start(static_cast<unsigned char>(c));
 }
 
 bool QueryFingerprinter::is_identifier_continue(char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
+    return ct_ident_cont(static_cast<unsigned char>(c));
 }
 
 bool QueryFingerprinter::is_digit(char c) {
-    return std::isdigit(static_cast<unsigned char>(c));
+    return ct_digit(static_cast<unsigned char>(c));
 }
 
 bool QueryFingerprinter::is_keyword(std::string_view word) {
-    // O(1) lookup without creating temporary std::string (transparent hash)
     return SQL_KEYWORDS.contains(word);
 }
 

@@ -1,11 +1,13 @@
 #pragma once
 
+#include "config/config_types.hpp"
+
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace httplib { class Server; }
+namespace httplib { class Server; class Request; class Response; }
 
 namespace sqlproxy {
 
@@ -25,23 +27,35 @@ struct DashboardUser {
  * endpoints for real-time metrics, policy/user listing, and alert
  * management. Uses SSE (Server-Sent Events) for streaming metrics.
  *
- * All routes require admin token authentication.
+ * Route paths are config-driven via RouteConfig.
+ * All API routes require admin token authentication.
  */
 class DashboardHandler {
 public:
     DashboardHandler(
         std::shared_ptr<Pipeline> pipeline,
         std::shared_ptr<AlertEvaluator> alert_evaluator = nullptr,
-        std::vector<DashboardUser> users = {});
+        std::vector<DashboardUser> users = {},
+        RouteConfig routes = {});
 
     void register_routes(httplib::Server& svr, const std::string& admin_token);
 
     void update_users(std::vector<DashboardUser> users);
 
 private:
+    // Individual route handlers
+    void handle_dashboard_page(const httplib::Request& req, httplib::Response& res);
+    void handle_stats(const httplib::Request& req, httplib::Response& res);
+    void handle_policies(const httplib::Request& req, httplib::Response& res);
+    void handle_users(const httplib::Request& req, httplib::Response& res);
+    void handle_alerts(const httplib::Request& req, httplib::Response& res);
+    void handle_metrics_stream(const httplib::Request& req, httplib::Response& res);
+
     std::shared_ptr<Pipeline> pipeline_;
     std::shared_ptr<AlertEvaluator> alert_evaluator_;
     std::vector<DashboardUser> users_;
+    const RouteConfig routes_;
+    std::string admin_token_;
 };
 
 } // namespace sqlproxy
