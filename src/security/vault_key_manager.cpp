@@ -32,7 +32,7 @@ std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_active_key() const {
         std::shared_lock lock(cache_mutex_);
         const auto elapsed = std::chrono::steady_clock::now() - last_refresh_;
         if (elapsed < std::chrono::seconds(config_.cache_ttl_seconds) && !active_key_id_.empty()) {
-            if (auto it = key_cache_.find(active_key_id_); it != key_cache_.end()) {
+            if (const auto it = key_cache_.find(active_key_id_); it != key_cache_.end()) {
                 return it->second;
             }
         }
@@ -42,7 +42,7 @@ std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_active_key() const {
 
     std::shared_lock lock(cache_mutex_);
     if (!active_key_id_.empty()) {
-        if (auto it = key_cache_.find(active_key_id_); it != key_cache_.end()) {
+        if (const auto it = key_cache_.find(active_key_id_); it != key_cache_.end()) {
             return it->second;
         }
     }
@@ -52,7 +52,7 @@ std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_active_key() const {
 std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_key(const std::string& key_id) const {
     {
         std::shared_lock lock(cache_mutex_);
-        if (auto it = key_cache_.find(key_id); it != key_cache_.end()) {
+        if (const auto it = key_cache_.find(key_id); it != key_cache_.end()) {
             return it->second;
         }
     }
@@ -60,7 +60,7 @@ std::optional<IKeyManager::KeyInfo> VaultKeyManager::get_key(const std::string& 
     refresh_cache();
 
     std::shared_lock lock(cache_mutex_);
-    if (auto it = key_cache_.find(key_id); it != key_cache_.end()) {
+    if (const auto it = key_cache_.find(key_id); it != key_cache_.end()) {
         return it->second;
     }
     return std::nullopt;
@@ -112,7 +112,7 @@ void VaultKeyManager::refresh_cache() const {
             const auto end = response.find_first_of(",}", lv_pos);
             std::string version_str = response.substr(lv_pos, end - lv_pos);
             try {
-                int latest = std::stoi(version_str);
+                const int latest = std::stoi(version_str);
                 active_key_id_ = std::format("v{}", latest);
 
                 // Ensure all versions exist in cache
@@ -145,12 +145,12 @@ std::string VaultKeyManager::vault_api_get(const std::string& path) const {
         cli.set_connection_timeout(5);
         cli.set_read_timeout(5);
 
-        httplib::Headers headers = {
+        const httplib::Headers headers = {
             {"X-Vault-Token", config_.vault_token}
         };
 
         const auto res = cli.Get(path, headers);
-        if (res && res->status == 200) {
+        if (res && res->status == httplib::StatusCode::OK_200) {
             return res->body;
         }
     } catch (...) {
@@ -167,12 +167,12 @@ std::string VaultKeyManager::vault_api_post(const std::string& path) const {
         cli.set_connection_timeout(5);
         cli.set_read_timeout(5);
 
-        httplib::Headers headers = {
+        const httplib::Headers headers = {
             {"X-Vault-Token", config_.vault_token}
         };
 
         const auto res = cli.Post(path, headers, "", http::kJsonContentType);
-        if (res && (res->status == 200 || res->status == 204)) {
+        if (res && (res->status == httplib::StatusCode::OK_200 || res->status == httplib::StatusCode::NoContent_204)) {
             return res->body.empty() ? "{}" : res->body;
         }
     } catch (...) {

@@ -64,18 +64,24 @@ docker run --rm sql-proxy-test /build/sql_proxy/build/sql_proxy_tests --reporter
 
 ### E2E Tests
 
-Run the full end-to-end test suite against a live proxy + PostgreSQL:
+Run the full end-to-end test suite (95 tests across 16 suites) against a live proxy + PostgreSQL:
 
 ```bash
-docker compose --profile e2e up --abort-on-container-exit
+# With E2E config (all features enabled — brute force, slow query, IP allowlist):
+docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
+  --profile e2e up --build --abort-on-container-exit
+
+# Or locally (proxy + postgres already running, uses default config):
+bash tests/e2e/run_all.sh
 ```
 
-This starts PostgreSQL, the proxy, and runs `test_suite.sh` (30 tests covering queries, error handling, policies, and metrics).
+Feature-gated tests (brute force, IP allowlist, slow query) auto-detect whether the feature is enabled and gracefully skip when not available.
 
 To clean up E2E containers and volumes afterward:
 
 ```bash
-docker compose --profile e2e down -v
+docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
+  --profile e2e down -v
 ```
 
 **Important:** Always include `--profile e2e` in the `down` command. Without it, the e2e-tests container retains a stale network reference and subsequent runs will fail.

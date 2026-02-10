@@ -1,0 +1,26 @@
+# Docker Compose override for E2E feature tests
+# Usage (from project root):
+#   docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
+#     --profile e2e up --build --abort-on-container-exit
+#
+# NOTE: All relative paths resolve from the project root (location of the
+# first -f file), NOT from this file's directory.
+
+services:
+  # Override proxy to use E2E config with all features enabled
+  proxy:
+    volumes:
+      # Replace the original ./config:/app/config:ro mount with our E2E config
+      # directory (same target path → override wins in Docker Compose merge)
+      - ./tests/e2e/config:/app/config:ro
+      - ./logs:/app/logs
+      - ./plugins:/app/plugins:ro
+
+  # Override E2E test runner to use our scripts
+  e2e-tests:
+    entrypoint: ["/bin/bash", "/app/tests/e2e/run_all.sh"]
+    volumes:
+      - ./tests/e2e:/app/tests/e2e:ro
+    environment:
+      BASE_URL: "http://proxy:8080"
+      ADMIN_TOKEN: "e2e-admin-token"

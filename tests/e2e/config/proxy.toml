@@ -1,0 +1,583 @@
+# SQL Proxy E2E Test Configuration
+# All features enabled with test-friendly thresholds
+
+[server]
+host = "0.0.0.0"
+port = 8080
+threads = 4
+request_timeout_ms = 30000
+max_sql_length = 102400
+admin_token = "e2e-admin-token"
+
+[logging]
+level = "info"
+file = "/app/logs/proxy.log"
+async = true
+
+# ============================================================================
+# Database Connections
+# ============================================================================
+
+[[databases]]
+name = "testdb"
+type = "postgresql"
+connection_string = "postgresql://proxy_user:secure_password@postgres:5432/testdb"
+min_connections = 2
+max_connections = 10
+connection_timeout_ms = 5000
+query_timeout_ms = 30000
+health_check_query = "SELECT 1"
+health_check_interval_seconds = 10
+idle_timeout_seconds = 300
+pool_acquire_timeout_ms = 5000
+max_result_rows = 10000
+
+# ============================================================================
+# Users and Roles
+# ============================================================================
+
+[[users]]
+name = "admin"
+roles = ["admin"]
+api_key = "sk-admin-key-12345"
+description = "Administrator with full access"
+
+[[users]]
+name = "analyst"
+roles = ["analyst", "readonly"]
+api_key = "sk-analyst-key-67890"
+attributes = {department = "analytics", region = "us-west"}
+description = "Data analyst with read-only access"
+
+[[users]]
+name = "developer"
+roles = ["developer"]
+api_key = "sk-developer-key-abcde"
+description = "Developer with DML access"
+
+[[users]]
+name = "auditor"
+roles = ["auditor", "readonly"]
+api_key = "sk-auditor-key-fghij"
+description = "Auditor with limited read access"
+
+# User with IP allowlist for testing
+[[users]]
+name = "restricted_user"
+roles = ["analyst", "readonly"]
+api_key = "sk-restricted-key-99999"
+allowed_ips = ["10.0.0.0/8", "192.168.0.0/16"]
+description = "User restricted to internal IPs"
+
+# ============================================================================
+# Access Control Policies
+# ============================================================================
+
+[[policies]]
+name = "block_all_ddl"
+priority = 100
+action = "BLOCK"
+users = ["*"]
+exclude_roles = ["admin"]
+statement_types = ["CREATE_TABLE", "ALTER_TABLE", "DROP_TABLE", "CREATE_INDEX", "DROP_INDEX", "TRUNCATE"]
+reason = "DDL operations require admin role"
+
+[[policies]]
+name = "block_sensitive_data"
+priority = 90
+action = "BLOCK"
+users = ["*"]
+exclude_roles = ["auditor", "admin"]
+database = "testdb"
+schema = "public"
+table = "sensitive_data"
+statement_types = ["SELECT", "INSERT", "UPDATE", "DELETE"]
+reason = "Sensitive data table requires auditor or admin role"
+
+[[policies]]
+name = "block_writes_readonly"
+priority = 80
+action = "BLOCK"
+roles = ["readonly"]
+statement_types = ["INSERT", "UPDATE", "DELETE"]
+reason = "Read-only role cannot perform write operations"
+
+[[policies]]
+name = "allow_information_schema"
+priority = 50
+action = "ALLOW"
+users = ["*"]
+database = "testdb"
+schema = "information_schema"
+statement_types = ["SELECT"]
+reason = "Information schema is public metadata"
+
+[[policies]]
+name = "allow_pg_catalog"
+priority = 50
+action = "ALLOW"
+users = ["*"]
+database = "testdb"
+schema = "pg_catalog"
+statement_types = ["SELECT"]
+reason = "System catalog is public metadata"
+
+[[policies]]
+name = "allow_analyst_read_customers"
+priority = 50
+action = "ALLOW"
+roles = ["analyst"]
+database = "testdb"
+schema = "public"
+table = "customers"
+statement_types = ["SELECT"]
+reason = "Analysts can read customer data"
+
+[[policies]]
+name = "allow_analyst_read_orders"
+priority = 50
+action = "ALLOW"
+roles = ["analyst"]
+database = "testdb"
+schema = "public"
+table = "orders"
+statement_types = ["SELECT"]
+reason = "Analysts can read order data"
+
+[[policies]]
+name = "allow_analyst_read_order_items"
+priority = 50
+action = "ALLOW"
+roles = ["analyst"]
+database = "testdb"
+schema = "public"
+table = "order_items"
+statement_types = ["SELECT"]
+reason = "Analysts can read order items"
+
+[[policies]]
+name = "allow_developer_customers"
+priority = 50
+action = "ALLOW"
+roles = ["developer"]
+database = "testdb"
+schema = "public"
+table = "customers"
+statement_types = ["SELECT", "INSERT", "UPDATE"]
+reason = "Developers can manage customer data"
+
+[[policies]]
+name = "allow_developer_orders"
+priority = 50
+action = "ALLOW"
+roles = ["developer"]
+database = "testdb"
+schema = "public"
+table = "orders"
+statement_types = ["SELECT", "INSERT", "UPDATE", "DELETE"]
+reason = "Developers can manage orders"
+
+[[policies]]
+name = "allow_developer_order_items"
+priority = 50
+action = "ALLOW"
+roles = ["developer"]
+database = "testdb"
+schema = "public"
+table = "order_items"
+statement_types = ["SELECT", "INSERT", "UPDATE", "DELETE"]
+reason = "Developers can manage order items"
+
+[[policies]]
+name = "allow_auditor_sensitive"
+priority = 60
+action = "ALLOW"
+roles = ["auditor"]
+database = "testdb"
+schema = "public"
+table = "sensitive_data"
+statement_types = ["SELECT"]
+reason = "Auditors can review sensitive data"
+
+[[policies]]
+name = "allow_admin_all"
+priority = 10
+action = "ALLOW"
+roles = ["admin"]
+database = "testdb"
+statement_types = ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE_TABLE", "ALTER_TABLE", "DROP_TABLE", "CREATE_INDEX", "DROP_INDEX", "TRUNCATE"]
+reason = "Admins have full access"
+
+[[policies]]
+name = "block_ssn_analysts"
+priority = 95
+action = "BLOCK"
+roles = ["analyst"]
+database = "testdb"
+table = "sensitive_data"
+columns = ["ssn"]
+reason = "SSN requires auditor role"
+
+[[policies]]
+name = "mask_email_devs"
+priority = 90
+action = "ALLOW"
+roles = ["developer"]
+database = "testdb"
+schema = "public"
+table = "customers"
+columns = ["email"]
+masking_action = "partial"
+masking_prefix_len = 3
+masking_suffix_len = 4
+reason = "Developers see masked email"
+
+[[policies]]
+name = "hash_phone_analysts"
+priority = 90
+action = "ALLOW"
+roles = ["analyst"]
+database = "testdb"
+schema = "public"
+table = "customers"
+columns = ["phone"]
+masking_action = "hash"
+reason = "Analysts see hashed phone numbers"
+
+[[policies]]
+name = "default_deny"
+priority = 1
+action = "BLOCK"
+users = ["*"]
+reason = "Default deny - no matching policy"
+
+# ============================================================================
+# Rate Limiting
+# ============================================================================
+
+[rate_limiting]
+enabled = true
+
+[rate_limiting.global]
+tokens_per_second = 50000
+burst_capacity = 10000
+
+[[rate_limiting.per_user]]
+user = "admin"
+tokens_per_second = 10000
+burst_capacity = 2000
+
+[[rate_limiting.per_user]]
+user = "analyst"
+tokens_per_second = 1000
+burst_capacity = 200
+
+[[rate_limiting.per_user]]
+user = "developer"
+tokens_per_second = 5000
+burst_capacity = 1000
+
+[[rate_limiting.per_user]]
+user = "auditor"
+tokens_per_second = 500
+burst_capacity = 100
+
+[[rate_limiting.per_user]]
+user = "restricted_user"
+tokens_per_second = 1000
+burst_capacity = 200
+
+[rate_limiting.per_user_default]
+tokens_per_second = 100
+burst_capacity = 20
+
+[[rate_limiting.per_database]]
+database = "testdb"
+tokens_per_second = 30000
+burst_capacity = 5000
+
+[[rate_limiting.per_user_per_database]]
+user = "analyst"
+database = "testdb"
+tokens_per_second = 50
+burst_capacity = 10
+
+[[rate_limiting.per_user_per_database]]
+user = "developer"
+database = "testdb"
+tokens_per_second = 1000
+burst_capacity = 200
+
+# ============================================================================
+# Parse Cache
+# ============================================================================
+
+[cache]
+enabled = true
+max_entries = 10000
+num_shards = 16
+ttl_seconds = 300
+
+# ============================================================================
+# PII Classifiers
+# ============================================================================
+
+[[classifiers]]
+type = "PII.Email"
+strategy = "column_name"
+patterns = ["email", ".*_email$", "email_.*", "mail"]
+data_validation_regex = "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+sample_size = 20
+confidence_threshold = 0.8
+
+[[classifiers]]
+type = "PII.Phone"
+strategy = "column_name"
+patterns = ["phone", ".*_phone$", "phone_.*", "mobile", "cell", "telephone"]
+data_validation_regex = "^[+]?[(]?[0-9]{1,4}[)]?[-\\s\\.]?[(]?[0-9]{1,4}[)]?[-\\s\\.]?[0-9]{1,9}$"
+sample_size = 20
+confidence_threshold = 0.8
+
+[[classifiers]]
+type = "PII.SSN"
+strategy = "column_name"
+patterns = ["ssn", "social_security", "social_security_number"]
+data_validation_regex = "^\\d{3}-\\d{2}-\\d{4}$"
+sample_size = 20
+confidence_threshold = 0.95
+
+[[classifiers]]
+type = "PII.CreditCard"
+strategy = "column_name"
+patterns = ["credit_card", "cc_number", "card_number", "creditcard"]
+data_validation_regex = "^\\d{4}-\\d{4}-\\d{4}-\\d{4}$"
+sample_size = 20
+confidence_threshold = 0.95
+
+[[classifiers]]
+type = "Sensitive.Salary"
+strategy = "column_name"
+patterns = ["salary", "compensation", "pay", "wage"]
+confidence_threshold = 0.9
+
+[[classifiers]]
+type = "PII.Address"
+strategy = "column_name"
+patterns = ["address", "street", "location", ".*_address$"]
+confidence_threshold = 0.7
+
+# ============================================================================
+# Audit
+# ============================================================================
+
+[audit]
+enabled = true
+async_mode = true
+ring_buffer_size = 65536
+flush_interval_ms = 100
+max_batch_size = 1000
+fsync_interval_batches = 10
+
+[audit.file]
+enabled = true
+output_file = "/app/logs/audit.jsonl"
+rotation_size_mb = 100
+max_files = 10
+fsync = false
+
+[audit.database]
+enabled = true
+table_name = "audit_events"
+batch_size = 1000
+flush_interval_ms = 1000
+
+[audit.rotation]
+max_file_size_mb = 100
+max_files = 10
+interval_hours = 24
+time_based = true
+size_based = true
+
+[audit.webhook]
+enabled = false
+url = "https://siem.example.com/api/v1/events"
+auth_header = "Bearer your-token-here"
+timeout_ms = 5000
+max_retries = 3
+batch_size = 100
+
+[audit.syslog]
+enabled = false
+ident = "sql-proxy"
+
+# ============================================================================
+# Circuit Breaker
+# ============================================================================
+
+[circuit_breaker]
+enabled = true
+failure_threshold = 10
+success_threshold = 5
+timeout_ms = 60000
+half_open_max_calls = 3
+
+# ============================================================================
+# Allocator
+# ============================================================================
+
+[allocator]
+enabled = true
+initial_size_bytes = 1024
+max_size_bytes = 65536
+
+# ============================================================================
+# Metrics
+# ============================================================================
+
+[metrics]
+enabled = true
+endpoint = "/metrics"
+export_interval_ms = 5000
+
+# ============================================================================
+# Config Watcher
+# ============================================================================
+
+[config_watcher]
+enabled = true
+poll_interval_seconds = 5
+
+# ============================================================================
+# Security — ALL ENABLED for E2E
+# ============================================================================
+
+[security]
+injection_detection = true
+anomaly_detection = true
+lineage_tracking = true
+
+# Brute force protection (low thresholds for fast testing)
+brute_force_enabled = true
+brute_force_max_attempts = 3
+brute_force_window_seconds = 60
+brute_force_lockout_seconds = 2
+brute_force_max_lockout_seconds = 10
+
+# ============================================================================
+# Encryption
+# ============================================================================
+
+[encryption]
+enabled = false
+key_file = "config/encryption_keys.json"
+
+# ============================================================================
+# Row-Level Security
+# ============================================================================
+
+[[row_level_security]]
+name = "region_filter"
+database = "testdb"
+table = "customers"
+condition = "region = '$ATTR.region'"
+roles = ["analyst"]
+
+# ============================================================================
+# Query Rewriting
+# ============================================================================
+
+[[rewrite_rules]]
+name = "enforce_limit"
+type = "enforce_limit"
+limit_value = 1000
+
+# ============================================================================
+# Alerting
+# ============================================================================
+
+[alerting]
+enabled = true
+evaluation_interval_seconds = 10
+alert_log_file = "/app/logs/alerts.jsonl"
+
+[alerting.webhook]
+enabled = false
+url = "https://slack.example.com/webhook"
+auth_header = ""
+
+[[alerting.rules]]
+name = "high_rate_limit_rejects"
+condition = "rate_limit_breach"
+threshold = 100
+window_seconds = 60
+cooldown_seconds = 300
+severity = "warning"
+
+[[alerting.rules]]
+name = "audit_buffer_overflow"
+condition = "audit_buffer_overflow"
+threshold = 10
+window_seconds = 60
+cooldown_seconds = 300
+severity = "warning"
+
+# ============================================================================
+# Tier 5 features (disabled but present)
+# ============================================================================
+
+[tenants]
+enabled = false
+default_tenant = "default"
+header_name = "X-Tenant-Id"
+
+[schema_management]
+enabled = false
+require_approval = false
+max_history_entries = 1000
+
+[wire_protocol]
+enabled = false
+host = "0.0.0.0"
+port = 5433
+
+[graphql]
+enabled = false
+endpoint = "/api/v1/graphql"
+
+[binary_rpc]
+enabled = false
+host = "0.0.0.0"
+port = 9090
+
+# ============================================================================
+# Slow Query Tracking — ENABLED for E2E
+# ============================================================================
+
+[slow_query]
+enabled = true
+threshold_ms = 1
+max_entries = 100
+
+# ============================================================================
+# Audit Sampling — ENABLED for E2E
+# ============================================================================
+
+[audit_sampling]
+enabled = true
+default_sample_rate = 1.0
+select_sample_rate = 1.0
+always_log_blocked = true
+always_log_writes = true
+always_log_errors = true
+deterministic = true
+
+# ============================================================================
+# Result Cache — ENABLED for E2E
+# ============================================================================
+
+[result_cache]
+enabled = true
+max_entries = 100
+num_shards = 4
+ttl_seconds = 30
+max_result_size_bytes = 1048576

@@ -25,7 +25,7 @@ WebhookSink::WebhookSink(const Config& config)
         port_ = 80;
     }
 
-    auto path_pos = url.find('/');
+    const auto path_pos = url.find('/');
     if (path_pos != std::string::npos) {
         host_ = url.substr(0, path_pos);
         path_ = url.substr(path_pos);
@@ -35,7 +35,7 @@ WebhookSink::WebhookSink(const Config& config)
     }
 
     // Check for explicit port
-    auto port_pos = host_.find(':');
+    const auto port_pos = host_.find(':');
     if (port_pos != std::string::npos) {
         port_ = std::stoi(host_.substr(port_pos + 1));
         host_ = host_.substr(0, port_pos);
@@ -86,7 +86,7 @@ void WebhookSink::send_batch() {
 
     for (int attempt = 0; attempt < config_.max_retries && !success; ++attempt) {
         try {
-            std::string scheme_host = std::format("{}{}:{}", use_ssl_ ? "https://" : "http://", host_, port_);
+            const std::string scheme_host = std::format("{}{}:{}", use_ssl_ ? "https://" : "http://", host_, port_);
             httplib::Client client(scheme_host);
             client.set_connection_timeout(config_.timeout);
             client.set_read_timeout(config_.timeout);
@@ -96,8 +96,8 @@ void WebhookSink::send_batch() {
                 headers.emplace(http::kAuthorizationHeader, config_.auth_header);
             }
 
-            auto res = client.Post(path_, headers, payload, config_.content_type);
-            if (res && res->status >= 200 && res->status < 300) {
+            const auto res = client.Post(path_, headers, payload, config_.content_type);
+            if (res && res->status >= httplib::StatusCode::OK_200 && res->status < httplib::StatusCode::MultipleChoices_300) {
                 success = true;
             }
         } catch (...) {
