@@ -184,7 +184,9 @@ curl -X POST http://localhost:8080/policies/reload
 |--------|------|-------------|
 | `POST` | `/api/v1/config/validate` | Validate TOML config without applying |
 | `GET` | `/api/v1/slow-queries` | Recent slow queries (threshold + buffer) |
-| `GET` | `/api/v1/circuit-breakers` | Circuit breaker state + recent events |
+| `GET` | `/api/v1/circuit-breakers` | Circuit breaker state + recent events (per-tenant if multi-tenant) |
+| `POST` | `/api/v1/plugins/reload` | Hot-reload .so plugins at runtime (admin) |
+| `POST` | `/api/v1/graphql` | GraphQL-to-SQL queries + mutations (feature-gated) |
 
 ### Compliance (Admin)
 
@@ -311,6 +313,120 @@ Writes to local syslog (POSIX `syslog(3)`):
 [audit.syslog]
 enabled = true
 ident = "sql-proxy"
+```
+
+### Kafka Sink
+
+Ships audit records to Apache Kafka for SIEM integration (Splunk, Elastic, etc.). Requires building with `-DENABLE_KAFKA=ON` (links librdkafka):
+
+```toml
+[audit.kafka]
+enabled = true
+brokers = "kafka1:9092,kafka2:9092"
+topic = "sql-proxy-audit"
+```
+
+When `ENABLE_KAFKA=OFF` (default), the Kafka code is excluded at compile time — no librdkafka dependency needed.
+
+## Wire Protocol TLS
+
+The PostgreSQL wire protocol (port 5433) supports optional TLS encryption via SSLRequest negotiation:
+
+```toml
+[wire_protocol]
+enabled = true
+
+[wire_protocol.tls]
+enabled = true
+cert_file = "config/certs/server.crt"
+key_file = "config/certs/server.key"
+```
+
+Clients requesting TLS (`sslmode=require`) get an SSL handshake; plaintext clients still work.
+
+```bash
+# TLS connection
+psql "host=localhost port=5433 sslmode=require dbname=testdb user=analyst"
+
+# Plaintext connection
+psql "host=localhost port=5433 sslmode=disable dbname=testdb user=analyst"
+```
+
+## OAuth2/OIDC Authentication
+
+The proxy supports enterprise SSO via OIDC (Okta, Auth0, Azure AD). Tokens are verified using public keys fetched from the JWKS endpoint (RS256/ES256):
+
+```toml
+[auth.oidc]
+issuer = "https://auth.example.com/realms/prod"
+audience = "sql-proxy"
+roles_claim = "realm_access.roles"
+user_claim = "preferred_username"
+jwks_cache_seconds = 3600
+```
+
+JWKS keys are cached and automatically refreshed on key rotation (unknown `kid` triggers refetch). Existing auth methods (API key, JWT HMAC, LDAP) continue to work alongside OIDC.
+
+## GraphQL Mutations
+
+The GraphQL endpoint now supports INSERT, UPDATE, and DELETE mutations (in addition to queries):
+
+```toml
+[graphql]
+enabled = true
+mutations_enabled = true
+```
+
+Example mutations:
+
+```bash
+# INSERT
+curl -X POST http://localhost:8080/api/v1/graphql \
+  -H 'Content-Type: application/json' \
+  -d '{"user":"admin","database":"testdb","query":"mutation { insert_customers(data: {name: \"Test\", email: \"t@test.com\"}) { id name } }"}'
+
+# UPDATE
+curl -X POST http://localhost:8080/api/v1/graphql \
+  -H 'Content-Type: application/json' \
+  -d '{"user":"admin","database":"testdb","query":"mutation { update_customers(where: {id: \"1\"}, set: {name: \"Updated\"}) { id name } }"}'
+
+# DELETE
+curl -X POST http://localhost:8080/api/v1/graphql \
+  -H 'Content-Type: application/json' \
+  -d '{"user":"admin","database":"testdb","query":"mutation { delete_customers(where: {id: \"99\"}) { id } }"}'
+```
+
+All mutations go through the full pipeline (policy enforcement, audit, masking).
+
+## Plugin Hot-Reload
+
+Reload `.so` plugins at runtime without restarting the proxy:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/plugins/reload \
+  -H "Authorization: Bearer admin-secret-token" \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/app/plugins/custom_classifier.so"}'
+```
+
+The old plugin is swapped out atomically under a writer lock. Concurrent requests continue safely.
+
+## Per-Tenant Circuit Breakers
+
+In multi-tenant mode, each tenant gets an isolated circuit breaker keyed by `tenant:database`. One tenant's failures won't trip the breaker for other tenants:
+
+```toml
+[[circuit_breaker.per_tenant]]
+tenant = "high-value"
+failure_threshold = 5
+timeout_ms = 3000
+```
+
+View per-tenant breaker state:
+
+```bash
+curl -H "Authorization: Bearer admin-secret-token" \
+  http://localhost:8080/api/v1/circuit-breakers
 ```
 
 ## Testing Queries

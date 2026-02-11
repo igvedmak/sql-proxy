@@ -300,7 +300,7 @@
           </div>
           <div class="detail-card">
             <div class="label">PostgreSQL Wire</div>
-            <div class="value" style="font-size:13px">Port 5433 (native PG)</div>
+            <div class="value" style="font-size:13px">Port 5433 (native PG, TLS optional)</div>
           </div>
           <div class="detail-card">
             <div class="label">Binary RPC</div>
@@ -308,7 +308,7 @@
           </div>
           <div class="detail-card">
             <div class="label">GraphQL</div>
-            <div class="value" style="font-size:13px">POST /api/v1/graphql</div>
+            <div class="value" style="font-size:13px">POST /api/v1/graphql (queries + mutations)</div>
           </div>
         </div>
       </div>
@@ -345,7 +345,7 @@
           <li>JSON body parse + <code>sql</code> field present &mdash; <span class="tag bg-red">400</span></li>
           <li>SQL length &lt; max_sql_length &mdash; <span class="tag bg-red">400</span></li>
           <li>Brute force check (IP / user) &mdash; <span class="tag bg-red">429</span> + Retry-After</li>
-          <li>Authentication (API key / JWT / LDAP) &mdash; <span class="tag bg-red">401</span></li>
+          <li>Authentication (API key / JWT / LDAP / OIDC) &mdash; <span class="tag bg-red">401</span></li>
           <li>IP allowlist check &mdash; <span class="tag bg-red">403</span></li>
         </ul>
       </div>
@@ -658,7 +658,7 @@
                 <li><code>DDL</code> &rarr; <code>execute_ddl()</code>: PQexec</li>
               </ul>
               <p style="margin-top:8px"><strong>Retry with exponential backoff</strong> on DATABASE_ERROR: doubles delay each attempt, capped at <code>max_backoff_ms</code>.</p>
-              <p style="margin-top:8px"><strong>Circuit breaker</strong> (per database): CLOSED &rarr; OPEN (after N failures) &rarr; HALF_OPEN (after timeout) &rarr; CLOSED (after M successes).</p>
+              <p style="margin-top:8px"><strong>Circuit breaker</strong> (per database, or per tenant:database in multi-tenant mode): CLOSED &rarr; OPEN (after N failures) &rarr; HALF_OPEN (after timeout) &rarr; CLOSED (after M successes). Per-tenant isolation via CircuitBreakerRegistry prevents one tenant&rsquo;s failures from affecting others.</p>
               <p style="margin-top:6px">Connection pool: min=2, max=10, health check on idle, max_lifetime recycling.</p>
             </div>
           </div>
@@ -774,7 +774,7 @@
               <p><strong>Always fires</strong> &mdash; on success AND every failure path.</p>
               <p style="margin-top:6px"><strong>Audit sampling</strong> (optional): always log blocked/writes/errors; configurable sample rate for SELECTs; deterministic by fingerprint.</p>
               <p style="margin-top:8px"><strong>Async architecture:</strong> HTTP threads &rarr; MPSC ring buffer (65536 slots, lock-free CAS enqueue ~210 ns) &rarr; Writer thread (batch drain 1000/batch or 100 ms, fsync every 10 batches) &rarr; <code>logs/audit.jsonl</code>.</p>
-              <p style="margin-top:6px">Optional sinks: webhook, syslog. Optional audit encryption at rest (AES-256-GCM).</p>
+              <p style="margin-top:6px">Optional sinks: webhook, syslog, Kafka (librdkafka, ENABLE_KAFKA build flag). Optional audit encryption at rest (AES-256-GCM).</p>
               <p style="margin-top:8px"><strong>Record includes:</strong> audit_id (UUIDv7), trace_id, user, source_ip, SQL, fingerprint, decision, matched_policy, classifications, masked columns, injection result, anomaly score, per-layer timing spans, priority.</p>
             </div>
           </div>
@@ -874,7 +874,7 @@
         <h4>Meanwhile (async, non-blocking)</h4>
         <ul>
           <li>Audit record written to <code>logs/audit.jsonl</code> (optionally encrypted)</li>
-          <li>Webhook / syslog sinks fire</li>
+          <li>Webhook / syslog / Kafka sinks fire</li>
           <li>Anomaly profile updated</li>
           <li>Lineage events stored</li>
           <li>Alert evaluator checks thresholds</li>

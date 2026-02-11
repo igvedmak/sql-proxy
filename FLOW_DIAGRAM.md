@@ -41,7 +41,8 @@
 │  │  GET  /api/v1/schema/drift   → Schema drift events                   │   │
 │  │                                                                      │   │
 │  │ Optional Endpoints:                                                  │   │
-│  │  POST /api/v1/graphql        → GraphQL-to-SQL translation            │   │
+│  │  POST /api/v1/graphql        → GraphQL-to-SQL (queries + mutations)  │   │
+│  │  POST /api/v1/plugins/reload → Hot-reload .so plugins at runtime    │   │
 │  │  GET  /dashboard             → Admin web UI (HTML)                   │   │
 │  │  GET  /dashboard/api/stats   → Real-time stats JSON                  │   │
 │  │  GET  /dashboard/api/policies→ Policy listing                        │   │
@@ -63,6 +64,7 @@
 │  ├─ SQL length < max_sql_length? ──────── NO ──→ 400 SQL too long            │
 │  ├─ Brute force check (IP/user)? ─────── BLOCKED → 429 + Retry-After        │
 │  ├─ User authenticated? ──────────────── NO ──→ 401 (+ record_failure)       │
+│  │   (API key, JWT HMAC, LDAP, or OIDC/OAuth2 — RS256/ES256 JWT via JWKS)   │
 │  ├─ IP allowlist check? ─────────────── BLOCKED → 403 IP not allowed         │
 │  └─ record_success on auth pass                                              │
 │                                                                              │
@@ -662,7 +664,7 @@
 │  │     backoff_ms = min(backoff_ms * 2, max_backoff_ms)                │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  CIRCUIT BREAKER (per database):                                             │
+│  CIRCUIT BREAKER (per database, or per tenant:database if multi-tenant):      │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │                                                                     │     │
 │  │  ┌────────┐   N failures    ┌────────┐   timeout     ┌──────────┐ │     │
@@ -674,6 +676,8 @@
 │  │                                                                     │     │
 │  │  OPEN state → reject immediately (ErrorCode::CIRCUIT_OPEN, 503)   │     │
 │  │  State changes exposed via GET /api/v1/circuit-breakers            │     │
+│  │  Per-tenant: CircuitBreakerRegistry keys by "tenant:database"     │     │
+│  │  One tenant tripping does NOT affect other tenants                │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  CONNECTION POOL (per database):                                             │
@@ -959,6 +963,10 @@
 │  │                         ┌──────────────┐    │ (append-only)    │   │     │
 │  │                         │ Syslog Sink  │    └──────────────────┘   │     │
 │  │                         └──────────────┘                           │     │
+│  │                         ┌──────────────┐                           │     │
+│  │                         │ Kafka Sink   │  (ENABLE_KAFKA build)     │     │
+│  │                         │ (librdkafka) │  rd_kafka_produce()       │     │
+│  │                         └──────────────┘                           │     │
 │  │                                                                     │     │
 │  │  Overflow: buffer full → record dropped + overflow counter          │     │
 │  │  Stats: total_emitted, total_written, overflow_dropped              │     │
@@ -1102,7 +1110,8 @@
 │                                                                              │
 │  OPTIONAL ENDPOINTS                                                          │
 │  POST /api/v1/query/dry-run   → Policy check without execution              │
-│  POST /api/v1/graphql         → GraphQL-to-SQL (feature-gated)               │
+│  POST /api/v1/graphql         → GraphQL-to-SQL queries + mutations            │
+│  POST /api/v1/plugins/reload  → Hot-reload .so plugins (admin)               │
 │  GET  /openapi.json           → OpenAPI 3.0 spec (feature-gated)             │
 │  GET  /api/docs               → Swagger UI (feature-gated)                   │
 │                                                                              │
@@ -1166,7 +1175,7 @@
 │        ├─ ComplianceReporter (lineage + anomaly + audit)                     │
 │        ├─ SchemaManager (if schema_management.enabled)                       │
 │        ├─ TenantManager (if tenants.enabled)                                 │
-│        ├─ PluginRegistry (classifier + audit sink plugins)                   │
+│        ├─ PluginRegistry (classifier + audit sink plugins, hot-reload)       │
 │        ├─ AuditSampler (if audit_sampling.enabled)                           │
 │        ├─ ResultCache (if result_cache.enabled)                              │
 │        ├─ SlowQueryTracker (if slow_query.enabled)                           │
@@ -1186,7 +1195,7 @@
 │        ├─ HttpServer (TLS/mTLS optional, feature flags, compression)         │
 │        ├─ ShutdownCoordinator                                                │
 │        ├─ BruteForceProtector (if brute_force.enabled)                       │
-│        ├─ WireServer → starts (if wire_protocol.enabled)                     │
+│        ├─ WireServer → starts (if wire_protocol.enabled, TLS optional)       │
 │        ├─ BinaryRpcServer → starts (if binary_rpc.enabled)                   │
 │        ├─ ConfigWatcher → starts (file polling for hot-reload)               │
 │        └─ HttpServer::start() — blocking listen on host:port                 │
@@ -1263,7 +1272,16 @@
                       │  +SSE stream)│     │ ├─IpAllowlist        │
  ┌──────────────┐     └──────────────┘     │ └─ResponseCompressor │
  │ GraphQL      │                          └──────────────────────┘
- │  Handler     │     ┌──────────────┐
+ │ Handler      │     ┌──────────────┐
+ │ (queries +   │     │ Auth Chain   │
+ │  mutations)  │     │ ┌─API Key    │
+ └──────────────┘     │ ├─JWT HMAC   │
+                      │ ├─LDAP       │
+ ┌──────────────┐     │ └─OIDC/OAuth2│
+ │ CircuitBreaker│    │   (RS256,JWKS│
+ │  Registry    │     └──────────────┘
+ │ (per-tenant) │
+ └──────────────┘     ┌──────────────┐
  └──────────────┘     │ OpenAPI +    │
                       │ Swagger UI   │
                       └──────────────┘
@@ -1338,6 +1356,8 @@
 │  ┌─────────────────────────────────────────────────────────────┐             │
 │  │ Wire Protocol Threads (if enabled, thread pool)             │             │
 │  │  Accept PostgreSQL v3 connections → Pipeline::execute()     │             │
+│  │  TLS: SSLRequest negotiation → SSL_accept handshake         │             │
+│  │  SslConnection RAII wrapper (SSL_read/SSL_write)            │             │
 │  └─────────────────────────────────────────────────────────────┘             │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────┐             │
