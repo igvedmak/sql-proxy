@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
+#include <openssl/err.h>
 
 namespace sqlproxy {
 
@@ -20,10 +21,71 @@ WireServer::WireServer(std::shared_ptr<Pipeline> pipeline,
 
 WireServer::~WireServer() {
     stop();
+    cleanup_ssl_context();
+}
+
+void WireServer::init_ssl_context() {
+    if (!config_.tls.enabled) return;
+
+    ssl_ctx_ = SSL_CTX_new(TLS_server_method());
+    if (!ssl_ctx_) {
+        throw std::runtime_error("Wire TLS: failed to create SSL_CTX");
+    }
+
+    // Set minimum TLS version to 1.2
+    SSL_CTX_set_min_proto_version(ssl_ctx_, TLS1_2_VERSION);
+
+    // Load server certificate
+    if (SSL_CTX_use_certificate_file(ssl_ctx_, config_.tls.cert_file.c_str(), SSL_FILETYPE_PEM) != 1) {
+        SSL_CTX_free(ssl_ctx_);
+        ssl_ctx_ = nullptr;
+        throw std::runtime_error(std::format("Wire TLS: failed to load certificate: {}",
+            config_.tls.cert_file));
+    }
+
+    // Load private key
+    if (SSL_CTX_use_PrivateKey_file(ssl_ctx_, config_.tls.key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
+        SSL_CTX_free(ssl_ctx_);
+        ssl_ctx_ = nullptr;
+        throw std::runtime_error(std::format("Wire TLS: failed to load private key: {}",
+            config_.tls.key_file));
+    }
+
+    // Verify private key matches certificate
+    if (SSL_CTX_check_private_key(ssl_ctx_) != 1) {
+        SSL_CTX_free(ssl_ctx_);
+        ssl_ctx_ = nullptr;
+        throw std::runtime_error("Wire TLS: private key does not match certificate");
+    }
+
+    // Optional: mTLS (client certificate verification)
+    if (config_.tls.require_client_cert && !config_.tls.ca_file.empty()) {
+        SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+        if (SSL_CTX_load_verify_locations(ssl_ctx_, config_.tls.ca_file.c_str(), nullptr) != 1) {
+            SSL_CTX_free(ssl_ctx_);
+            ssl_ctx_ = nullptr;
+            throw std::runtime_error(std::format("Wire TLS: failed to load CA certificate: {}",
+                config_.tls.ca_file));
+        }
+    }
+
+    utils::log::info(std::format("Wire TLS: initialized (cert={}, key={}{})",
+        config_.tls.cert_file, config_.tls.key_file,
+        config_.tls.require_client_cert ? ", mTLS enabled" : ""));
+}
+
+void WireServer::cleanup_ssl_context() {
+    if (ssl_ctx_) {
+        SSL_CTX_free(ssl_ctx_);
+        ssl_ctx_ = nullptr;
+    }
 }
 
 void WireServer::start() {
     if (running_.load()) return;
+
+    // Initialize TLS if configured
+    init_ssl_context();
 
     // Create TCP socket
     server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
@@ -57,8 +119,9 @@ void WireServer::start() {
     // Start accept thread
     accept_thread_ = std::jthread([this](std::stop_token) { accept_loop(); });
 
-    utils::log::info(std::format("Wire protocol server listening on {}:{}",
-        config_.host, config_.port));
+    utils::log::info(std::format("Wire protocol server listening on {}:{}{}",
+        config_.host, config_.port,
+        ssl_ctx_ ? " (TLS available)" : ""));
 }
 
 void WireServer::stop() {
@@ -120,7 +183,8 @@ void WireServer::handle_connection(int client_fd, std::string remote_addr) {
     };
 
     WireSession session(client_fd, std::move(remote_addr), pipeline_,
-                        std::move(user_lookup), config_.require_password);
+                        std::move(user_lookup), config_.require_password,
+                        ssl_ctx_);
     session.run();
 }
 

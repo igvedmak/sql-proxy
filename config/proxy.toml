@@ -612,21 +612,27 @@ max_history_entries = 1000
 # ============================================================================
 
 [wire_protocol]
-enabled = false
+enabled = true
 host = "0.0.0.0"
 port = 5433
 max_connections = 100
 thread_pool_size = 4
 require_password = false
 
+[wire_protocol.tls]
+enabled = true
+cert_file = "config/certs/server.crt"
+key_file = "config/certs/server.key"
+
 # ============================================================================
 # GraphQL Gateway (Tier 5)
 # ============================================================================
 
 [graphql]
-enabled = false
+enabled = true
 endpoint = "/api/v1/graphql"
 max_query_depth = 5
+mutations_enabled = true
 
 # ============================================================================
 # Binary RPC Gateway (Tier 5)

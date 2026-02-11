@@ -18,6 +18,7 @@
 #include "cache/result_cache.hpp"
 #include "core/slow_query_tracker.hpp"
 #include "executor/circuit_breaker.hpp"
+#include "executor/circuit_breaker_registry.hpp"
 #include "db/iconnection_pool.hpp"
 #include "parser/parse_cache.hpp"
 #include "server/adaptive_rate_controller.hpp"
@@ -343,6 +344,27 @@ void Pipeline::rewrite_query(RequestContext& ctx) {
 
 bool Pipeline::execute_query(RequestContext& ctx) {
     ScopedSpan span(ctx, "sql_proxy.execute");
+
+    // Per-tenant circuit breaker check (if registry is configured and tenant is resolved)
+    if (c_.circuit_breaker_registry && !ctx.tenant_id.empty()) {
+        std::string cb_key;
+        cb_key.reserve(ctx.tenant_id.size() + 1 + ctx.database.size());
+        cb_key = ctx.tenant_id;
+        cb_key += ':';
+        cb_key += ctx.database;
+
+        auto tenant_cb = c_.circuit_breaker_registry->get_breaker(cb_key);
+        if (!tenant_cb->allow_request()) {
+            ctx.query_result.success = false;
+            ctx.query_result.error_code = ErrorCode::CIRCUIT_OPEN;
+            ctx.query_result.error_message = std::format(
+                "Circuit breaker is OPEN for tenant '{}' on database '{}'",
+                ctx.tenant_id, ctx.database);
+            ctx.circuit_breaker_open = true;
+            return false;
+        }
+    }
+
     // Resolve executor via router (per-database), fallback to default
     IQueryExecutor* exec = nullptr;
     if (c_.router) {
@@ -363,6 +385,22 @@ bool Pipeline::execute_query(RequestContext& ctx) {
 
     ctx.query_result = exec->execute(ctx.sql, ctx.analysis.statement_type);
     ctx.execution_time = timer.elapsed_us();
+
+    // Record result in per-tenant circuit breaker
+    if (c_.circuit_breaker_registry && !ctx.tenant_id.empty()) {
+        std::string cb_key;
+        cb_key.reserve(ctx.tenant_id.size() + 1 + ctx.database.size());
+        cb_key = ctx.tenant_id;
+        cb_key += ':';
+        cb_key += ctx.database;
+
+        auto tenant_cb = c_.circuit_breaker_registry->get_breaker(cb_key);
+        if (ctx.query_result.success) {
+            tenant_cb->record_success();
+        } else {
+            tenant_cb->record_failure();
+        }
+    }
 
     return ctx.query_result.success;
 }

@@ -14,6 +14,7 @@
 #include "db/iconnection_pool.hpp"
 #include "db/generic_query_executor.hpp"
 #include "executor/circuit_breaker.hpp"
+#include "executor/circuit_breaker_registry.hpp"
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
 #include "core/query_rewriter.hpp"
@@ -44,6 +45,8 @@
 #include "schema/schema_drift_detector.hpp"
 #include "audit/audit_encryptor.hpp"
 #include "server/adaptive_rate_controller.hpp"
+#include "auth/auth_chain.hpp"
+#include "auth/oidc_auth_provider.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -323,6 +326,10 @@ int main(int argc, char* argv[]) {
             cb_config.timeout.count(), cb_config.half_open_max_calls));
         auto circuit_breaker = std::make_shared<CircuitBreaker>(db_name, cb_config);
 
+        // Per-tenant circuit breaker registry (uses same default config)
+        auto cb_registry = std::make_shared<CircuitBreakerRegistry>(cb_config);
+        utils::log::info("Per-tenant circuit breaker registry created");
+
         utils::log::info("Creating connection pool...");
         std::shared_ptr<IConnectionPool> pool;
         try {
@@ -477,18 +484,18 @@ int main(int argc, char* argv[]) {
         }
 
         // Plugin Registry
-        PluginRegistry plugin_registry;
+        auto plugin_registry = std::make_shared<PluginRegistry>();
         if (config_result.success && !config_result.config.plugins.empty()) {
             for (const auto& plugin_cfg : config_result.config.plugins) {
                 PluginConfig pc;
                 pc.path = plugin_cfg.path;
                 pc.type = plugin_cfg.type;
                 pc.config = plugin_cfg.config;
-                [[maybe_unused]] bool loaded = plugin_registry.load_plugin(pc);
+                [[maybe_unused]] bool loaded = plugin_registry->load_plugin(pc);
             }
             utils::log::info(std::format("Plugins: {} classifier, {} audit sink",
-                plugin_registry.classifier_plugins().size(),
-                plugin_registry.audit_sink_plugins().size()));
+                plugin_registry->classifier_plugins().size(),
+                plugin_registry->audit_sink_plugins().size()));
         }
 
         // Tier B: Audit Sampler
@@ -617,6 +624,7 @@ int main(int argc, char* argv[]) {
             .with_result_cache(result_cache)
             .with_slow_query_tracker(slow_query_tracker)
             .with_circuit_breaker(circuit_breaker)
+            .with_circuit_breaker_registry(cb_registry)
             .with_connection_pool(pool)
             .with_parse_cache(parse_cache)
             .with_query_cost_estimator(query_cost_estimator)
@@ -643,6 +651,7 @@ int main(int argc, char* argv[]) {
             gql_config.enabled = true;
             gql_config.endpoint = config_result.config.graphql.endpoint;
             gql_config.max_query_depth = config_result.config.graphql.max_query_depth;
+            gql_config.mutations_enabled = config_result.config.graphql.mutations_enabled;
             graphql_handler = std::make_shared<GraphQLHandler>(pipeline, gql_config);
             utils::log::info(std::format("GraphQL: enabled at {}", gql_config.endpoint));
         }
@@ -726,6 +735,9 @@ int main(int argc, char* argv[]) {
             g_server->set_schema_drift_detector(g_schema_drift_detector);
         }
 
+        // Plugin hot-reload support
+        g_server->set_plugin_registry(plugin_registry);
+
         // Tier E: Brute force protection
         if (config_result.success && config_result.config.security.brute_force_enabled) {
             BruteForceProtector::Config bf_cfg;
@@ -738,6 +750,21 @@ int main(int argc, char* argv[]) {
                 std::make_shared<BruteForceProtector>(bf_cfg));
         }
 
+        // OIDC/OAuth2 authentication provider
+        if (config_result.success && config_result.config.auth.provider == "oidc") {
+            OidcConfig oidc_cfg;
+            oidc_cfg.issuer = config_result.config.auth.oidc_issuer;
+            oidc_cfg.audience = config_result.config.auth.oidc_audience;
+            oidc_cfg.jwks_uri = config_result.config.auth.oidc_jwks_uri;
+            oidc_cfg.roles_claim = config_result.config.auth.oidc_roles_claim;
+            oidc_cfg.user_claim = config_result.config.auth.oidc_user_claim;
+            oidc_cfg.jwks_cache_seconds = config_result.config.auth.oidc_jwks_cache_seconds;
+            auto oidc_provider = std::make_shared<OidcAuthProvider>(std::move(oidc_cfg));
+            g_server->set_auth_provider(oidc_provider);
+            utils::log::info(std::format("OIDC auth: enabled (issuer={})",
+                config_result.config.auth.oidc_issuer));
+        }
+
         // Wire Protocol Server (PostgreSQL v3)
         if (config_result.success && config_result.config.wire_protocol.enabled) {
             WireProtocolConfig wire_config;
@@ -747,6 +774,11 @@ int main(int argc, char* argv[]) {
             wire_config.max_connections = config_result.config.wire_protocol.max_connections;
             wire_config.thread_pool_size = config_result.config.wire_protocol.thread_pool_size;
             wire_config.require_password = config_result.config.wire_protocol.require_password;
+            wire_config.tls.enabled = config_result.config.wire_protocol.tls.enabled;
+            wire_config.tls.cert_file = config_result.config.wire_protocol.tls.cert_file;
+            wire_config.tls.key_file = config_result.config.wire_protocol.tls.key_file;
+            wire_config.tls.ca_file = config_result.config.wire_protocol.tls.ca_file;
+            wire_config.tls.require_client_cert = config_result.config.wire_protocol.tls.require_client_cert;
             g_wire_server = std::make_shared<WireServer>(pipeline, wire_config, users);
             g_wire_server->start();
             utils::log::info(std::format("Wire protocol: listening on {}:{}",

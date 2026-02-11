@@ -24,6 +24,7 @@ class AuditSampler;
 class ResultCache;
 class SlowQueryTracker;
 class CircuitBreaker;
+class CircuitBreakerRegistry;
 class IConnectionPool;
 class ParseCache;
 class QueryCostEstimator;
@@ -59,6 +60,7 @@ struct PipelineComponents {
     std::shared_ptr<ResultCache> result_cache;
     std::shared_ptr<SlowQueryTracker> slow_query_tracker;
     std::shared_ptr<CircuitBreaker> circuit_breaker;
+    std::shared_ptr<CircuitBreakerRegistry> circuit_breaker_registry;
     std::shared_ptr<IConnectionPool> connection_pool;
     std::shared_ptr<ParseCache> parse_cache;
     std::shared_ptr<QueryCostEstimator> query_cost_estimator;
@@ -103,6 +105,7 @@ public:
     PipelineBuilder& with_result_cache(std::shared_ptr<ResultCache> p)                  { c_.result_cache = std::move(p); return *this; }
     PipelineBuilder& with_slow_query_tracker(std::shared_ptr<SlowQueryTracker> p)       { c_.slow_query_tracker = std::move(p); return *this; }
     PipelineBuilder& with_circuit_breaker(std::shared_ptr<CircuitBreaker> p)            { c_.circuit_breaker = std::move(p); return *this; }
+    PipelineBuilder& with_circuit_breaker_registry(std::shared_ptr<CircuitBreakerRegistry> p) { c_.circuit_breaker_registry = std::move(p); return *this; }
     PipelineBuilder& with_connection_pool(std::shared_ptr<IConnectionPool> p)           { c_.connection_pool = std::move(p); return *this; }
     PipelineBuilder& with_parse_cache(std::shared_ptr<ParseCache> p)                    { c_.parse_cache = std::move(p); return *this; }
     PipelineBuilder& with_query_cost_estimator(std::shared_ptr<QueryCostEstimator> p)   { c_.query_cost_estimator = std::move(p); return *this; }

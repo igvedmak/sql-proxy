@@ -12,15 +12,52 @@ namespace sqlproxy {
 WireSession::WireSession(int fd, std::string remote_addr,
                          std::shared_ptr<Pipeline> pipeline,
                          std::function<std::optional<UserInfo>(const std::string&)> user_lookup,
-                         bool require_password)
+                         bool require_password,
+                         SSL_CTX* ssl_ctx)
     : fd_(fd),
       remote_addr_(std::move(remote_addr)),
       state_(State::WAIT_STARTUP),
       pipeline_(std::move(pipeline)),
       user_lookup_(std::move(user_lookup)),
-      require_password_(require_password) {
+      require_password_(require_password),
+      ssl_ctx_(ssl_ctx) {
     read_buffer_.reserve(8192);
 }
+
+// ---- Unified I/O layer --------------------------------------------------
+
+bool WireSession::do_read_exact(void* buf, size_t len) {
+    if (ssl_conn_) {
+        return ssl_conn_->read_exact(buf, len);
+    }
+    // Raw socket: recv with MSG_WAITALL for exact read
+    auto* ptr = static_cast<uint8_t*>(buf);
+    size_t remaining = len;
+    while (remaining > 0) {
+        ssize_t n = recv(fd_, ptr, remaining, MSG_WAITALL);
+        if (n <= 0) return false;
+        ptr += n;
+        remaining -= static_cast<size_t>(n);
+    }
+    return true;
+}
+
+bool WireSession::do_write(const void* buf, size_t len) {
+    if (ssl_conn_) {
+        return ssl_conn_->write_all(buf, len);
+    }
+    // Raw socket
+    auto* ptr = static_cast<const uint8_t*>(buf);
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = ::send(fd_, ptr + sent, len - sent, MSG_NOSIGNAL);
+        if (n <= 0) return false;
+        sent += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+// ---- Session main loop ---------------------------------------------------
 
 void WireSession::run() {
     while (state_ != State::CLOSED) {
@@ -63,14 +100,12 @@ void WireSession::run() {
 bool WireSession::read_frame(WireFrame& frame) {
     // Read type byte
     uint8_t type_byte;
-    ssize_t n = recv(fd_, &type_byte, 1, MSG_WAITALL);
-    if (n <= 0) return false;
+    if (!do_read_exact(&type_byte, 1)) return false;
     frame.type = static_cast<char>(type_byte);
 
     // Read length (4 bytes, includes itself)
     uint8_t len_buf[4];
-    n = recv(fd_, len_buf, 4, MSG_WAITALL);
-    if (n != 4) return false;
+    if (!do_read_exact(len_buf, 4)) return false;
 
     const int32_t length = WireBuffer::read_int32(len_buf);
     if (length < 4 || length > 1048576) return false;  // Max 1MB
@@ -79,8 +114,7 @@ bool WireSession::read_frame(WireFrame& frame) {
     const int32_t payload_len = length - 4;
     frame.payload.resize(payload_len);
     if (payload_len > 0) {
-        n = recv(fd_, frame.payload.data(), payload_len, MSG_WAITALL);
-        if (n != payload_len) return false;
+        if (!do_read_exact(frame.payload.data(), payload_len)) return false;
     }
 
     return true;
@@ -89,32 +123,24 @@ bool WireSession::read_frame(WireFrame& frame) {
 bool WireSession::read_startup(std::vector<uint8_t>& payload) {
     // Read length (4 bytes, includes itself)
     uint8_t len_buf[4];
-    ssize_t n = recv(fd_, len_buf, 4, MSG_WAITALL);
-    if (n != 4) return false;
+    if (!do_read_exact(len_buf, 4)) return false;
 
     const int32_t length = WireBuffer::read_int32(len_buf);
     if (length < 8 || length > 10000) return false;
 
     // Read remaining bytes
     payload.resize(length - 4);
-    n = recv(fd_, payload.data(), length - 4, MSG_WAITALL);
-    if (n != length - 4) return false;
+    if (!do_read_exact(payload.data(), length - 4)) return false;
 
     return true;
 }
 
 bool WireSession::send(const std::vector<uint8_t>& data) {
-    return send(data.data(), data.size());
+    return do_write(data.data(), data.size());
 }
 
 bool WireSession::send(const uint8_t* data, size_t len) {
-    size_t sent = 0;
-    while (sent < len) {
-        ssize_t n = ::send(fd_, data + sent, len - sent, MSG_NOSIGNAL);
-        if (n <= 0) return false;
-        sent += static_cast<size_t>(n);
-    }
-    return true;
+    return do_write(data, len);
 }
 
 void WireSession::handle_startup(const std::vector<uint8_t>& payload) {
@@ -127,10 +153,37 @@ void WireSession::handle_startup(const std::vector<uint8_t>& payload) {
 
     // Check for SSL request (protocol 80877103)
     if (startup->protocol_version == 80877103) {
-        // Send 'N' to indicate no SSL
-        uint8_t no_ssl = 'N';
-        send(&no_ssl, 1);
-        state_ = State::WAIT_STARTUP;  // Client will retry with normal startup
+        if (ssl_ctx_) {
+            // TLS enabled: send 'S' and upgrade connection
+            uint8_t yes_ssl = 'S';
+            // Must use raw socket for the 'S' byte (before TLS handshake)
+            const ssize_t n = ::send(fd_, &yes_ssl, 1, MSG_NOSIGNAL);
+            if (n != 1) {
+                state_ = State::CLOSED;
+                return;
+            }
+
+            // Perform TLS handshake
+            ssl_conn_ = std::make_unique<SslConnection>(fd_, ssl_ctx_);
+            if (!ssl_conn_->is_valid()) {
+                utils::log::warn(std::format("Wire: TLS handshake failed from {}", remote_addr_));
+                ssl_conn_.reset();
+                state_ = State::CLOSED;
+                return;
+            }
+
+            utils::log::info(std::format("Wire: TLS established with {}", remote_addr_));
+        } else {
+            // TLS not configured: send 'N' (no SSL)
+            uint8_t no_ssl = 'N';
+            const ssize_t n = ::send(fd_, &no_ssl, 1, MSG_NOSIGNAL);
+            if (n != 1) {
+                state_ = State::CLOSED;
+                return;
+            }
+        }
+        // Client will retry with normal startup message
+        state_ = State::WAIT_STARTUP;
         return;
     }
 
@@ -163,8 +216,9 @@ void WireSession::handle_startup(const std::vector<uint8_t>& payload) {
         send(WireWriter::ready_for_query());
         state_ = State::READY;
 
-        utils::log::info(std::format("Wire: {} connected as {} to {}",
-            remote_addr_, user_, database_));
+        utils::log::info(std::format("Wire: {} connected as {} to {}{}",
+            remote_addr_, user_, database_,
+            ssl_conn_ ? " (TLS)" : ""));
     }
 }
 
@@ -192,8 +246,9 @@ void WireSession::handle_password(const WireFrame& frame) {
     send(WireWriter::ready_for_query());
     state_ = State::READY;
 
-    utils::log::info(std::format("Wire: {} authenticated as {} to {}",
-        remote_addr_, user_, database_));
+    utils::log::info(std::format("Wire: {} authenticated as {} to {}{}",
+        remote_addr_, user_, database_,
+        ssl_conn_ ? " (TLS)" : ""));
 }
 
 void WireSession::handle_query(const WireFrame& frame) {

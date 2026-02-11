@@ -64,7 +64,7 @@ public:
 
     static void flush(void* instance) {
         auto* self = static_cast<MockAuditSinkPlugin*>(instance);
-        self->flush_count++;
+        ++self->flush_count;
     }
 
     static void destroy(void* instance) {

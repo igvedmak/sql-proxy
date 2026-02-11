@@ -185,7 +185,7 @@ std::vector<uint8_t> WireWriter::empty_query_response() {
 // ============================================================================
 
 std::optional<StartupMessage> parse_startup_message(const std::vector<uint8_t>& data) {
-    if (data.size() < 8) return std::nullopt;
+    if (data.size() < 4) return std::nullopt;
 
     StartupMessage msg;
     msg.protocol_version = WireBuffer::read_int32(data.data());

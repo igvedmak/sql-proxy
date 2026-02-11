@@ -2,6 +2,9 @@
 #include "audit/file_sink.hpp"
 #include "audit/webhook_sink.hpp"
 #include "audit/syslog_sink.hpp"
+#ifdef ENABLE_KAFKA
+#include "audit/kafka_sink.hpp"
+#endif
 #include "core/utils.hpp"
 
 #include <openssl/evp.h>
@@ -47,6 +50,21 @@ AuditEmitter::AuditEmitter(const AuditConfig& config)
         sl_cfg.ident = config.syslog_ident;
         sinks_.push_back(std::make_unique<SyslogSink>(sl_cfg));
     }
+
+#ifdef ENABLE_KAFKA
+    // Optional Kafka sink
+    if (config.kafka_enabled && !config.kafka_brokers.empty()) {
+        KafkaConfig kafka_cfg;
+        kafka_cfg.brokers = config.kafka_brokers;
+        kafka_cfg.topic = config.kafka_topic;
+        auto kafka_sink = std::make_unique<KafkaSink>(kafka_cfg);
+        if (kafka_sink->is_valid()) {
+            sinks_.emplace_back(std::move(kafka_sink));
+        } else {
+            utils::log::error("Kafka sink: failed to initialize, skipping");
+        }
+    }
+#endif
 
     start();
 }

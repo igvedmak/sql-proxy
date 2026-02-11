@@ -3,6 +3,7 @@
 
 #include <dlfcn.h>
 #include <format>
+#include <algorithm>
 
 namespace sqlproxy {
 
@@ -102,7 +103,6 @@ bool PluginRegistry::load_plugin(const PluginConfig& config) {
         }
 
         plugin->classifier = cp;
-        classifiers_.push_back(cp);
         utils::log::info(std::format("Plugin loaded: {} v{} (classifier)", info.name, info.version));
 
     } else if (config.type == "audit_sink") {
@@ -129,7 +129,6 @@ bool PluginRegistry::load_plugin(const PluginConfig& config) {
         }
 
         plugin->audit_sink = asp;
-        audit_sinks_.push_back(asp);
         utils::log::info(std::format("Plugin loaded: {} v{} (audit_sink)", info.name, info.version));
 
     } else {
@@ -137,11 +136,142 @@ bool PluginRegistry::load_plugin(const PluginConfig& config) {
         return false;
     }
 
+    std::unique_lock lock(mutex_);
     plugins_.emplace_back(std::move(plugin));
+    rebuild_indexes();
     return true;
 }
 
+bool PluginRegistry::reload_plugin(const std::string& path) {
+    // Find existing plugin to determine its type
+    std::string type;
+    {
+        std::shared_lock lock(mutex_);
+        for (const auto& p : plugins_) {
+            if (p->path() == path) {
+                type = p->type();
+                break;
+            }
+        }
+    }
+
+    if (type.empty()) {
+        utils::log::error(std::format("Plugin reload: no plugin loaded from '{}'", path));
+        return false;
+    }
+
+    // Load the new version outside the lock
+    void* new_handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!new_handle) {
+        utils::log::error(std::format("Plugin reload failed [{}]: {}", path, dlerror()));
+        return false;
+    }
+
+    auto new_plugin = std::make_unique<LoadedPlugin>(path, type, new_handle);
+
+    if (type == "classifier") {
+        using FactoryFn = ClassifierPlugin* (*)();
+        const auto factory = reinterpret_cast<FactoryFn>(new_plugin->resolve("create_classifier_plugin"));
+        if (!factory) {
+            utils::log::error(std::format("Plugin reload [{}]: missing factory symbol", path));
+            return false;
+        }
+        auto* cp = factory();
+        if (!cp) {
+            utils::log::error(std::format("Plugin reload [{}]: factory returned null", path));
+            return false;
+        }
+        const auto info = cp->get_info(cp->instance);
+        if (info.api_version != SQLPROXY_PLUGIN_API_VERSION) {
+            utils::log::error(std::format("Plugin reload [{}]: API version mismatch", path));
+            if (cp->destroy) cp->destroy(cp->instance);
+            delete cp;
+            return false;
+        }
+        new_plugin->classifier = cp;
+        utils::log::info(std::format("Plugin reloaded: {} v{} (classifier)", info.name, info.version));
+
+    } else if (type == "audit_sink") {
+        using FactoryFn = AuditSinkPlugin* (*)();
+        const auto factory = reinterpret_cast<FactoryFn>(new_plugin->resolve("create_audit_sink_plugin"));
+        if (!factory) {
+            utils::log::error(std::format("Plugin reload [{}]: missing factory symbol", path));
+            return false;
+        }
+        auto* asp = factory();
+        if (!asp) {
+            utils::log::error(std::format("Plugin reload [{}]: factory returned null", path));
+            return false;
+        }
+        const auto info = asp->get_info(asp->instance);
+        if (info.api_version != SQLPROXY_PLUGIN_API_VERSION) {
+            utils::log::error(std::format("Plugin reload [{}]: API version mismatch", path));
+            if (asp->destroy) asp->destroy(asp->instance);
+            delete asp;
+            return false;
+        }
+        new_plugin->audit_sink = asp;
+        utils::log::info(std::format("Plugin reloaded: {} v{} (audit_sink)", info.name, info.version));
+    }
+
+    // Swap under unique lock — old plugin destroyed after lock release
+    std::unique_ptr<LoadedPlugin> old_plugin;
+    {
+        std::unique_lock lock(mutex_);
+        for (auto& p : plugins_) {
+            if (p->path() == path) {
+                old_plugin = std::move(p);
+                p = std::move(new_plugin);
+                break;
+            }
+        }
+        rebuild_indexes();
+    }
+    // old_plugin destroyed here (outside lock) — calls destroy + dlclose
+
+    return true;
+}
+
+bool PluginRegistry::unload_plugin(const std::string& path) {
+    std::unique_ptr<LoadedPlugin> removed;
+    {
+        std::unique_lock lock(mutex_);
+        auto it = std::find_if(plugins_.begin(), plugins_.end(),
+            [&path](const auto& p) { return p->path() == path; });
+        if (it == plugins_.end()) {
+            utils::log::warn(std::format("Plugin unload: '{}' not found", path));
+            return false;
+        }
+        removed = std::move(*it);
+        plugins_.erase(it);
+        rebuild_indexes();
+    }
+    // removed destroyed here (outside lock)
+    utils::log::info(std::format("Plugin unloaded: {}", path));
+    return true;
+}
+
+std::vector<std::string> PluginRegistry::loaded_plugin_paths() const {
+    std::shared_lock lock(mutex_);
+    std::vector<std::string> paths;
+    paths.reserve(plugins_.size());
+    for (const auto& p : plugins_) {
+        paths.push_back(p->path());
+    }
+    return paths;
+}
+
+void PluginRegistry::rebuild_indexes() {
+    classifiers_.clear();
+    audit_sinks_.clear();
+    for (const auto& p : plugins_) {
+        if (p->classifier) classifiers_.push_back(p->classifier);
+        if (p->audit_sink) audit_sinks_.push_back(p->audit_sink);
+    }
+}
+
 void PluginRegistry::unload_all() {
+    std::unique_lock lock(mutex_);
     classifiers_.clear();
     audit_sinks_.clear();
     plugins_.clear();  // ~LoadedPlugin calls destroy + dlclose

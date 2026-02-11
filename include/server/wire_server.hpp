@@ -10,6 +10,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <openssl/ssl.h>
 
 namespace sqlproxy {
 
@@ -39,6 +40,10 @@ private:
 
     std::optional<UserInfo> lookup_user(const std::string& username) const;
 
+    // TLS context management
+    void init_ssl_context();
+    void cleanup_ssl_context();
+
     std::shared_ptr<Pipeline> pipeline_;
     WireProtocolConfig config_;
 
@@ -50,6 +55,9 @@ private:
     int server_fd_ = -1;
     std::atomic<bool> running_{false};
     std::atomic<uint32_t> active_connections_{0};
+
+    // TLS
+    SSL_CTX* ssl_ctx_ = nullptr;
 
     // Thread management
     std::jthread accept_thread_;

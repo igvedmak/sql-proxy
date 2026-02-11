@@ -22,6 +22,7 @@ find_package(Threads REQUIRED)
 option(ENABLE_POSTGRESQL "Enable PostgreSQL backend" ON)
 option(ENABLE_MYSQL "Enable MySQL/MariaDB backend" OFF)
 option(ENABLE_LDAP "Enable LDAP authentication provider" OFF)
+option(ENABLE_KAFKA "Enable Kafka audit sink (requires librdkafka)" OFF)
 
 # ============================================================================
 # Find Required System Libraries
@@ -210,6 +211,15 @@ if(ENABLE_LDAP)
     target_compile_definitions(${PROJECT_NAME}_lib PUBLIC ENABLE_LDAP=1)
 endif()
 
+# Kafka library (conditional)
+if(ENABLE_KAFKA)
+    find_package(PkgConfig)
+    pkg_check_modules(RDKAFKA REQUIRED rdkafka)
+    target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${RDKAFKA_LIBRARIES})
+    target_include_directories(${PROJECT_NAME}_lib PUBLIC ${RDKAFKA_INCLUDE_DIRS})
+    target_compile_definitions(${PROJECT_NAME}_lib PUBLIC ENABLE_KAFKA=1)
+endif()
+
 target_compile_definitions(${PROJECT_NAME}_lib PUBLIC
     PROJECT_NAME="${PROJECT_NAME}"
     PROJECT_VERSION="${PROJECT_VERSION}"
@@ -348,6 +358,10 @@ message(STATUS "  MySQL:          ${ENABLE_MYSQL}")
 if(ENABLE_MYSQL)
     message(STATUS "    Libraries:    ${MYSQL_LIBRARIES}")
 endif()
+message(STATUS "")
+message(STATUS "Optional Features:")
+message(STATUS "  LDAP auth:      ${ENABLE_LDAP}")
+message(STATUS "  Kafka audit:    ${ENABLE_KAFKA}")
 message(STATUS "")
 message(STATUS "Dependencies:")
 message(STATUS "  xxHash:         ${XXHASH_INCLUDE_DIR}")

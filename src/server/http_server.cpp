@@ -15,6 +15,7 @@
 #include "core/slow_query_tracker.hpp"
 #include "core/utils.hpp"
 #include "executor/circuit_breaker.hpp"
+#include "executor/circuit_breaker_registry.hpp"
 #include "db/iconnection_pool.hpp"
 #include "parser/parse_cache.hpp"
 #include "policy/policy_loader.hpp"
@@ -24,6 +25,8 @@
 #include "security/lineage_tracker.hpp"
 #include "schema/schema_manager.hpp"
 #include "schema/schema_drift_detector.hpp"
+#include "plugin/plugin_loader.hpp"
+#include "auth/iauth_provider.hpp"
 #include "core/query_cost_estimator.hpp"
 
 // cpp-httplib is header-only — suppress its internal deprecation warnings
@@ -52,10 +55,17 @@ std::string_view parse_json_field(std::string_view json, std::string_view field)
             json.substr(pos + 1, field.size()) == field &&
             json[pos + field.size() + 1] == quote_char) {
             pos += field.size() + 2;
+            // Skip to colon + opening quote of value
             pos = json.find(quote_char, pos);
             if (pos == std::string_view::npos) return "";
-            const size_t end = json.find(quote_char, pos + 1);
-            if (end == std::string_view::npos) return "";
+            // Find closing quote, skipping escaped quotes
+            size_t end = pos + 1;
+            while (end < json.size()) {
+                if (json[end] == '\\') { end += 2; continue; }
+                if (json[end] == quote_char) break;
+                ++end;
+            }
+            if (end >= json.size()) return "";
             return json.substr(pos + 1, end - pos - 1);
         }
         ++pos;
@@ -335,6 +345,11 @@ void HttpServer::register_admin_routes(httplib::Server& svr) {
             handle_slow_queries(req, res);
         });
     }
+    if (plugin_registry_) {
+        svr.Post(routes_.plugin_reload, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_plugin_reload(req, res);
+        });
+    }
 }
 
 void HttpServer::register_compliance_routes(httplib::Server& svr) {
@@ -465,16 +480,32 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
                 }
             }
 
-            user_info = authenticate_api_key(api_key);
+            // Try OIDC/external auth provider first, then API key
+            if (auth_provider_) {
+                const auto auth_result = auth_provider_->authenticate(auth_header, "");
+                if (auth_result.authenticated) {
+                    user_info = UserInfo(auth_result.user, auth_result.roles);
+                    user_info->attributes = auth_result.attributes;
+                    user = auth_result.user;
+                    if (brute_force_protector_) brute_force_protector_->record_success(source_ip, user);
+                } else {
+                    // Fall through to API key auth
+                    user_info = authenticate_api_key(api_key);
+                }
+            } else {
+                user_info = authenticate_api_key(api_key);
+            }
             if (!user_info) {
                 s_auth_rejects.fetch_add(1, std::memory_order_relaxed);
                 if (brute_force_protector_) brute_force_protector_->record_failure(source_ip, "");
                 res.status = httplib::StatusCode::Unauthorized_401;
-                res.set_content(R"({"success":false,"error":"Invalid API key"})", http::kJsonContentType);
+                res.set_content(R"({"success":false,"error":"Invalid API key or token"})", http::kJsonContentType);
                 return;
             }
-            if (brute_force_protector_) brute_force_protector_->record_success(source_ip, user_info->name);
-            user = user_info->name;
+            if (user.empty()) {
+                if (brute_force_protector_) brute_force_protector_->record_success(source_ip, user_info->name);
+                user = user_info->name;
+            }
         } else {
             const auto user_sv = parse_json_field(req.body, "user");
             if (user_sv.empty()) {
@@ -1100,11 +1131,28 @@ void HttpServer::handle_circuit_breakers(const httplib::Request& req, httplib::R
     }
     events_json += "]";
 
-    const auto json = std::format(
-        R"({{"breakers":[{{"name":"{}","state":"{}","failure_count":{},"success_count":{},"infrastructure_failures":{},"application_failures":{},"transient_failures":{},"recent_events":{}}}]}})",
+    std::string breakers_json = std::format(
+        R"({{"name":"{}","state":"{}","failure_count":{},"success_count":{},"infrastructure_failures":{},"application_failures":{},"transient_failures":{},"recent_events":{}}})",
         cb->name(), state_str, stats.failure_count, stats.success_count,
         stats.infrastructure_failure_count, stats.application_failure_count,
         stats.transient_failure_count, events_json);
+
+    // Append per-tenant circuit breakers from registry
+    const auto registry = pipeline_->get_circuit_breaker_registry();
+    if (registry && registry->size() > 0) {
+        const auto tenant_stats = registry->get_all_stats();
+        for (const auto& [key, ts] : tenant_stats) {
+            const char* ts_state = (ts.state == CircuitState::CLOSED) ? "closed" :
+                                   (ts.state == CircuitState::OPEN) ? "open" : "half_open";
+            breakers_json += std::format(
+                R"(,{{"name":"{}","state":"{}","failure_count":{},"success_count":{},"infrastructure_failures":{},"application_failures":{},"transient_failures":{}}})",
+                key, ts_state, ts.failure_count, ts.success_count,
+                ts.infrastructure_failure_count, ts.application_failure_count,
+                ts.transient_failure_count);
+        }
+    }
+
+    const auto json = std::format(R"({{"breakers":[{}]}})", breakers_json);
     res.set_content(json, http::kJsonContentType);
 }
 
@@ -1295,6 +1343,18 @@ void HttpServer::handle_graphql(const httplib::Request& req, httplib::Response& 
             return;
         }
 
+        // Unescape JSON string escapes (\" → ", \\ → \)
+        std::string query;
+        query.reserve(query_sv.size());
+        for (size_t i = 0; i < query_sv.size(); ++i) {
+            if (query_sv[i] == '\\' && i + 1 < query_sv.size()) {
+                query += query_sv[i + 1];
+                ++i;
+            } else {
+                query += query_sv[i];
+            }
+        }
+
         const std::string user = user_sv.empty() ? "anonymous" : std::string(user_sv);
         const std::string database = db_sv.empty() ? "testdb" : std::string(db_sv);
 
@@ -1303,12 +1363,46 @@ void HttpServer::handle_graphql(const httplib::Request& req, httplib::Response& 
         if (user_info) roles = user_info->roles;
 
         const auto result_json = graphql_handler_->execute(
-            std::string(query_sv), user, roles, database);
+            query, user, roles, database);
         res.set_content(result_json, http::kJsonContentType);
     } catch (const std::exception& e) {
         res.status = httplib::StatusCode::BadRequest_400;
         res.set_content(
             std::format(R"({{"errors":[{{"message":"{}"}}]}})", e.what()),
+            http::kJsonContentType);
+    }
+}
+
+// ============================================================================
+// Handler: POST /api/v1/plugins/reload
+// ============================================================================
+
+void HttpServer::handle_plugin_reload(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+    if (!plugin_registry_) {
+        res.status = httplib::StatusCode::ServiceUnavailable_503;
+        res.set_content(R"({"success":false,"error":"Plugin system not available"})", http::kJsonContentType);
+        return;
+    }
+
+    const auto path_sv = parse_json_field(req.body, "path");
+    if (path_sv.empty()) {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(R"({"success":false,"error":"Missing required field: path"})", http::kJsonContentType);
+        return;
+    }
+
+    const std::string path(path_sv);
+    const bool ok = plugin_registry_->reload_plugin(path);
+    if (ok) {
+        res.set_content(
+            std::format(R"({{"success":true,"path":"{}","plugins_loaded":{}}})",
+                path, plugin_registry_->plugin_count()),
+            http::kJsonContentType);
+    } else {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(
+            std::format(R"({{"success":false,"error":"Failed to reload plugin: {}"}})", path),
             http::kJsonContentType);
     }
 }

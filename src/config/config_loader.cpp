@@ -552,6 +552,12 @@ AuditConfig ConfigLoader::extract_audit(const toml::table& root) {
         cfg.syslog_ident = (*sy)["ident"].value_or("sql-proxy"s);
     }
 
+    if (const auto* ka = a["kafka"].as_table()) {
+        cfg.kafka_enabled = (*ka)["enabled"].value_or(false);
+        cfg.kafka_brokers = (*ka)["brokers"].value_or("localhost:9092"s);
+        cfg.kafka_topic = (*ka)["topic"].value_or("sql-proxy-audit"s);
+    }
+
     if (const auto* ig = a["integrity"].as_table()) {
         cfg.integrity_enabled = (*ig)["enabled"].value_or(true);
         cfg.integrity_algorithm = (*ig)["algorithm"].value_or("sha256"s);
@@ -798,6 +804,17 @@ WireProtocolConfigEntry ConfigLoader::extract_wire_protocol(const toml::table& r
     cfg.max_connections = static_cast<uint32_t>((*w)["max_connections"].value_or(100));
     cfg.thread_pool_size = static_cast<uint32_t>((*w)["thread_pool_size"].value_or(4));
     cfg.require_password = (*w)["require_password"].value_or(false);
+
+    // TLS sub-section
+    const auto* tls = (*w)["tls"].as_table();
+    if (tls) {
+        cfg.tls.enabled = (*tls)["enabled"].value_or(false);
+        cfg.tls.cert_file = (*tls)["cert_file"].value_or(""s);
+        cfg.tls.key_file = (*tls)["key_file"].value_or(""s);
+        cfg.tls.ca_file = (*tls)["ca_file"].value_or(""s);
+        cfg.tls.require_client_cert = (*tls)["require_client_cert"].value_or(false);
+    }
+
     return cfg;
 }
 
@@ -809,6 +826,7 @@ GraphQLConfigEntry ConfigLoader::extract_graphql(const toml::table& root) {
     cfg.enabled = (*g)["enabled"].value_or(false);
     cfg.endpoint = (*g)["endpoint"].value_or("/api/v1/graphql"s);
     cfg.max_query_depth = static_cast<uint32_t>((*g)["max_query_depth"].value_or(5));
+    cfg.mutations_enabled = (*g)["mutations_enabled"].value_or(false);
     return cfg;
 }
 
@@ -881,6 +899,15 @@ AuthConfig ConfigLoader::extract_auth(const toml::table& root) {
         cfg.ldap_bind_password = (*l)["bind_password"].value_or(""s);
         cfg.ldap_user_filter = (*l)["user_filter"].value_or("(uid={})"s);
         cfg.ldap_group_attribute = (*l)["group_attribute"].value_or("memberOf"s);
+    }
+
+    if (const auto* o = a["oidc"].as_table()) {
+        cfg.oidc_issuer = (*o)["issuer"].value_or(""s);
+        cfg.oidc_audience = (*o)["audience"].value_or(""s);
+        cfg.oidc_jwks_uri = (*o)["jwks_uri"].value_or(""s);
+        cfg.oidc_roles_claim = (*o)["roles_claim"].value_or("roles"s);
+        cfg.oidc_user_claim = (*o)["user_claim"].value_or("sub"s);
+        cfg.oidc_jwks_cache_seconds = static_cast<uint32_t>((*o)["jwks_cache_seconds"].value_or(3600));
     }
 
     return cfg;
@@ -1039,6 +1066,7 @@ RouteConfig ConfigLoader::extract_routes(const toml::table& root) {
     cfg.config_validate    = r["config_validate"].value_or(cfg.config_validate);
     cfg.slow_queries       = r["slow_queries"].value_or(cfg.slow_queries);
     cfg.circuit_breakers   = r["circuit_breakers"].value_or(cfg.circuit_breakers);
+    cfg.plugin_reload      = r["plugin_reload"].value_or(cfg.plugin_reload);
     cfg.pii_report         = r["pii_report"].value_or(cfg.pii_report);
     cfg.security_summary   = r["security_summary"].value_or(cfg.security_summary);
     cfg.lineage            = r["lineage"].value_or(cfg.lineage);

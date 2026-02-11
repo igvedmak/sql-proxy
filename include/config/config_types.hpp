@@ -115,6 +115,11 @@ struct AuditConfig {
     bool syslog_enabled = false;
     std::string syslog_ident = "sql-proxy";
 
+    // Kafka sink
+    bool kafka_enabled = false;
+    std::string kafka_brokers = "localhost:9092";
+    std::string kafka_topic = "sql-proxy-audit";
+
     // Integrity (hash chain)
     bool integrity_enabled = true;
     std::string integrity_algorithm = "sha256";
@@ -146,6 +151,7 @@ struct RouteConfig {
     std::string config_validate = "/api/v1/config/validate";
     std::string slow_queries    = "/api/v1/slow-queries";
     std::string circuit_breakers = "/api/v1/circuit-breakers";
+    std::string plugin_reload   = "/api/v1/plugins/reload";
 
     // Compliance
     std::string pii_report          = "/api/v1/compliance/pii-report";

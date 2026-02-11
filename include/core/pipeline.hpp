@@ -57,6 +57,7 @@ public:
     std::shared_ptr<ResultCache> get_result_cache() const { return c_.result_cache; }
     std::shared_ptr<SlowQueryTracker> get_slow_query_tracker() const { return c_.slow_query_tracker; }
     std::shared_ptr<CircuitBreaker> get_circuit_breaker() const { return c_.circuit_breaker; }
+    std::shared_ptr<CircuitBreakerRegistry> get_circuit_breaker_registry() const { return c_.circuit_breaker_registry; }
     std::shared_ptr<IConnectionPool> get_connection_pool() const { return c_.connection_pool; }
     std::shared_ptr<ParseCache> get_parse_cache() const { return c_.parse_cache; }
     std::shared_ptr<QueryCostEstimator> get_query_cost_estimator() const { return c_.query_cost_estimator; }

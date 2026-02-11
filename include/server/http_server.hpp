@@ -29,6 +29,8 @@ class AlertEvaluator;
 class BruteForceProtector;
 class ShutdownCoordinator;
 class SchemaDriftDetector;
+class PluginRegistry;
+class IAuthProvider;
 
 /**
  * @brief User information for authentication
@@ -101,6 +103,12 @@ public:
     void set_schema_drift_detector(std::shared_ptr<SchemaDriftDetector> sdd) {
         schema_drift_detector_ = std::move(sdd);
     }
+    void set_plugin_registry(std::shared_ptr<PluginRegistry> pr) {
+        plugin_registry_ = std::move(pr);
+    }
+    void set_auth_provider(std::shared_ptr<IAuthProvider> provider) {
+        auth_provider_ = std::move(provider);
+    }
 
 private:
     // ── Authentication ──────────────────────────────────────────────────
@@ -134,6 +142,7 @@ private:
     void handle_schema_reject(const httplib::Request& req, httplib::Response& res);
     void handle_schema_drift(const httplib::Request& req, httplib::Response& res);
     void handle_graphql(const httplib::Request& req, httplib::Response& res);
+    void handle_plugin_reload(const httplib::Request& req, httplib::Response& res);
 
     // ── Helpers ─────────────────────────────────────────────────────────
     std::string build_metrics_output();
@@ -170,6 +179,12 @@ private:
 
     // Tier F: Schema drift detector
     std::shared_ptr<SchemaDriftDetector> schema_drift_detector_;
+
+    // Plugin hot-reload
+    std::shared_ptr<PluginRegistry> plugin_registry_;
+
+    // OIDC/OAuth2 auth provider (optional)
+    std::shared_ptr<IAuthProvider> auth_provider_;
 };
 
 } // namespace sqlproxy

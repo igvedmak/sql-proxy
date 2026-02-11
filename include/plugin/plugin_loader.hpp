@@ -2,6 +2,7 @@
 
 #include "plugin/plugin_interface.hpp"
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -55,23 +56,41 @@ public:
     // Load a plugin from config (dlopen + resolve factory)
     [[nodiscard]] bool load_plugin(const PluginConfig& config);
 
-    // Access loaded plugins
-    [[nodiscard]] const std::vector<ClassifierPlugin*>& classifier_plugins() const {
+    // Hot-reload a plugin by path (dlopen new, swap, dlclose old)
+    [[nodiscard]] bool reload_plugin(const std::string& path);
+
+    // Unload a single plugin by path
+    bool unload_plugin(const std::string& path);
+
+    // List loaded plugin paths
+    [[nodiscard]] std::vector<std::string> loaded_plugin_paths() const;
+
+    // Access loaded plugins (thread-safe snapshots)
+    [[nodiscard]] std::vector<ClassifierPlugin*> classifier_plugins() const {
+        std::shared_lock lock(mutex_);
         return classifiers_;
     }
-    [[nodiscard]] const std::vector<AuditSinkPlugin*>& audit_sink_plugins() const {
+    [[nodiscard]] std::vector<AuditSinkPlugin*> audit_sink_plugins() const {
+        std::shared_lock lock(mutex_);
         return audit_sinks_;
     }
 
-    [[nodiscard]] size_t plugin_count() const { return plugins_.size(); }
+    [[nodiscard]] size_t plugin_count() const {
+        std::shared_lock lock(mutex_);
+        return plugins_.size();
+    }
 
     // Unload all plugins (called in destructor)
     void unload_all();
 
 private:
+    // Rebuild classifier/sink pointer lists from plugins_ (caller must hold unique_lock)
+    void rebuild_indexes();
+
     std::vector<std::unique_ptr<LoadedPlugin>> plugins_;
     std::vector<ClassifierPlugin*> classifiers_;
     std::vector<AuditSinkPlugin*> audit_sinks_;
+    mutable std::shared_mutex mutex_;
 };
 
 } // namespace sqlproxy

@@ -174,7 +174,7 @@ struct EncryptionConfig {
 // ============================================================================
 
 struct AuthConfig {
-    std::string provider = "api_key";  // "api_key" | "jwt" | "ldap"
+    std::string provider = "api_key";  // "api_key" | "jwt" | "ldap" | "oidc"
     // JWT
     std::string jwt_issuer;
     std::string jwt_audience;
@@ -187,6 +187,13 @@ struct AuthConfig {
     std::string ldap_bind_password;
     std::string ldap_user_filter = "(uid={})";
     std::string ldap_group_attribute = "memberOf";
+    // OIDC
+    std::string oidc_issuer;
+    std::string oidc_audience;
+    std::string oidc_jwks_uri;
+    std::string oidc_roles_claim = "roles";
+    std::string oidc_user_claim = "sub";
+    uint32_t oidc_jwks_cache_seconds = 3600;
 };
 
 // ============================================================================
@@ -218,12 +225,22 @@ struct WireProtocolConfigEntry {
     uint32_t max_connections = 100;
     uint32_t thread_pool_size = 4;
     bool require_password = false;
+
+    // TLS
+    struct Tls {
+        bool enabled = false;
+        std::string cert_file;
+        std::string key_file;
+        std::string ca_file;
+        bool require_client_cert = false;
+    } tls;
 };
 
 struct GraphQLConfigEntry {
     bool enabled = false;
     std::string endpoint = "/api/v1/graphql";
     uint32_t max_query_depth = 5;
+    bool mutations_enabled = false;
 };
 
 struct BinaryRpcConfigEntry {
