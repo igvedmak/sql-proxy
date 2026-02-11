@@ -33,7 +33,8 @@ The service will be available at http://localhost:8080
 ## Documentation
 
 - [DOCKER.md](DOCKER.md) - Build, run, test, and deploy instructions
-- [FLOW_DIAGRAM.md](FLOW_DIAGRAM.md) - Detailed architecture and data flow
+- [FLOW_DIAGRAM.md](FLOW_DIAGRAM.md) - Detailed architecture and data flow (text)
+- [Flow Visualization](docs/flow_visualization.html) - Interactive HTML flow diagram (open in browser)
 
 ## Architecture
 
@@ -295,6 +296,7 @@ curl -X POST http://localhost:8080/api/v1/query \
 - libpg_query (PostgreSQL SQL parser)
 - libpq (PostgreSQL client library)
 - cpp-httplib (HTTP server)
+- toml++ (TOML configuration parser)
 - glaze (high-performance JSON)
 - xxHash (fingerprint hashing)
 - Catch2 (unit tests)

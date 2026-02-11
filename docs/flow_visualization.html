@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SQL Proxy — System Flow</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --orange: #d29922;
+    --purple: #bc8cff;
+    --pink: #f778ba;
+    --cyan: #76e3ea;
+    --yellow: #e3b341;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+
+  /* ── Header ── */
+  header {
+    text-align: center;
+    padding: 32px 24px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 28px; font-weight: 600; }
+  header p { color: var(--text-dim); margin-top: 4px; font-size: 14px; }
+
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    padding: 12px 0;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend .dot {
+    width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+  }
+
+  /* ── Flow Container ── */
+  .flow {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px 16px 64px;
+  }
+
+  /* ── Arrow between blocks ── */
+  .arrow {
+    display: flex;
+    justify-content: center;
+    padding: 6px 0;
+    color: var(--text-dim);
+    font-size: 20px;
+    user-select: none;
+  }
+
+  /* ── Block (high-level node) ── */
+  .block {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    overflow: hidden;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    margin-bottom: 2px;
+  }
+  .block:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+  .block-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .block-header:hover { background: var(--surface2); }
+
+  .block-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+  }
+  .block-title { font-weight: 600; font-size: 15px; flex: 1; }
+  .block-badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 9999px;
+    font-weight: 500; flex-shrink: 0;
+  }
+  .block-chevron {
+    font-size: 14px; color: var(--text-dim);
+    transition: transform 0.2s; flex-shrink: 0;
+  }
+  .block.open .block-chevron { transform: rotate(90deg); }
+
+  /* ── Detail panel ── */
+  .block-detail {
+    display: none;
+    padding: 0 18px 18px;
+    border-top: 1px solid var(--border);
+  }
+  .block.open .block-detail { display: block; }
+
+  .detail-section { margin-top: 14px; }
+  .detail-section h4 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-dim); margin-bottom: 6px;
+  }
+  .detail-section p, .detail-section li {
+    font-size: 13px; color: var(--text); line-height: 1.65;
+  }
+  .detail-section ul { padding-left: 18px; }
+  .detail-section li { margin-bottom: 3px; }
+
+  .detail-code {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text-dim);
+  }
+  .detail-code .kw { color: var(--purple); }
+  .detail-code .fn { color: var(--accent); }
+  .detail-code .str { color: var(--green); }
+  .detail-code .cm { color: #484f58; }
+  .detail-code .num { color: var(--orange); }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+  }
+  .detail-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .detail-card .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; }
+  .detail-card .value { font-size: 15px; font-weight: 600; margin-top: 2px; }
+
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 9999px;
+    margin: 2px 3px 2px 0;
+    font-weight: 500;
+  }
+
+  /* ── Color helpers ── */
+  .bg-blue    { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .bg-green   { background: rgba(63,185,80,0.15); color: var(--green); }
+  .bg-red     { background: rgba(248,81,73,0.15); color: var(--red); }
+  .bg-orange  { background: rgba(210,153,34,0.15); color: var(--orange); }
+  .bg-purple  { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .bg-pink    { background: rgba(247,120,186,0.15); color: var(--pink); }
+  .bg-cyan    { background: rgba(118,227,234,0.15); color: var(--cyan); }
+  .bg-yellow  { background: rgba(227,179,65,0.15); color: var(--yellow); }
+
+  /* ── Sub-flow (layers inside pipeline) ── */
+  .sub-flow {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .sub-block {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    overflow: hidden;
+  }
+  .sub-block:hover { border-color: var(--accent); }
+  .sub-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+  }
+  .sub-header:hover { background: var(--surface); }
+  .sub-header .layer-num {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .sub-header .sub-title { font-weight: 600; flex: 1; }
+  .sub-header .sub-perf {
+    font-size: 11px; color: var(--text-dim); flex-shrink: 0;
+  }
+  .sub-header .sub-chevron {
+    font-size: 12px; color: var(--text-dim);
+    transition: transform 0.2s;
+  }
+  .sub-block.open .sub-chevron { transform: rotate(90deg); }
+  .sub-detail {
+    display: none;
+    padding: 0 14px 14px;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .sub-block.open .sub-detail { display: block; }
+
+  .sub-arrow {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 14px;
+    padding: 0;
+    user-select: none;
+  }
+
+  /* ── Fail / short-circuit badge inside sub-flow ── */
+  .gate-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  /* ── Footer ── */
+  footer {
+    text-align: center;
+    padding: 24px;
+    color: var(--text-dim);
+    font-size: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 600px) {
+    header h1 { font-size: 22px; }
+    .block-header { padding: 12px 14px; }
+    .detail-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>SQL Proxy &mdash; Request Flow</h1>
+  <p>Click any block to expand low-level details. Every request walks this pipeline top-to-bottom.</p>
+</header>
+
+<div class="legend">
+  <span><span class="dot" style="background:var(--accent)"></span> Ingress</span>
+  <span><span class="dot" style="background:var(--green)"></span> Parse &amp; Analyze</span>
+  <span><span class="dot" style="background:var(--red)"></span> Security Gate</span>
+  <span><span class="dot" style="background:var(--purple)"></span> Policy</span>
+  <span><span class="dot" style="background:var(--orange)"></span> Execution</span>
+  <span><span class="dot" style="background:var(--pink)"></span> Post-Processing</span>
+  <span><span class="dot" style="background:var(--cyan)"></span> Compliance</span>
+</div>
+
+<div class="flow">
+
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- CLIENT -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="block" id="blk-client">
+    <div class="block-header" onclick="toggle('blk-client')">
+      <div class="block-icon bg-blue">&#x1F4E8;</div>
+      <div class="block-title">Client Request</div>
+      <span class="block-badge bg-blue">HTTP / Wire / RPC</span>
+      <span class="block-chevron">&#x25B6;</span>
+    </div>
+    <div class="block-detail">
+      <div class="detail-section">
+        <h4>Supported Protocols</h4>
+        <div class="detail-grid">
+          <div class="detail-card">
+            <div class="label">HTTP REST</div>
+            <div class="value" style="font-size:13px">POST /api/v1/query</div>
+          </div>
+          <div class="detail-card">
+            <div class="label">PostgreSQL Wire</div>
+            <div class="value" style="font-size:13px">Port 5433 (native PG)</div>
+          </div>
+          <div class="detail-card">
+            <div class="label">Binary RPC</div>
+            <div class="value" style="font-size:13px">Port 9090 (protobuf)</div>
+          </div>
+          <div class="detail-card">
+            <div class="label">GraphQL</div>
+            <div class="value" style="font-size:13px">POST /api/v1/graphql</div>
+          </div>
+        </div>
+      </div>
+      <div class="detail-section">
+        <h4>Request Payload (HTTP)</h4>
+        <div class="detail-code">{
+  <span class="str">"user"</span>:     <span class="str">"analyst"</span>,
+  <span class="str">"sql"</span>:      <span class="str">"SELECT email FROM customers WHERE id = 42"</span>,
+  <span class="str">"database"</span>: <span class="str">"testdb"</span>,
+  <span class="str">"priority"</span>: <span class="str">"NORMAL"</span>       <span class="cm">// optional: LOW | NORMAL | HIGH | CRITICAL</span>
+}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">&#x25BC;</div>
+
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- HTTP SERVER -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="block" id="blk-http">
+    <div class="block-header" onclick="toggle('blk-http')">
+      <div class="block-icon bg-blue">&#x1F310;</div>
+      <div class="block-title">HTTP Server &amp; Request Validation</div>
+      <span class="block-badge bg-red">Can reject: 400/401/403/429</span>
+      <span class="block-chevron">&#x25B6;</span>
+    </div>
+    <div class="block-detail">
+      <div class="detail-section">
+        <h4>Validation Chain (short-circuits on first failure)</h4>
+        <ul>
+          <li>Graceful shutdown check &mdash; draining? &rarr; <span class="tag bg-red">503</span></li>
+          <li>Content-Type: application/json &mdash; <span class="tag bg-red">400</span> if missing</li>
+          <li>JSON body parse + <code>sql</code> field present &mdash; <span class="tag bg-red">400</span></li>
+          <li>SQL length &lt; max_sql_length &mdash; <span class="tag bg-red">400</span></li>
+          <li>Brute force check (IP / user) &mdash; <span class="tag bg-red">429</span> + Retry-After</li>
+          <li>Authentication (API key / JWT / LDAP) &mdash; <span class="tag bg-red">401</span></li>
+          <li>IP allowlist check &mdash; <span class="tag bg-red">403</span></li>
+        </ul>
+      </div>
+      <div class="detail-section">
+        <h4>ProxyRequest Built</h4>
+        <div class="detail-code"><span class="kw">ProxyRequest</span> {
+  request_id    = UUID
+  user          = <span class="cm">from auth (API key &rarr; username)</span>
+  roles         = <span class="cm">from UserInfo (resolved by validate_user)</span>
+  sql           = <span class="cm">from JSON body</span>
+  database      = <span class="cm">from JSON (fallback: user.default_database, "testdb")</span>
+  source_ip     = <span class="cm">X-Forwarded-For or remote_addr</span>
+  traceparent   = <span class="cm">W3C trace header</span>
+  priority      = <span class="cm">LOW | NORMAL | HIGH | CRITICAL</span>
+}</div>
+      </div>
+      <div class="detail-section">
+        <h4>Key Endpoints</h4>
+        <div class="detail-grid">
+          <div class="detail-card">
+            <div class="label">Query</div>
+            <div class="value" style="font-size:12px">POST /api/v1/query</div>
+          </div>
+          <div class="detail-card">
+            <div class="label">Dry Run</div>
+            <div class="value" style="font-size:12px">POST /api/v1/query/dry-run</div>
+          </div>
+          <div class="detail-card">
+            <div class="label">Health</div>
+            <div class="value" style="font-size:12px">GET /health?level=deep</div>
+          </div>
+          <div class="detail-card">
+            <div class="label">Metrics</div>
+            <div class="value" style="font-size:12px">GET /metrics (60+)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">&#x25BC;</div>
+
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- PIPELINE -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="block" id="blk-pipeline">
+    <div class="block-header" onclick="toggle('blk-pipeline')">
+      <div class="block-icon bg-purple">&#x2699;</div>
+      <div class="block-title">Pipeline Orchestrator</div>
+      <span class="block-badge bg-purple">15 layers, short-circuit on failure</span>
+      <span class="block-chevron">&#x25B6;</span>
+    </div>
+    <div class="block-detail">
+      <div class="detail-section">
+        <h4>RequestContext (carries state through all layers)</h4>
+        <div class="detail-code"><span class="kw">RequestContext</span> {
+  <span class="cm">// Input</span>
+  request_id, user, roles, database, sql, source_ip
+  tenant_id, priority, dry_run
+  trace_context { trace_id, span_id, parent_span_id }
+  <span class="cm">// Timing (populated as pipeline progresses)</span>
+  parse_time, policy_time, execution_time, classification_time
+  injection_check_time, masking_time, column_policy_time
+  <span class="cm">// Flags</span>
+  cache_hit, rate_limited, sql_rewritten, ddl_requires_approval
+  <span class="cm">// Stage results</span>
+  fingerprint, statement_info, analysis, policy_result
+  query_result, classification_result, injection_result, anomaly_result
+}</div>
+      </div>
+
+      <div class="detail-section">
+        <h4>Layer Execution (click each layer for details)</h4>
+        <div class="sub-flow">
+
+          <!-- Layer 1 -->
+          <div class="sub-block" id="sub-rate">
+            <div class="sub-header" onclick="toggleSub(event,'sub-rate')">
+              <span class="layer-num bg-blue">L1</span>
+              <span class="sub-title">Rate Limiting</span>
+              <span class="gate-badge bg-red">GATE</span>
+              <span class="sub-perf">~48 ns</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Hierarchical 4-level token bucket. <strong>All levels must pass.</strong></p>
+              <ul style="margin-top:8px">
+                <li><strong>Level 1 &mdash; Global:</strong> 50K tokens/sec. Protects proxy CPU. Single bucket, lock-free CAS.</li>
+                <li><strong>Level 2 &mdash; Per-User:</strong> 1K tokens/sec default. Prevents one user starving others.</li>
+                <li><strong>Level 3 &mdash; Per-Database:</strong> 30K tokens/sec. Protects each DB independently.</li>
+                <li><strong>Level 4 &mdash; User+DB:</strong> 100 tokens/sec. Most specific control.</li>
+              </ul>
+              <p style="margin-top:8px">Token Bucket: atomic CAS loop (max 8 retries), integer arithmetic, single <code>steady_clock::now()</code> read shared across all 4 levels.</p>
+              <p style="margin-top:6px">Bucket maps use <code>std::shared_mutex</code> (reader-writer lock) with double-checked locking for lazy creation. Background cleanup thread evicts idle buckets.</p>
+              <p style="margin-top:6px"><strong>Adaptive Rate Controller</strong> (optional): observes P95 latency, throttles to 40% at high load, 10% in protect mode.</p>
+              <p style="margin-top:6px"><span class="tag bg-red">FAIL &rarr; 429 Rate Limited</span></p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 2 -->
+          <div class="sub-block" id="sub-parse">
+            <div class="sub-header" onclick="toggleSub(event,'sub-parse')">
+              <span class="layer-num bg-green">L2</span>
+              <span class="sub-title">Parse + Cache</span>
+              <span class="gate-badge bg-red">GATE</span>
+              <span class="sub-perf">~500 ns hit / ~50 &mu;s miss</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p><strong>Step 1 &mdash; Fingerprinting</strong> (~280 ns): single-pass normalization using constexpr 256-byte lookup table. Strips comments, normalizes case, replaces literals with <code>?</code>, collapses <code>IN()</code> lists, xxHash64 final hash.</p>
+              <p style="margin-top:8px"><strong>Step 2 &mdash; Parse Cache Lookup</strong> (~500 ns hit): 16-shard LRU cache, 10K entries total. Per-shard mutex. Collision guard compares normalized string.</p>
+              <p style="margin-top:8px"><strong>Step 3 &mdash; libpg_query Parse</strong> (~50 &mu;s on miss): PostgreSQL's actual parser extracted as C library. Produces AST &rarr; extract <code>StatementType</code> (O(1) hash map), <code>tables[]</code>, store in cache.</p>
+              <div style="margin-top:8px" class="detail-code"><span class="kw">StatementInfo</span> {
+  fingerprint: { hash: <span class="num">0xa3f2b1...</span>, normalized: <span class="str">"select * from users where id = ?"</span> }
+  parsed: { type: <span class="str">SELECT</span>, tables: [<span class="str">"customers"</span>], is_write: <span class="kw">false</span> }
+}</div>
+              <p style="margin-top:8px"><span class="tag bg-red">FAIL &rarr; 400 PARSE_ERROR</span></p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 3 -->
+          <div class="sub-block" id="sub-analyze">
+            <div class="sub-header" onclick="toggleSub(event,'sub-analyze')">
+              <span class="layer-num bg-green">L3</span>
+              <span class="sub-title">SQL Analysis</span>
+              <span class="sub-perf">fast</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Deep AST walk to extract source/target tables, projections, filter columns, write columns, and query characteristics.</p>
+              <div style="margin-top:8px" class="detail-code"><span class="kw">AnalysisResult</span> {
+  source_tables:  [<span class="str">"customers"</span>]     <span class="cm">// FROM clause, JOINs</span>
+  target_tables:  []                  <span class="cm">// INSERT INTO, UPDATE, DELETE targets</span>
+  projections:    [{ name: <span class="str">"email"</span>, is_function: <span class="kw">false</span> }]
+  filter_columns: [{ table: <span class="str">"customers"</span>, column: <span class="str">"id"</span> }]
+  characteristics: { has_join: <span class="kw">false</span>, has_subquery: <span class="kw">false</span>, limit: <span class="num">null</span> }
+}</div>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 2.5 -->
+          <div class="sub-block" id="sub-resultcache">
+            <div class="sub-header" onclick="toggleSub(event,'sub-resultcache')">
+              <span class="layer-num bg-green">L2.5</span>
+              <span class="sub-title">Result Cache Lookup</span>
+              <span class="sub-perf">short-circuit on hit</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Only for <code>SELECT</code> queries. 16-shard LRU keyed by <code>(fingerprint_hash, user, database)</code>.</p>
+              <p style="margin-top:6px"><strong>HIT</strong> &rarr; skip Layers 3.5 through 5.05, jump directly to classify &rarr; lineage &rarr; audit &rarr; respond.</p>
+              <p style="margin-top:6px"><strong>MISS</strong> &rarr; continue to Layer 3.5.</p>
+              <p style="margin-top:6px">Write-back after successful execution (Layer 5.05). DML/DDL invalidates all entries for affected database.</p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 3.5 -->
+          <div class="sub-block" id="sub-sqli">
+            <div class="sub-header" onclick="toggleSub(event,'sub-sqli')">
+              <span class="layer-num bg-red">L3.5</span>
+              <span class="sub-title">SQL Injection Detection</span>
+              <span class="gate-badge bg-red">GATE</span>
+              <span class="sub-perf">6 checks</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Hand-rolled detectors (no regex). 6 checks with cumulative scoring:</p>
+              <ul style="margin-top:6px">
+                <li><strong>Tautology</strong> (score 0.7) &mdash; <code>1=1</code>, <code>'a'='a'</code>, <code>OR true</code></li>
+                <li><strong>UNION Injection</strong> (score 1.0) &mdash; <code>UNION SELECT</code>, <code>UNION ALL SELECT</code></li>
+                <li><strong>Comment Bypass</strong> (score 0.4) &mdash; inline <code>--</code>, <code>/*</code> mid-statement</li>
+                <li><strong>Stacked Queries</strong> (score 0.7) &mdash; multiple <code>;</code> separated statements</li>
+                <li><strong>Time-based Blind</strong> (score 0.7) &mdash; <code>SLEEP()</code>, <code>pg_sleep()</code>, <code>WAITFOR DELAY</code></li>
+                <li><strong>Error-based</strong> (score 0.4) &mdash; <code>EXTRACTVALUE</code>, <code>UPDATEXML</code></li>
+              </ul>
+              <p style="margin-top:8px"><strong>Encoding bypass detection:</strong> URL decode, HTML entity decode, double URL decode. If decoded &ne; raw, re-run all 6 checks.</p>
+              <p style="margin-top:6px">Threat levels: NONE &lt; LOW &lt; MEDIUM &lt; HIGH &lt; CRITICAL. Block threshold: HIGH (configurable).</p>
+              <p style="margin-top:6px"><span class="tag bg-red">BLOCK &rarr; 403 SQLI_BLOCKED</span></p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 3.7 -->
+          <div class="sub-block" id="sub-anomaly">
+            <div class="sub-header" onclick="toggleSub(event,'sub-anomaly')">
+              <span class="layer-num bg-cyan">L3.7</span>
+              <span class="sub-title">Anomaly Detection</span>
+              <span class="sub-perf">informational only</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Per-user behavioral profiling. <strong>Never blocks</strong> &mdash; informational signals for audit.</p>
+              <p style="margin-top:6px">4 signals:</p>
+              <ul>
+                <li><strong>NEW_TABLE</strong> (+0.3) &mdash; table not in user's known set</li>
+                <li><strong>NEW_QUERY_PATTERN</strong> (+0.2) &mdash; fingerprint hash never seen for user</li>
+                <li><strong>VOLUME_SPIKE</strong> (+0.4) &mdash; Z-score &gt; 3&sigma; above rolling average</li>
+                <li><strong>UNUSUAL_HOUR</strong> (+0.2) &mdash; hour never seen in user profile</li>
+              </ul>
+              <p style="margin-top:6px">Anomalous if score &ge; 0.5. Profile uses <code>shared_mutex</code> &mdash; check() reads, record() writes.</p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 4 -->
+          <div class="sub-block" id="sub-policy">
+            <div class="sub-header" onclick="toggleSub(event,'sub-policy')">
+              <span class="layer-num bg-purple">L4</span>
+              <span class="sub-title">Policy Engine</span>
+              <span class="gate-badge bg-red">GATE</span>
+              <span class="sub-perf">trie lookup</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Radix trie per user/role. Path: <code>database &rarr; schema &rarr; table &rarr; [policies]</code>.</p>
+              <p style="margin-top:8px"><strong>Evaluation per table:</strong></p>
+              <ol style="padding-left:18px;margin-top:4px">
+                <li>Collect matching policies from user tries, role tries, wildcard trie</li>
+                <li>Filter by statement type + exclude_roles</li>
+                <li>Resolve by <strong>specificity</strong>: table (+100), schema (+10), database (+1)</li>
+                <li>Same specificity: <strong>BLOCK wins over ALLOW</strong></li>
+                <li>No matching policies &rarr; <strong>DEFAULT DENY</strong></li>
+              </ol>
+              <p style="margin-top:8px">Multi-table: ALL tables must be ALLOWED. ANY denied &rarr; entire query denied.</p>
+              <p style="margin-top:8px"><strong>Hot reload:</strong> builds new PolicyStore offline, then atomic <code>shared_ptr</code> swap (RCU). Zero-downtime.</p>
+              <p style="margin-top:6px"><span class="tag bg-red">FAIL &rarr; 403 ACCESS_DENIED</span></p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 4.1 -->
+          <div class="sub-block" id="sub-ddl">
+            <div class="sub-header" onclick="toggleSub(event,'sub-ddl')">
+              <span class="layer-num bg-purple">L4.1</span>
+              <span class="sub-title">DDL Interception</span>
+              <span class="sub-perf">DDL only</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Only runs for DDL statements (CREATE/ALTER/DROP TABLE, etc.) when SchemaManager is enabled.</p>
+              <p style="margin-top:6px">If <code>require_approval = true</code>: DDL stored as "pending", request blocked. Admin approves/rejects via API.</p>
+              <p style="margin-top:6px">If <code>require_approval = false</code>: DDL passes through, recorded in history after execution.</p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 4.5 -->
+          <div class="sub-block" id="sub-rewrite">
+            <div class="sub-header" onclick="toggleSub(event,'sub-rewrite')">
+              <span class="layer-num bg-purple">L4.5</span>
+              <span class="sub-title">Query Rewriting (RLS)</span>
+              <span class="sub-perf">row-level security</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Two rewrite types:</p>
+              <ul style="margin-top:6px">
+                <li><strong>RLS Rules</strong> &mdash; inject WHERE clause filters. E.g., <code>SELECT * FROM orders</code> &rarr; <code>SELECT * FROM orders WHERE tenant_id = '42'</code></li>
+                <li><strong>Rewrite Rules</strong> &mdash; enforce LIMIT on unbounded queries.</li>
+              </ul>
+              <p style="margin-top:6px">Placeholders like <code>:tenant_id</code> resolved from <code>user_attributes</code>. Original SQL saved before rewrite.</p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 4.8 -->
+          <div class="sub-block" id="sub-cost">
+            <div class="sub-header" onclick="toggleSub(event,'sub-cost')">
+              <span class="layer-num bg-orange">L4.8</span>
+              <span class="sub-title">Query Cost Estimation</span>
+              <span class="gate-badge bg-red">GATE</span>
+              <span class="sub-perf">EXPLAIN</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>SELECT queries only. Runs <code>EXPLAIN</code> on the real connection pool to get PostgreSQL cost estimate.</p>
+              <p style="margin-top:6px">Blocks if <code>total_cost > max_cost</code> OR <code>estimated_rows > max_estimated_rows</code>.</p>
+              <p style="margin-top:6px"><span class="tag bg-red">BLOCK &rarr; 403 QUERY_TOO_EXPENSIVE</span></p>
+            </div>
+          </div>
+
+          <div class="sub-arrow" style="color:var(--orange)">&#x25BC; <span style="font-size:11px">DRY-RUN CHECK: if dry_run &rarr; skip execution, audit + respond</span></div>
+
+          <!-- Layer 5 -->
+          <div class="sub-block" id="sub-execute">
+            <div class="sub-header" onclick="toggleSub(event,'sub-execute')">
+              <span class="layer-num bg-orange">L5</span>
+              <span class="sub-title">Query Executor</span>
+              <span class="sub-perf">connection pool + circuit breaker</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Acquires connection from pool (semaphore-gated, RAII). Routes by statement type:</p>
+              <ul style="margin-top:6px">
+                <li><code>SELECT</code> &rarr; <code>execute_select()</code>: SET statement_timeout, PQexec, fetch columns + rows</li>
+                <li><code>INSERT/UPDATE/DELETE</code> &rarr; <code>execute_dml()</code>: PQexec, affected_rows</li>
+                <li><code>DDL</code> &rarr; <code>execute_ddl()</code>: PQexec</li>
+              </ul>
+              <p style="margin-top:8px"><strong>Retry with exponential backoff</strong> on DATABASE_ERROR: doubles delay each attempt, capped at <code>max_backoff_ms</code>.</p>
+              <p style="margin-top:8px"><strong>Circuit breaker</strong> (per database): CLOSED &rarr; OPEN (after N failures) &rarr; HALF_OPEN (after timeout) &rarr; CLOSED (after M successes).</p>
+              <p style="margin-top:6px">Connection pool: min=2, max=10, health check on idle, max_lifetime recycling.</p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 5.01-5.1 -->
+          <div class="sub-block" id="sub-postexec">
+            <div class="sub-header" onclick="toggleSub(event,'sub-postexec')">
+              <span class="layer-num bg-orange">L5.01&ndash;5.1</span>
+              <span class="sub-title">Post-Execution Bookkeeping</span>
+              <span class="sub-perf">slow query + cache invalidation</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <ul>
+                <li><strong>L5.01 Slow Query Tracking</strong> &mdash; if execution_time &gt; threshold_ms, stores SlowQueryRecord in bounded deque.</li>
+                <li><strong>L5.02 Parse Cache DDL Invalidation</strong> &mdash; DDL succeeded? Invalidate parse cache entries referencing the altered table.</li>
+                <li><strong>L5.05 Result Cache Store</strong> &mdash; SELECT succeeded? Store result in result cache. DML/DDL &rarr; invalidate all entries for that database.</li>
+                <li><strong>L5.1 Schema Change Recording</strong> &mdash; DDL succeeded + SchemaManager? Record in history.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 5.3 -->
+          <div class="sub-block" id="sub-decrypt">
+            <div class="sub-header" onclick="toggleSub(event,'sub-decrypt')">
+              <span class="layer-num bg-pink">L5.3</span>
+              <span class="sub-title">Column Decryption</span>
+              <span class="sub-perf">AES-256-GCM</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Transparent decryption of encrypted columns in query results. Format: <code>ENC:v1:&lt;key_id&gt;:&lt;base64(IV+ciphertext+tag)&gt;</code>.</p>
+              <p style="margin-top:6px">Key management: LocalKeyManager (file), VaultKeyManager (HashiCorp Vault Transit), EnvKeyManager ($ENV).</p>
+              <p style="margin-top:6px">Only runs when encryption is enabled and query returned results with encrypted columns.</p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 5.5+5.6 -->
+          <div class="sub-block" id="sub-mask">
+            <div class="sub-header" onclick="toggleSub(event,'sub-mask')">
+              <span class="layer-num bg-pink">L5.5&ndash;5.6</span>
+              <span class="sub-title">Column ACL + Data Masking</span>
+              <span class="sub-perf">remove / mask columns</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p><strong>L5.5 Column-Level ACL:</strong> evaluates per-column policies. Blocked columns are <em>removed</em> from column_names, type_oids, and all rows.</p>
+              <p style="margin-top:8px"><strong>L5.6 Data Masking</strong> (in-place on remaining columns):</p>
+              <ul style="margin-top:4px">
+                <li><code>PARTIAL</code> &mdash; <code>"alice@example.com"</code> &rarr; <code>"a***@example.com"</code></li>
+                <li><code>HASH</code> &mdash; <code>"alice@example.com"</code> &rarr; <code>"sha256:a1b2c3..."</code></li>
+                <li><code>REDACT</code> &mdash; <code>"alice@example.com"</code> &rarr; <code>"[REDACTED]"</code></li>
+                <li><code>NONE</code> &mdash; passthrough</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 6 -->
+          <div class="sub-block" id="sub-classify">
+            <div class="sub-header" onclick="toggleSub(event,'sub-classify')">
+              <span class="layer-num bg-cyan">L6</span>
+              <span class="sub-title">PII Classification</span>
+              <span class="sub-perf">4-strategy chain</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Runs on <em>masked</em> data (won't double-report masked PII). 4-strategy chain:</p>
+              <ol style="padding-left:18px;margin-top:6px">
+                <li><strong>Column Name</strong> (90% confidence, ~10 ns) &mdash; hash map: <code>"email"&rarr;PII.Email</code>, <code>"ssn"&rarr;PII.SSN</code></li>
+                <li><strong>Type OID</strong> (85% confidence, ~5 ns) &mdash; PostgreSQL type OID mapping</li>
+                <li><strong>Pattern Value</strong> (80% confidence, ~100 ns) &mdash; sample 20 rows, hand-rolled scanners: <code>looks_like_email()</code>, <code>looks_like_phone()</code>, <code>looks_like_ssn()</code>, <code>looks_like_credit_card()</code></li>
+                <li><strong>Derived Column</strong> &mdash; <code>UPPER(email)</code> still PII; <code>COUNT(email)</code> is NOT PII</li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 6.5 -->
+          <div class="sub-block" id="sub-lineage">
+            <div class="sub-header" onclick="toggleSub(event,'sub-lineage')">
+              <span class="layer-num bg-cyan">L6.5</span>
+              <span class="sub-title">Data Lineage Tracking</span>
+              <span class="sub-perf">compliance</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>For each classified PII column, creates a <code>LineageEvent</code>: who accessed what PII, when, was it masked?</p>
+              <p style="margin-top:6px">Storage: bounded deque (100K events) + per-column summaries (total/masked accesses, accessing users).</p>
+              <p style="margin-top:6px">Feeds: <code>GET /api/v1/compliance/lineage</code> and <code>GET /api/v1/compliance/data-subject-access?user=X</code> (GDPR).</p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
+          <!-- Layer 7 -->
+          <div class="sub-block" id="sub-audit">
+            <div class="sub-header" onclick="toggleSub(event,'sub-audit')">
+              <span class="layer-num bg-cyan">L7</span>
+              <span class="sub-title">Audit Emitter</span>
+              <span class="sub-perf">async, ~210 ns</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p><strong>Always fires</strong> &mdash; on success AND every failure path.</p>
+              <p style="margin-top:6px"><strong>Audit sampling</strong> (optional): always log blocked/writes/errors; configurable sample rate for SELECTs; deterministic by fingerprint.</p>
+              <p style="margin-top:8px"><strong>Async architecture:</strong> HTTP threads &rarr; MPSC ring buffer (65536 slots, lock-free CAS enqueue ~210 ns) &rarr; Writer thread (batch drain 1000/batch or 100 ms, fsync every 10 batches) &rarr; <code>logs/audit.jsonl</code>.</p>
+              <p style="margin-top:6px">Optional sinks: webhook, syslog. Optional audit encryption at rest (AES-256-GCM).</p>
+              <p style="margin-top:8px"><strong>Record includes:</strong> audit_id (UUIDv7), trace_id, user, source_ip, SQL, fingerprint, decision, matched_policy, classifications, masked columns, injection result, anomaly score, per-layer timing spans, priority.</p>
+            </div>
+          </div>
+
+        </div><!-- /sub-flow -->
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">&#x25BC;</div>
+
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- RESPONSE -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="block" id="blk-response">
+    <div class="block-header" onclick="toggle('blk-response')">
+      <div class="block-icon bg-green">&#x1F4E4;</div>
+      <div class="block-title">Response Builder</div>
+      <span class="block-badge bg-green">HTTP 200 / 4xx / 5xx</span>
+      <span class="block-chevron">&#x25B6;</span>
+    </div>
+    <div class="block-detail">
+      <div class="detail-section">
+        <h4>Success Response (HTTP 200)</h4>
+        <div class="detail-code">{
+  <span class="str">"success"</span>: <span class="kw">true</span>,
+  <span class="str">"audit_id"</span>: <span class="str">"evt_01HQ..."</span>,
+  <span class="str">"data"</span>: {
+    <span class="str">"columns"</span>: [<span class="str">"id"</span>, <span class="str">"name"</span>, <span class="str">"email"</span>],
+    <span class="str">"rows"</span>: [[<span class="str">"1"</span>, <span class="str">"Alice"</span>, <span class="str">"a***@example.com"</span>]]
+  },
+  <span class="str">"classifications"</span>: { <span class="str">"email"</span>: <span class="str">"PII.Email"</span> },
+  <span class="str">"masked_columns"</span>: [<span class="str">"email"</span>],
+  <span class="str">"blocked_columns"</span>: [<span class="str">"ssn"</span>],
+  <span class="str">"execution_time_us"</span>: <span class="num">1250</span>
+}</div>
+      </div>
+      <div class="detail-section">
+        <h4>Error Response (HTTP 4xx/5xx)</h4>
+        <div class="detail-code">{
+  <span class="str">"success"</span>: <span class="kw">false</span>,
+  <span class="str">"audit_id"</span>: <span class="str">"evt_01HQ..."</span>,
+  <span class="str">"error_code"</span>: <span class="str">"ACCESS_DENIED"</span>,
+  <span class="str">"error_message"</span>: <span class="str">"Policy 'block_ddl' blocks DROP_TABLE on customers"</span>,
+  <span class="str">"execution_time_us"</span>: <span class="num">45</span>
+}</div>
+      </div>
+      <div class="detail-section">
+        <h4>HTTP Status Mapping</h4>
+        <div class="detail-grid">
+          <div class="detail-card"><div class="label">Success</div><div class="value" style="color:var(--green)">200</div></div>
+          <div class="detail-card"><div class="label">Parse / Invalid</div><div class="value" style="color:var(--orange)">400</div></div>
+          <div class="detail-card"><div class="label">Unauthenticated</div><div class="value" style="color:var(--orange)">401</div></div>
+          <div class="detail-card"><div class="label">Access Denied / SQLi / Cost</div><div class="value" style="color:var(--red)">403</div></div>
+          <div class="detail-card"><div class="label">Query Timeout</div><div class="value" style="color:var(--orange)">408</div></div>
+          <div class="detail-card"><div class="label">Rate Limited</div><div class="value" style="color:var(--red)">429</div></div>
+          <div class="detail-card"><div class="label">Database Error</div><div class="value" style="color:var(--red)">502</div></div>
+          <div class="detail-card"><div class="label">Circuit Open</div><div class="value" style="color:var(--red)">503</div></div>
+        </div>
+      </div>
+      <div class="detail-section">
+        <h4>Response Headers</h4>
+        <ul>
+          <li><code>X-RateLimit-Remaining: N</code></li>
+          <li><code>Retry-After: N</code> (on 429)</li>
+          <li><code>traceparent</code> (W3C distributed tracing)</li>
+          <li><code>Content-Encoding: gzip</code> (if compression enabled and response exceeds min size)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">&#x25BC;</div>
+
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- CLIENT (return) -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="block" id="blk-return">
+    <div class="block-header" onclick="toggle('blk-return')">
+      <div class="block-icon bg-blue">&#x1F4E8;</div>
+      <div class="block-title">Client Receives Response</div>
+      <span class="block-badge bg-green">JSON + audit trail</span>
+      <span class="block-chevron">&#x25B6;</span>
+    </div>
+    <div class="block-detail">
+      <div class="detail-section">
+        <h4>What the client gets</h4>
+        <ul>
+          <li>Query results with blocked columns removed and sensitive data masked</li>
+          <li>PII classifications for transparency</li>
+          <li>Audit ID for traceability</li>
+          <li>Rate limit headers for adaptive client behavior</li>
+          <li>W3C trace headers for distributed tracing</li>
+        </ul>
+      </div>
+      <div class="detail-section">
+        <h4>Meanwhile (async, non-blocking)</h4>
+        <ul>
+          <li>Audit record written to <code>logs/audit.jsonl</code> (optionally encrypted)</li>
+          <li>Webhook / syslog sinks fire</li>
+          <li>Anomaly profile updated</li>
+          <li>Lineage events stored</li>
+          <li>Alert evaluator checks thresholds</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /flow -->
+
+<footer>
+  SQL Proxy &mdash; Flow Visualization &mdash; Generated from FLOW_DIAGRAM.md
+</footer>
+
+<script>
+function toggle(id) {
+  document.getElementById(id).classList.toggle('open');
+}
+function toggleSub(event, id) {
+  event.stopPropagation();
+  document.getElementById(id).classList.toggle('open');
+}
+
+// Expand all / collapse all with keyboard shortcut
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'e' && !e.ctrlKey && !e.metaKey) {
+    // 'e' to expand all
+    document.querySelectorAll('.block, .sub-block').forEach(el => el.classList.add('open'));
+  }
+  if (e.key === 'c' && !e.ctrlKey && !e.metaKey) {
+    // 'c' to collapse all
+    document.querySelectorAll('.block, .sub-block').forEach(el => el.classList.remove('open'));
+  }
+});
+</script>
+</body>
+</html>
