@@ -53,7 +53,8 @@ enum class StatementType {
     SHOW,
     PREPARE,        // PREPARE name AS sql
     EXECUTE_STMT,   // EXECUTE name (params)
-    DEALLOCATE      // DEALLOCATE name
+    DEALLOCATE,     // DEALLOCATE name
+    COPY            // COPY ... FROM/TO
 };
 
 // Branchless statement type classification using bitmasks.
@@ -102,7 +103,9 @@ enum class ErrorCode {
     SQLI_BLOCKED,
     QUERY_TIMEOUT,
     QUERY_TOO_EXPENSIVE,
-    FIREWALL_BLOCKED
+    FIREWALL_BLOCKED,
+    RESIDENCY_BLOCKED,
+    COPY_NOT_SUPPORTED
 };
 
 enum class FailureCategory {
@@ -397,6 +400,7 @@ inline const char* statement_type_to_string(StatementType type) {
         case StatementType::PREPARE: return "PREPARE";
         case StatementType::EXECUTE_STMT: return "EXECUTE";
         case StatementType::DEALLOCATE: return "DEALLOCATE";
+        case StatementType::COPY: return "COPY";
         default: return "UNKNOWN";
     }
 }
@@ -425,6 +429,8 @@ inline const char* error_code_to_string(ErrorCode code) {
         case ErrorCode::QUERY_TIMEOUT: return "QUERY_TIMEOUT";
         case ErrorCode::QUERY_TOO_EXPENSIVE: return "QUERY_TOO_EXPENSIVE";
         case ErrorCode::FIREWALL_BLOCKED: return "FIREWALL_BLOCKED";
+        case ErrorCode::RESIDENCY_BLOCKED: return "RESIDENCY_BLOCKED";
+        case ErrorCode::COPY_NOT_SUPPORTED: return "COPY_NOT_SUPPORTED";
         default: return "UNKNOWN";
     }
 }

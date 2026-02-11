@@ -33,6 +33,10 @@
 #include "analyzer/query_explainer.hpp"
 #include "analyzer/sql_analyzer.hpp"
 #include "analyzer/index_recommender.hpp"
+#include "tenant/data_residency.hpp"
+#include "security/column_version_tracker.hpp"
+#include "analyzer/synthetic_data_generator.hpp"
+#include "analyzer/schema_cache.hpp"
 
 // cpp-httplib is header-only — suppress its internal deprecation warnings
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -441,6 +445,21 @@ void HttpServer::register_optional_routes(httplib::Server& svr) {
     svr.Post(routes_.query_explain, [this](const httplib::Request& req, httplib::Response& res) {
         handle_query_explain(req, res);
     });
+    if (features_.data_residency && data_residency_enforcer_) {
+        svr.Get(routes_.residency, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_residency(req, res);
+        });
+    }
+    if (features_.column_versioning && column_version_tracker_) {
+        svr.Get(routes_.column_history, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_column_history(req, res);
+        });
+    }
+    if (features_.synthetic_data && synthetic_data_generator_) {
+        svr.Post(routes_.synthetic_data, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_synthetic_data(req, res);
+        });
+    }
 }
 
 // ============================================================================
@@ -1731,6 +1750,138 @@ void HttpServer::handle_index_recommendations(const httplib::Request& req, httpl
             r.avg_execution_time_us, r.suggested_ddl);
     }
     json += std::format(R"(],"total":{},"enabled":true}})", recs.size());
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: GET /admin/residency
+// ============================================================================
+
+void HttpServer::handle_residency(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    if (!data_residency_enforcer_ || !data_residency_enforcer_->is_enabled()) {
+        res.set_content(R"({"enabled":false,"databases":0,"tenant_rules":0})", http::kJsonContentType);
+        return;
+    }
+
+    res.set_content(std::format(
+        R"({{"enabled":true,"databases":{},"tenant_rules":{}}})",
+        data_residency_enforcer_->database_count(),
+        data_residency_enforcer_->tenant_rule_count()),
+        http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: GET /api/v1/column-history
+// ============================================================================
+
+void HttpServer::handle_column_history(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    if (!column_version_tracker_ || !column_version_tracker_->is_enabled()) {
+        res.set_content(R"({"events":[],"total":0,"enabled":false})", http::kJsonContentType);
+        return;
+    }
+
+    const auto table = req.get_param_value("table");
+    const auto column = req.get_param_value("column");
+    size_t limit = 100;
+    const auto limit_str = req.get_param_value("limit");
+    if (!limit_str.empty()) {
+        limit = static_cast<size_t>(std::stoi(limit_str));
+    }
+
+    const auto events = column_version_tracker_->get_history(table, column, limit);
+
+    std::string json = R"({"events":[)";
+    for (size_t i = 0; i < events.size(); ++i) {
+        if (i > 0) json += ',';
+        const auto& e = events[i];
+        json += std::format(
+            R"({{"timestamp":"{}","user":"{}","database":"{}","table":"{}","column":"{}","operation":"{}","fingerprint":{},"affected_rows":{}}})",
+            e.timestamp, e.user, e.database, e.table, e.column,
+            e.operation, e.fingerprint, e.affected_rows);
+    }
+    json += std::format(R"(],"total":{},"enabled":true}})", column_version_tracker_->total_events());
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: POST /api/v1/synthetic-data
+// ============================================================================
+
+void HttpServer::handle_synthetic_data(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    if (!synthetic_data_generator_ || !synthetic_data_generator_->is_enabled()) {
+        res.status = 400;
+        res.set_content(R"({"error":"Synthetic data generation is disabled"})", http::kJsonContentType);
+        return;
+    }
+
+    if (!schema_cache_) {
+        res.status = 500;
+        res.set_content(R"({"error":"Schema cache not available"})", http::kJsonContentType);
+        return;
+    }
+
+    // Parse request JSON (simple extraction)
+    const auto& body = req.body;
+    // Extract table name from body
+    auto table_pos = body.find("\"table\"");
+    if (table_pos == std::string::npos) {
+        res.status = 400;
+        res.set_content(R"({"error":"Missing 'table' field"})", http::kJsonContentType);
+        return;
+    }
+    auto colon = body.find(':', table_pos);
+    auto quote1 = body.find('"', colon + 1);
+    auto quote2 = body.find('"', quote1 + 1);
+    if (quote1 == std::string::npos || quote2 == std::string::npos) {
+        res.status = 400;
+        res.set_content(R"({"error":"Invalid 'table' field"})", http::kJsonContentType);
+        return;
+    }
+    const std::string table_name = body.substr(quote1 + 1, quote2 - quote1 - 1);
+
+    // Extract count (optional, default 10)
+    size_t count = 10;
+    auto count_pos = body.find("\"count\"");
+    if (count_pos != std::string::npos) {
+        auto count_colon = body.find(':', count_pos);
+        if (count_colon != std::string::npos) {
+            count = static_cast<size_t>(std::stoi(body.substr(count_colon + 1)));
+        }
+    }
+
+    const auto table_meta = schema_cache_->get_table(table_name);
+    if (!table_meta) {
+        res.status = 404;
+        res.set_content(std::format(R"({{"error":"Table '{}' not found in schema cache"}})", table_name),
+            http::kJsonContentType);
+        return;
+    }
+
+    const auto data = synthetic_data_generator_->generate(*table_meta, {}, count);
+
+    // Build JSON response
+    std::string json = R"({"columns":[)";
+    for (size_t i = 0; i < data.column_names.size(); ++i) {
+        if (i > 0) json += ',';
+        json += std::format("\"{}\"", data.column_names[i]);
+    }
+    json += R"(],"rows":[)";
+    for (size_t r = 0; r < data.rows.size(); ++r) {
+        if (r > 0) json += ',';
+        json += '[';
+        for (size_t c = 0; c < data.rows[r].size(); ++c) {
+            if (c > 0) json += ',';
+            json += std::format("\"{}\"", data.rows[r][c]);
+        }
+        json += ']';
+    }
+    json += std::format(R"(],"count":{}}})", data.rows.size());
     res.set_content(json, http::kJsonContentType);
 }
 

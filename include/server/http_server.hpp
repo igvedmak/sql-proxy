@@ -33,6 +33,10 @@ class PluginRegistry;
 class IAuthProvider;
 class SqlFirewall;
 class TenantManager;
+class DataResidencyEnforcer;
+class ColumnVersionTracker;
+class SyntheticDataGenerator;
+class SchemaCache;
 
 /**
  * @brief User information for authentication
@@ -117,6 +121,18 @@ public:
     void set_tenant_manager(std::shared_ptr<TenantManager> tm) {
         tenant_manager_ = std::move(tm);
     }
+    void set_data_residency_enforcer(std::shared_ptr<DataResidencyEnforcer> dre) {
+        data_residency_enforcer_ = std::move(dre);
+    }
+    void set_column_version_tracker(std::shared_ptr<ColumnVersionTracker> cvt) {
+        column_version_tracker_ = std::move(cvt);
+    }
+    void set_synthetic_data_generator(std::shared_ptr<SyntheticDataGenerator> sdg) {
+        synthetic_data_generator_ = std::move(sdg);
+    }
+    void set_schema_cache(std::shared_ptr<SchemaCache> sc) {
+        schema_cache_ = std::move(sc);
+    }
 
 private:
     // ── Authentication ──────────────────────────────────────────────────
@@ -160,6 +176,9 @@ private:
     void handle_tenant_delete(const httplib::Request& req, httplib::Response& res);
     void handle_query_explain(const httplib::Request& req, httplib::Response& res);
     void handle_index_recommendations(const httplib::Request& req, httplib::Response& res);
+    void handle_residency(const httplib::Request& req, httplib::Response& res);
+    void handle_column_history(const httplib::Request& req, httplib::Response& res);
+    void handle_synthetic_data(const httplib::Request& req, httplib::Response& res);
 
     // ── Helpers ─────────────────────────────────────────────────────────
     std::string build_metrics_output();
@@ -208,6 +227,12 @@ private:
 
     // Tenant management
     std::shared_ptr<TenantManager> tenant_manager_;
+
+    // New features
+    std::shared_ptr<DataResidencyEnforcer> data_residency_enforcer_;
+    std::shared_ptr<ColumnVersionTracker> column_version_tracker_;
+    std::shared_ptr<SyntheticDataGenerator> synthetic_data_generator_;
+    std::shared_ptr<SchemaCache> schema_cache_;
 };
 
 } // namespace sqlproxy

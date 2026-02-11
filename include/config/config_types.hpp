@@ -63,6 +63,7 @@ struct DatabaseConfig {
     int pool_acquire_timeout_ms;
     size_t max_result_rows;
     std::vector<ReplicaConfig> replicas;  // Read replicas for read/write splitting
+    std::string region;                   // Geographic region for data residency enforcement
 
     DatabaseConfig()
         : name("default"),
@@ -179,6 +180,15 @@ struct RouteConfig {
     // Index recommendations
     std::string index_recommendations = "/api/v1/index-recommendations";
 
+    // Data residency
+    std::string residency         = "/admin/residency";
+
+    // Column version history
+    std::string column_history    = "/api/v1/column-history";
+
+    // Synthetic data generation
+    std::string synthetic_data    = "/api/v1/synthetic-data";
+
     // Optional
     std::string graphql         = "/api/v1/graphql";
 
@@ -208,6 +218,10 @@ struct FeatureFlags {
     bool masking = true;
     bool dashboard = true;
     bool sql_firewall = false;
+    bool data_residency = false;
+    bool column_versioning = false;
+    bool synthetic_data = false;
+    bool cost_based_rewriting = false;
 };
 
 } // namespace sqlproxy

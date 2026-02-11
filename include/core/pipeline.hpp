@@ -64,6 +64,9 @@ public:
     std::shared_ptr<AdaptiveRateController> get_adaptive_rate_controller() const { return c_.adaptive_rate_controller; }
     std::shared_ptr<ISqlParser> get_parser() const { return c_.parser; }
     std::shared_ptr<IndexRecommender> get_index_recommender() const { return c_.index_recommender; }
+    std::shared_ptr<DataResidencyEnforcer> get_data_residency_enforcer() const { return c_.data_residency_enforcer; }
+    std::shared_ptr<ColumnVersionTracker> get_column_version_tracker() const { return c_.column_version_tracker; }
+    std::shared_ptr<CostBasedRewriter> get_cost_based_rewriter() const { return c_.cost_based_rewriter; }
 
     struct Stats {
         uint64_t total_requests;
@@ -96,6 +99,9 @@ private:
     bool intercept_ddl(RequestContext& ctx);
     bool check_query_cost(RequestContext& ctx);
     bool check_firewall(RequestContext& ctx);
+    bool check_data_residency(RequestContext& ctx);
+    void record_column_versions(RequestContext& ctx);
+    void cost_based_rewrite(RequestContext& ctx);
 
     PipelineComponents c_;
     RetryConfig retry_config_;

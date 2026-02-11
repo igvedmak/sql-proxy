@@ -32,6 +32,9 @@ class AdaptiveRateController;
 class SqlFirewall;
 class TenantPoolRegistry;
 class IndexRecommender;
+class DataResidencyEnforcer;
+class ColumnVersionTracker;
+class CostBasedRewriter;
 class Pipeline;
 
 /**
@@ -71,6 +74,9 @@ struct PipelineComponents {
     std::shared_ptr<SqlFirewall> sql_firewall;
     std::shared_ptr<TenantPoolRegistry> tenant_pool_registry;
     std::shared_ptr<IndexRecommender> index_recommender;
+    std::shared_ptr<DataResidencyEnforcer> data_residency_enforcer;
+    std::shared_ptr<ColumnVersionTracker> column_version_tracker;
+    std::shared_ptr<CostBasedRewriter> cost_based_rewriter;
 
     // Feature flags (non-component toggles)
     bool masking_enabled = true;
@@ -119,6 +125,9 @@ public:
     PipelineBuilder& with_sql_firewall(std::shared_ptr<SqlFirewall> p)                             { c_.sql_firewall = std::move(p); return *this; }
     PipelineBuilder& with_tenant_pool_registry(std::shared_ptr<TenantPoolRegistry> p)              { c_.tenant_pool_registry = std::move(p); return *this; }
     PipelineBuilder& with_index_recommender(std::shared_ptr<IndexRecommender> p)                   { c_.index_recommender = std::move(p); return *this; }
+    PipelineBuilder& with_data_residency_enforcer(std::shared_ptr<DataResidencyEnforcer> p)      { c_.data_residency_enforcer = std::move(p); return *this; }
+    PipelineBuilder& with_column_version_tracker(std::shared_ptr<ColumnVersionTracker> p)        { c_.column_version_tracker = std::move(p); return *this; }
+    PipelineBuilder& with_cost_based_rewriter(std::shared_ptr<CostBasedRewriter> p)              { c_.cost_based_rewriter = std::move(p); return *this; }
     PipelineBuilder& with_masking_enabled(bool enabled)                                       { c_.masking_enabled = enabled; return *this; }
 
     /**

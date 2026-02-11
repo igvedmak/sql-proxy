@@ -25,6 +25,9 @@
 #include "server/adaptive_rate_controller.hpp"
 #include "db/tenant_pool_registry.hpp"
 #include "analyzer/index_recommender.hpp"
+#include "tenant/data_residency.hpp"
+#include "security/column_version_tracker.hpp"
+#include "core/cost_based_rewriter.hpp"
 
 #include <thread>
 #include <unordered_set>
@@ -86,6 +89,11 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         return build_response(c);
     };
 
+    // Layer 0.5: Data residency enforcement (before any processing)
+    if (!check_data_residency(ctx)) {
+        return block_and_respond(ctx);
+    }
+
     // Layer 1: Rate limiting
     if (!check_rate_limit(ctx)) {
         return block_and_respond(ctx);
@@ -142,6 +150,9 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
     // Layer 4.5: Query rewriting (RLS + enforce_limit)
     rewrite_query(ctx);
+
+    // Layer 4.6: Cost-based query rewriting (SELECT * → columns, add LIMIT)
+    cost_based_rewrite(ctx);
 
     // Layer 4.8: Query cost estimation (can block expensive queries)
     if (!check_query_cost(ctx)) {
@@ -233,6 +244,9 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         c_.schema_manager->record_change(ctx.user, ctx.database, table_name,
             ctx.sql, ctx.analysis.statement_type);
     }
+
+    // Layer 5.2: Column version tracking (after successful DML)
+    record_column_versions(ctx);
 
     // Layer 5.3: Decrypt encrypted columns (transparent)
     decrypt_columns(ctx);
@@ -808,6 +822,65 @@ bool Pipeline::check_firewall(RequestContext& ctx) {
         return false;
     }
     return true;
+}
+
+bool Pipeline::check_data_residency(RequestContext& ctx) {
+    if (!c_.data_residency_enforcer || !c_.data_residency_enforcer->is_enabled()) return true;
+    if (ctx.tenant_id.empty()) return true;
+
+    const auto result = c_.data_residency_enforcer->check(ctx.tenant_id, ctx.database);
+    if (!result.allowed) {
+        ctx.query_result.success = false;
+        ctx.query_result.error_code = ErrorCode::RESIDENCY_BLOCKED;
+        ctx.query_result.error_message = result.reason;
+        return false;
+    }
+    return true;
+}
+
+void Pipeline::record_column_versions(RequestContext& ctx) {
+    if (!c_.column_version_tracker || !c_.column_version_tracker->is_enabled()) return;
+    if (!ctx.query_result.success) return;
+    if (!stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDML)) return;
+
+    const auto now = std::chrono::system_clock::now();
+    const auto ts = std::format("{:%Y-%m-%dT%H:%M:%S}Z",
+        std::chrono::floor<std::chrono::seconds>(now));
+
+    std::string table_name;
+    if (!ctx.analysis.target_tables.empty()) {
+        table_name = ctx.analysis.target_tables[0].table;
+    } else if (!ctx.analysis.source_tables.empty()) {
+        table_name = ctx.analysis.source_tables[0].table;
+    }
+
+    const std::string op = statement_type_to_string(ctx.analysis.statement_type);
+
+    for (const auto& col : ctx.analysis.write_columns) {
+        ColumnVersionEvent event;
+        event.timestamp = ts;
+        event.user = ctx.user;
+        event.database = ctx.database;
+        event.table = table_name;
+        event.column = col.column;
+        event.operation = op;
+        event.fingerprint = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
+        event.affected_rows = ctx.query_result.affected_rows;
+        c_.column_version_tracker->record(event);
+    }
+}
+
+void Pipeline::cost_based_rewrite(RequestContext& ctx) {
+    if (!c_.cost_based_rewriter || !c_.cost_based_rewriter->is_enabled()) return;
+
+    const auto result = c_.cost_based_rewriter->rewrite_if_expensive(ctx.sql, ctx.analysis);
+    if (result.rewritten) {
+        if (!ctx.sql_rewritten) {
+            ctx.original_sql = ctx.sql;
+        }
+        ctx.sql = result.new_sql;
+        ctx.sql_rewritten = true;
+    }
 }
 
 } // namespace sqlproxy

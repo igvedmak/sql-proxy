@@ -50,6 +50,11 @@
 #include "security/sql_firewall.hpp"
 #include "db/tenant_pool_registry.hpp"
 #include "analyzer/index_recommender.hpp"
+#include "tenant/data_residency.hpp"
+#include "security/column_version_tracker.hpp"
+#include "analyzer/synthetic_data_generator.hpp"
+#include "core/cost_based_rewriter.hpp"
+#include "analyzer/schema_cache.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -648,6 +653,61 @@ int main(int argc, char* argv[]) {
             utils::log::info("Per-tenant connection pool registry: enabled");
         }
 
+        // Data residency enforcement
+        std::shared_ptr<DataResidencyEnforcer> data_residency_enforcer;
+        if (config_result.success && config_result.config.data_residency.enabled) {
+            DataResidencyEnforcer::Config dre_cfg;
+            dre_cfg.enabled = true;
+            data_residency_enforcer = std::make_shared<DataResidencyEnforcer>(dre_cfg);
+            // Populate database regions from config
+            for (const auto& db : config_result.config.databases) {
+                if (!db.region.empty()) {
+                    data_residency_enforcer->set_database_region(db.name, db.region);
+                }
+            }
+            utils::log::info(std::format("Data residency: enabled ({} databases with regions)",
+                data_residency_enforcer->database_count()));
+        }
+
+        // Column version tracking
+        std::shared_ptr<ColumnVersionTracker> column_version_tracker;
+        if (config_result.success && config_result.config.column_versioning.enabled) {
+            ColumnVersionTracker::Config cvt_cfg;
+            cvt_cfg.enabled = true;
+            cvt_cfg.max_events = config_result.config.column_versioning.max_events;
+            column_version_tracker = std::make_shared<ColumnVersionTracker>(cvt_cfg);
+            utils::log::info(std::format("Column versioning: enabled (max_events={})",
+                cvt_cfg.max_events));
+        }
+
+        // Synthetic data generator
+        std::shared_ptr<SyntheticDataGenerator> synthetic_data_generator;
+        std::shared_ptr<SchemaCache> schema_cache;
+        if (config_result.success && config_result.config.synthetic_data.enabled) {
+            SyntheticDataGenerator::Config sdg_cfg;
+            sdg_cfg.enabled = true;
+            sdg_cfg.max_rows = config_result.config.synthetic_data.max_rows;
+            synthetic_data_generator = std::make_shared<SyntheticDataGenerator>(sdg_cfg);
+            schema_cache = std::make_shared<SchemaCache>();
+            utils::log::info(std::format("Synthetic data: enabled (max_rows={})",
+                sdg_cfg.max_rows));
+        }
+
+        // Cost-based query rewriting
+        std::shared_ptr<CostBasedRewriter> cost_based_rewriter;
+        if (config_result.success && config_result.config.cost_based_rewriting.enabled) {
+            CostBasedRewriter::Config cbr_cfg;
+            cbr_cfg.enabled = true;
+            cbr_cfg.cost_threshold = config_result.config.cost_based_rewriting.cost_threshold;
+            cbr_cfg.max_columns_for_star = config_result.config.cost_based_rewriting.max_columns_for_star;
+            cost_based_rewriter = std::make_shared<CostBasedRewriter>(cbr_cfg);
+            if (schema_cache) {
+                cost_based_rewriter->set_schema_cache(schema_cache);
+            }
+            utils::log::info(std::format("Cost-based rewriting: enabled (max_star_cols={})",
+                cbr_cfg.max_columns_for_star));
+        }
+
         // Create pipeline via builder (with Tier 5 + Tier B + Tier C + Tier F + Tier G components)
         auto pipeline = PipelineBuilder()
             .with_parser(parser)
@@ -675,6 +735,9 @@ int main(int argc, char* argv[]) {
             .with_sql_firewall(sql_firewall)
             .with_tenant_pool_registry(tenant_pool_registry)
             .with_index_recommender(index_recommender)
+            .with_data_residency_enforcer(data_residency_enforcer)
+            .with_column_version_tracker(column_version_tracker)
+            .with_cost_based_rewriter(cost_based_rewriter)
             .with_masking_enabled(config_result.config.masking_enabled)
             .build();
 
@@ -758,6 +821,10 @@ int main(int argc, char* argv[]) {
         features.lineage_tracking    = cfg.security.lineage_tracking_enabled;
         features.masking             = cfg.masking_enabled;
         features.dashboard           = cfg.dashboard_enabled;
+        features.data_residency      = cfg.data_residency.enabled;
+        features.column_versioning   = cfg.column_versioning.enabled;
+        features.synthetic_data      = cfg.synthetic_data.enabled;
+        features.cost_based_rewriting = cfg.cost_based_rewriting.enabled;
 
         // Create HTTP server (with Tier 2 + Tier 5 + Tier B components)
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
@@ -792,6 +859,20 @@ int main(int argc, char* argv[]) {
         // Tenant provisioning API
         if (tenant_manager) {
             g_server->set_tenant_manager(tenant_manager);
+        }
+
+        // New features: wire to HTTP server
+        if (data_residency_enforcer) {
+            g_server->set_data_residency_enforcer(data_residency_enforcer);
+        }
+        if (column_version_tracker) {
+            g_server->set_column_version_tracker(column_version_tracker);
+        }
+        if (synthetic_data_generator) {
+            g_server->set_synthetic_data_generator(synthetic_data_generator);
+            if (schema_cache) {
+                g_server->set_schema_cache(schema_cache);
+            }
         }
 
         // Tier E: Brute force protection

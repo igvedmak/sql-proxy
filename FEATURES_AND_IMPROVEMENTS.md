@@ -41,37 +41,10 @@ This document outlines potential features and improvements for the SQL Proxy sys
 
 ---
 
-### 6. COPY Protocol Support
-**Problem:** PostgreSQL's COPY is used for bulk data loading. Wire protocol doesn't support it — blocks data engineering workloads.
-
-**Solution:**
-- Implement COPY protocol messages in WireSession:
-  - `CopyInResponse`, `CopyData`, `CopyDone`, `CopyFail`
-  - `CopyOutResponse`, `CopyData`, `CopyDone`
-- Stream data through proxy without buffering entire dataset
-- Apply policies (can COPY be performed on this table?)
-- Audit COPY operations with row counts
-
-**Impact:** Full wire protocol compatibility for bulk loads
-
----
-
 ## Advanced / Future Features
-
-### 7. Query Cost-Based Query Rewriting
-Automatically optimize expensive queries: push down filters, add LIMIT, suggest indexes.
 
 ### 8. Multi-Database Transactions
 Coordinate transactions across multiple databases with 2PC.
-
-### 10. Data Residency Enforcement
-Per-tenant data locality rules (EU data stays in EU region). Block cross-region queries.
-
-### 13. Column-Level Data Versioning
-Track changes to sensitive columns (who changed this salary value, when).
-
-### 14. Synthetic Data Generation
-Generate fake data matching real schema for testing environments.
 
 ### 16. LLM-Powered Features
 - AI policy generator (analyze unknown queries, auto-create policies)
@@ -88,7 +61,6 @@ Generate fake data matching real schema for testing environments.
 
 **P2 (Feature Expansion):**
 - Distributed rate limiting (#4)
-- COPY protocol support (#6)
 
 ---
 

@@ -208,6 +208,7 @@ std::optional<StatementType> ConfigLoader::parse_statement_type(const std::strin
         {"rollback",     StatementType::ROLLBACK},
         {"set",          StatementType::SET},
         {"show",         StatementType::SHOW},
+        {"copy",         StatementType::COPY},
     };
 
     const auto it = lookup.find(lower);
@@ -294,6 +295,7 @@ std::vector<DatabaseConfig> ConfigLoader::extract_databases(const toml::table& r
         cfg.idle_timeout_seconds = (*db)["idle_timeout_seconds"].value_or(300);
         cfg.pool_acquire_timeout_ms = (*db)["pool_acquire_timeout_ms"].value_or(5000);
         cfg.max_result_rows = static_cast<size_t>((*db)["max_result_rows"].value_or(10000));
+        cfg.region = (*db)["region"].value_or(""s);
 
         if (const auto* replicas = (*db)["replicas"].as_array()) {
             cfg.replicas.reserve(replicas->size());
@@ -1057,6 +1059,42 @@ ProxyConfig::PriorityConfig ConfigLoader::extract_priority(const toml::table& ro
     return cfg;
 }
 
+ProxyConfig::DataResidencyConfig ConfigLoader::extract_data_residency(const toml::table& root) {
+    ProxyConfig::DataResidencyConfig cfg;
+    const auto* sec = root["data_residency"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    return cfg;
+}
+
+ProxyConfig::ColumnVersioningConfig ConfigLoader::extract_column_versioning(const toml::table& root) {
+    ProxyConfig::ColumnVersioningConfig cfg;
+    const auto* sec = root["column_versioning"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.max_events = static_cast<size_t>((*sec)["max_events"].value_or(10000));
+    return cfg;
+}
+
+ProxyConfig::SyntheticDataConfig ConfigLoader::extract_synthetic_data(const toml::table& root) {
+    ProxyConfig::SyntheticDataConfig cfg;
+    const auto* sec = root["synthetic_data"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.max_rows = static_cast<size_t>((*sec)["max_rows"].value_or(10000));
+    return cfg;
+}
+
+ProxyConfig::CostBasedRewritingConfig ConfigLoader::extract_cost_based_rewriting(const toml::table& root) {
+    ProxyConfig::CostBasedRewritingConfig cfg;
+    const auto* sec = root["cost_based_rewriting"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.cost_threshold = (*sec)["cost_threshold"].value_or(50000.0);
+    cfg.max_columns_for_star = static_cast<size_t>((*sec)["max_columns_for_star"].value_or(20));
+    return cfg;
+}
+
 RouteConfig ConfigLoader::extract_routes(const toml::table& root) {
     RouteConfig cfg;
     const auto* routes = root["routes"].as_table();
@@ -1139,6 +1177,10 @@ ProxyConfig ConfigLoader::extract_all_sections(const toml::table& tbl) {
     config.tracing = extract_tracing(tbl);
     config.adaptive_rate_limiting = extract_adaptive_rate_limiting(tbl);
     config.priority = extract_priority(tbl);
+    config.data_residency = extract_data_residency(tbl);
+    config.column_versioning = extract_column_versioning(tbl);
+    config.synthetic_data = extract_synthetic_data(tbl);
+    config.cost_based_rewriting = extract_cost_based_rewriting(tbl);
     config.routes = extract_routes(tbl);
     extract_features(tbl, config);
     return config;

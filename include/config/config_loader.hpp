@@ -370,6 +370,30 @@ struct ProxyConfig {
         bool enabled = false;
     } priority;
 
+    // Data Residency
+    struct DataResidencyConfig {
+        bool enabled = false;
+    } data_residency;
+
+    // Column Versioning
+    struct ColumnVersioningConfig {
+        bool enabled = false;
+        size_t max_events = 10000;
+    } column_versioning;
+
+    // Synthetic Data
+    struct SyntheticDataConfig {
+        bool enabled = false;
+        size_t max_rows = 10000;
+    } synthetic_data;
+
+    // Cost-Based Query Rewriting
+    struct CostBasedRewritingConfig {
+        bool enabled = false;
+        double cost_threshold = 50000.0;
+        size_t max_columns_for_star = 20;
+    } cost_based_rewriting;
+
     // Route paths (config-driven URL patterns)
     RouteConfig routes;
 
@@ -452,6 +476,12 @@ private:
     static ProxyConfig::TracingConfig extract_tracing(const toml::table& root);
     static ProxyConfig::AdaptiveRateLimitingConfig extract_adaptive_rate_limiting(const toml::table& root);
     static ProxyConfig::PriorityConfig extract_priority(const toml::table& root);
+
+    // New feature extractors
+    static ProxyConfig::DataResidencyConfig extract_data_residency(const toml::table& root);
+    static ProxyConfig::ColumnVersioningConfig extract_column_versioning(const toml::table& root);
+    static ProxyConfig::SyntheticDataConfig extract_synthetic_data(const toml::table& root);
+    static ProxyConfig::CostBasedRewritingConfig extract_cost_based_rewriting(const toml::table& root);
 
     // Route config extractor
     static RouteConfig extract_routes(const toml::table& root);
