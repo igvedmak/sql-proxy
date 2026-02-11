@@ -709,7 +709,8 @@ int main(int argc, char* argv[]) {
             config_result.config.server.admin_token, max_sql_length,
             compliance_reporter, lineage_tracker, schema_manager, graphql_handler,
             dashboard_handler, config_result.config.server.tls, compressor_config,
-            config_result.config.routes, features);
+            config_result.config.routes, features,
+            config_result.config.server.thread_pool_size);
 
         // Tier B: Graceful shutdown coordinator
         ShutdownCoordinator::Config shutdown_cfg;

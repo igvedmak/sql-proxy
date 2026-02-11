@@ -83,6 +83,15 @@ bool require_admin(std::string_view admin_token,
 
 std::string build_json_response(const ProxyResponse& response) {
     std::string result_str;
+    // Pre-allocate based on result size to avoid repeated reallocations.
+    // Estimate: ~100 bytes overhead + ~50 bytes per column + ~100 bytes per cell.
+    if (response.result.has_value()) {
+        const auto& r = *response.result;
+        const size_t cell_count = r.rows.size() * r.column_names.size();
+        result_str.reserve(256 + r.column_names.size() * 50 + cell_count * 100);
+    } else {
+        result_str.reserve(256);
+    }
     result_str += std::format("{{\"success\":{},\"audit_id\":\"{}\",",
                               utils::booltostr(response.success),
                               response.audit_id);
@@ -167,7 +176,8 @@ HttpServer::HttpServer(
     TlsConfig tls_config,
     ResponseCompressor::Config compressor_config,
     RouteConfig routes,
-    FeatureFlags features)
+    FeatureFlags features,
+    size_t thread_pool_size)
     : pipeline_(std::move(pipeline)),
       host_(std::move(host)),
       port_(port),
@@ -175,6 +185,7 @@ HttpServer::HttpServer(
       tls_config_(std::move(tls_config)),
       routes_(std::move(routes)),
       features_(features),
+      thread_pool_size_(thread_pool_size),
       users_(std::move(users)),
       max_sql_length_(max_sql_length),
       compliance_reporter_(std::move(compliance_reporter)),
@@ -244,14 +255,20 @@ void HttpServer::start() {
     }
     auto& svr = *svr_ptr;
 
+    // Configure thread pool size for high throughput
+    const size_t pool_size = thread_pool_size_;
+    svr.new_task_queue = [pool_size] {
+        return new httplib::ThreadPool(pool_size);
+    };
+
     register_core_routes(svr);
     register_admin_routes(svr);
     register_compliance_routes(svr);
     register_schema_routes(svr);
     register_optional_routes(svr);
 
-    utils::log::info(std::format("Starting SQL Proxy Server on {}:{} ({})",
-        host_, port_, tls_config_.enabled ? "HTTPS" : "HTTP"));
+    utils::log::info(std::format("Starting SQL Proxy Server on {}:{} ({}, {} threads)",
+        host_, port_, tls_config_.enabled ? "HTTPS" : "HTTP", thread_pool_size_));
 
     if (!svr.listen(host_.c_str(), port_)) {
         throw std::runtime_error("Failed to start HTTP server");

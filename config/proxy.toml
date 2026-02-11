@@ -3,7 +3,7 @@
 [server]
 host = "0.0.0.0"
 port = 8080
-threads = 4
+threads = 128
 request_timeout_ms = 30000
 max_sql_length = 102400
 admin_token = "aproxy.toml:9"
@@ -21,8 +21,8 @@ async = true
 name = "testdb"
 type = "postgresql"
 connection_string = "postgresql://proxy_user:secure_password@postgres:5432/testdb"
-min_connections = 2
-max_connections = 10
+min_connections = 10
+max_connections = 100
 connection_timeout_ms = 5000
 query_timeout_ms = 30000
 health_check_query = "SELECT 1"
@@ -276,14 +276,14 @@ enabled = true
 # Level 1 - Global (protects proxy CPU)
 # Stress-tuned: 200 burst so 150 parallel reqs mostly pass global, but leaves headroom
 [rate_limiting.global]
-tokens_per_second = 500
-burst_capacity = 200
+tokens_per_second = 50000
+burst_capacity = 10000
 
 # Level 2 - Per User
 [[rate_limiting.per_user]]
 user = "admin"
-tokens_per_second = 200
-burst_capacity = 50
+tokens_per_second = 10000
+burst_capacity = 5000
 
 [[rate_limiting.per_user]]
 user = "analyst"
@@ -309,10 +309,16 @@ burst_capacity = 5
 # Level 3 - Per Database
 [[rate_limiting.per_database]]
 database = "testdb"
-tokens_per_second = 300
-burst_capacity = 100
+tokens_per_second = 50000
+burst_capacity = 10000
 
 # Level 4 - Per User-Per-Database (most specific)
+[[rate_limiting.per_user_per_database]]
+user = "admin"
+database = "testdb"
+tokens_per_second = 10000
+burst_capacity = 5000
+
 [[rate_limiting.per_user_per_database]]
 user = "analyst"
 database = "testdb"

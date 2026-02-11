@@ -92,6 +92,7 @@ private:
 
     // Connection lifetime tracking
     std::unordered_map<IDbConnection*, std::chrono::steady_clock::time_point> created_at_;
+    std::unordered_map<IDbConnection*, std::chrono::steady_clock::time_point> last_used_;
     std::atomic<size_t> connections_recycled_{0};
 
     // Acquire time histogram (lock-free)

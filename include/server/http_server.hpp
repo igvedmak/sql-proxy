@@ -75,7 +75,8 @@ public:
         TlsConfig tls_config = {},
         ResponseCompressor::Config compressor_config = ResponseCompressor::Config{},
         RouteConfig routes = {},
-        FeatureFlags features = {}
+        FeatureFlags features = {},
+        size_t thread_pool_size = 128
     );
 
     void start();
@@ -145,6 +146,7 @@ private:
     const TlsConfig tls_config_;
     const RouteConfig routes_;
     const FeatureFlags features_;
+    const size_t thread_pool_size_;
 
     // Hot-reloadable state
     std::unordered_map<std::string, UserInfo> users_;
