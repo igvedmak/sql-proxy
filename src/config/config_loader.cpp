@@ -9,44 +9,20 @@
 #include <algorithm>
 #include <unordered_set>
 
+using namespace std::string_literals;
+
 namespace sqlproxy {
 
 // ============================================================================
-// TOML Parser Implementation
+// TOML Parsing Helpers (env expansion, includes, merging)
 // ============================================================================
-
-namespace toml {
 
 namespace {
 
-// Type aliases for internal TOML parser (uses glz::json_t directly for mutation)
-using jt = glz::json_t;
-using object_t = jt::object_t;
-using array_t = jt::array_t;
-
-// Helpers for creating json_t values
-jt make_object() { jt j; j = object_t{}; return j; }
-jt make_array() { jt j; j = array_t{}; return j; }
-jt make_null() { return jt{}; }
-
-void json_push(jt& arr, jt val) {
-    arr.get_array().emplace_back(std::move(val));
-}
-
-jt& json_back(jt& arr) {
-    return arr.get_array().back();
-}
-
 /**
  * @brief Expand ${VAR_NAME} patterns in a string with environment variables.
- *
- * - ${VAR_NAME} is replaced with std::getenv("VAR_NAME")
- * - If env var is not set, substitutes empty string
- * - Throws std::runtime_error on unclosed ${
- * - Literal '$' not followed by '{' passes through unchanged
  */
 std::string expand_env_vars(const std::string& input) {
-    // Fast path: no substitution marker
     if (input.find("${") == std::string::npos) return input;
 
     std::string result;
@@ -70,449 +46,80 @@ std::string expand_env_vars(const std::string& input) {
     return result;
 }
 
-// ---- Parsing helpers -------------------------------------------------------
+void expand_env_vars_in_array(toml::array& arr);
 
-/**
- * @brief Strip inline comments from a line.
- *
- * A '#' is a comment start only when it is NOT inside a quoted string.
- * This handles both single-line keys and inline arrays.
- */
-std::string strip_comment(const std::string& line) {
-    bool in_string = false;
-    bool escaped = false;
-    for (size_t i = 0; i < line.size(); ++i) {
-        const char c = line[i];
-        if (escaped) {
-            escaped = false;
-            continue;
-        }
-        if (c == '\\') {
-            escaped = true;
-            continue;
-        }
-        if (c == '"') {
-            in_string = !in_string;
-            continue;
-        }
-        if (c == '#' && !in_string) {
-            return line.substr(0, i);
+void expand_env_vars_recursive(toml::table& tbl) {
+    for (auto& [key, val] : tbl) {
+        if (val.is_string()) {
+            auto& s = *val.as_string();
+            auto expanded = expand_env_vars(s.get());
+            if (expanded != s.get()) {
+                s = std::move(expanded);
+            }
+        } else if (val.is_table()) {
+            expand_env_vars_recursive(*val.as_table());
+        } else if (val.is_array()) {
+            expand_env_vars_in_array(*val.as_array());
         }
     }
-    return line;
+}
+
+void expand_env_vars_in_array(toml::array& arr) {
+    for (auto& elem : arr) {
+        if (elem.is_string()) {
+            auto& s = *elem.as_string();
+            auto expanded = expand_env_vars(s.get());
+            if (expanded != s.get()) {
+                s = std::move(expanded);
+            }
+        } else if (elem.is_table()) {
+            expand_env_vars_recursive(*elem.as_table());
+        } else if (elem.is_array()) {
+            expand_env_vars_in_array(*elem.as_array());
+        }
+    }
 }
 
 /**
- * @brief Parse a TOML value token into a JSON value.
- *
- * Supports: strings, integers, floats, booleans, inline arrays.
+ * @brief Deep-merge two toml::tables. Overlay wins for scalars.
  */
-jt parse_value(const std::string& raw) {
-    const std::string val = utils::trim(raw);
-    if (val.empty()) {
-        return make_null();
-    }
-
-    // Boolean
-    if (val == "true")  { jt j; j = true; return j; }
-    if (val == "false") { jt j; j = false; return j; }
-
-    // Quoted string
-    if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
-        // Unescape standard TOML escape sequences
-        std::string result;
-        result.reserve(val.size() - 2);
-        for (size_t i = 1; i + 1 < val.size(); ++i) {
-            if (val[i] == '\\' && i + 2 < val.size()) {
-                const char next = val[i + 1];
-                switch (next) {
-                    case '"':  result += '"';  ++i; break;
-                    case '\\': result += '\\'; ++i; break;
-                    case 'n':  result += '\n'; ++i; break;
-                    case 't':  result += '\t'; ++i; break;
-                    case 'r':  result += '\r'; ++i; break;
-                    default:   result += val[i]; break; // Keep backslash for unknown
-                }
-            } else {
-                result += val[i];
+void merge_tables(toml::table& base, const toml::table& overlay) {
+    for (const auto& [key, val] : overlay) {
+        if (val.is_table() && base.contains(key) && base[key].is_table()) {
+            merge_tables(*base[key].as_table(), *val.as_table());
+        } else if (val.is_array() && base.contains(key) && base[key].is_array()) {
+            auto& base_arr = *base[key].as_array();
+            for (const auto& elem : *val.as_array()) {
+                base_arr.push_back(elem);
             }
-        }
-        jt j; j = expand_env_vars(result); return j;
-    }
-
-    // Inline table  {key = "value", key2 = "value2"}
-    if (val.front() == '{' && val.back() == '}') {
-        jt obj = make_object();
-        const std::string inner = val.substr(1, val.size() - 2);
-        std::string token;
-        bool in_str = false;
-        bool esc = false;
-        for (size_t i = 0; i < inner.size(); ++i) {
-            const char c = inner[i];
-            if (esc) { token += c; esc = false; continue; }
-            if (c == '\\') { token += c; esc = true; continue; }
-            if (c == '"') { token += c; in_str = !in_str; continue; }
-            if (c == ',' && !in_str) {
-                const auto eq = token.find('=');
-                if (eq != std::string::npos) {
-                    std::string k = utils::trim(token.substr(0, eq));
-                    std::string v_str = utils::trim(token.substr(eq + 1));
-                    obj[k] = parse_value(v_str);
-                }
-                token.clear();
-                continue;
-            }
-            token += c;
-        }
-        const std::string last = utils::trim(token);
-        if (!last.empty()) {
-            const auto eq = last.find('=');
-            if (eq != std::string::npos) {
-                std::string k = utils::trim(last.substr(0, eq));
-                std::string v_str = utils::trim(last.substr(eq + 1));
-                obj[k] = parse_value(v_str);
-            }
-        }
-        return obj;
-    }
-
-    // Inline array  ["a", "b", ...]
-    if (val.front() == '[' && val.back() == ']') {
-        jt arr = make_array();
-        const std::string inner = val.substr(1, val.size() - 2);
-
-        // Tokenize respecting quoted strings
-        std::string token;
-        bool in_str = false;
-        bool esc = false;
-        for (size_t i = 0; i < inner.size(); ++i) {
-            const char c = inner[i];
-            if (esc) {
-                token += c;
-                esc = false;
-                continue;
-            }
-            if (c == '\\') {
-                token += c;
-                esc = true;
-                continue;
-            }
-            if (c == '"') {
-                token += c;
-                in_str = !in_str;
-                continue;
-            }
-            if (c == ',' && !in_str) {
-                const std::string trimmed = utils::trim(token);
-                if (!trimmed.empty()) {
-                    json_push(arr, parse_value(trimmed));
-                }
-                token.clear();
-                continue;
-            }
-            token += c;
-        }
-        const std::string trimmed = utils::trim(token);
-        if (!trimmed.empty()) {
-            json_push(arr, parse_value(trimmed));
-        }
-        return arr;
-    }
-
-    // Integer or float
-    // Try integer first (no decimal point)
-    if (val.find('.') == std::string::npos) {
-        try {
-            const long long int_val = std::stoll(val);
-            jt j; j = static_cast<double>(int_val); return j;
-        } catch (...) {
-            // Fall through
-        }
-    }
-
-    // Float
-    try {
-        const double float_val = std::stod(val);
-        jt j; j = float_val; return j;
-    } catch (...) {
-        // Fall through
-    }
-
-    // Treat as bare string (shouldn't happen in valid TOML, but be lenient)
-    jt j; j = val; return j;
-}
-
-/**
- * @brief Parse a dotted key like "rate_limiting.global" into path segments.
- */
-std::vector<std::string> parse_dotted_key(const std::string& key) {
-    std::vector<std::string> parts;
-    std::istringstream iss(key);
-    std::string part;
-    while (std::getline(iss, part, '.')) {
-        const std::string trimmed = utils::trim(part);
-        if (!trimmed.empty()) {
-            parts.push_back(trimmed);
-        }
-    }
-    return parts;
-}
-
-/**
- * @brief Navigate to (or create) a nested JSON object given a path.
- *
- * For a path like ["rate_limiting", "global"], returns a reference to
- * root["rate_limiting"]["global"], creating intermediate objects as needed.
- */
-jt& navigate_to(jt& root, const std::vector<std::string>& path) {
-    jt* current = &root;
-    for (const auto& segment : path) {
-        if (!current->contains(segment)) {
-            (*current)[segment] = make_object();
-        }
-        current = &(*current)[segment];
-    }
-    return *current;
-}
-
-} // anonymous namespace
-
-JsonValue parse_string(const std::string& content) {
-    jt root = make_object();
-
-    std::istringstream stream(content);
-    std::string line;
-    int line_num = 0;
-
-    // Current section path, e.g., ["server"] or ["rate_limiting", "global"]
-    std::vector<std::string> current_section;
-
-    // For [[array]] sections, track the path and whether we're in an array section
-    bool in_array_section = false;
-    std::vector<std::string> array_section_path;
-
-    // Multi-line array state
-    bool in_multiline_array = false;
-    std::string multiline_key;
-    std::string multiline_buffer;
-    jt* multiline_target = nullptr;
-
-    while (std::getline(stream, line)) {
-        ++line_num;
-
-        // Strip comment (respecting quotes)
-        line = strip_comment(line);
-
-        // Trim whitespace
-        const std::string trimmed = utils::trim(line);
-
-        // Skip empty lines
-        if (trimmed.empty()) {
-            continue;
-        }
-
-        // Handle multi-line array continuation
-        if (in_multiline_array) {
-            multiline_buffer += ' ';
-            multiline_buffer += trimmed;
-
-            // Check if the array is closed
-            // Count unquoted brackets to handle nested structures
-            int bracket_depth = 0;
-            bool in_str = false;
-            bool esc = false;
-            for (const char c : multiline_buffer) {
-                if (esc) { esc = false; continue; }
-                if (c == '\\') { esc = true; continue; }
-                if (c == '"') { in_str = !in_str; continue; }
-                if (!in_str) {
-                    if (c == '[') ++bracket_depth;
-                    if (c == ']') --bracket_depth;
-                }
-            }
-
-            if (bracket_depth <= 0) {
-                // Array is complete
-                jt value = parse_value(utils::trim(multiline_buffer));
-                if (multiline_target) {
-                    (*multiline_target)[multiline_key] = std::move(value);
-                }
-                in_multiline_array = false;
-                multiline_buffer.clear();
-                multiline_key.clear();
-                multiline_target = nullptr;
-            }
-            continue;
-        }
-
-        // ---- [[array]] section header ----
-        if (trimmed.size() >= 4 && trimmed.front() == '[' && trimmed[1] == '[') {
-            // Find closing ]]
-            const size_t close = trimmed.rfind("]]");
-            if (close == std::string::npos) {
-                throw std::runtime_error(
-                    std::format("TOML parse error at line {}: unclosed [[array]] header", line_num));
-            }
-            const std::string section_name = utils::trim(
-                trimmed.substr(2, close - 2));
-
-            array_section_path = parse_dotted_key(section_name);
-            in_array_section = true;
-
-            // Ensure the array exists in the JSON tree
-            // Navigate to parent, then ensure the last key is an array
-            jt* parent = &root;
-            for (size_t i = 0; i + 1 < array_section_path.size(); ++i) {
-                const auto& seg = array_section_path[i];
-                if (!parent->contains(seg)) {
-                    (*parent)[seg] = make_object();
-                }
-                parent = &(*parent)[seg];
-            }
-
-            const auto& array_key = array_section_path.back();
-            if (!parent->contains(array_key)) {
-                (*parent)[array_key] = make_array();
-            }
-
-            // Append a new empty object to the array
-            json_push((*parent)[array_key], make_object());
-
-            // Current section points into this new array element
-            // We'll track it via array_section_path
-            current_section = array_section_path;
-            continue;
-        }
-
-        // ---- [section] header ----
-        if (trimmed.front() == '[' && trimmed.back() == ']') {
-            const std::string section_name = utils::trim(
-                trimmed.substr(1, trimmed.size() - 2));
-
-            current_section = parse_dotted_key(section_name);
-            in_array_section = false;
-
-            // Ensure the section object exists
-            navigate_to(root, current_section);
-            continue;
-        }
-
-        // ---- key = value pair ----
-        const size_t eq_pos = trimmed.find('=');
-        if (eq_pos == std::string::npos) {
-            // Not a key=value line; skip (tolerant parsing)
-            continue;
-        }
-
-        const std::string key = utils::trim(trimmed.substr(0, eq_pos));
-        const std::string value_str = utils::trim(trimmed.substr(eq_pos + 1));
-
-        if (key.empty()) {
-            continue;
-        }
-
-        // Determine target object
-        jt* target = nullptr;
-        if (in_array_section) {
-            // Navigate to the parent of the array, get the array, index last element
-            jt* parent = &root;
-            for (size_t i = 0; i + 1 < array_section_path.size(); ++i) {
-                parent = &(*parent)[array_section_path[i]];
-            }
-            auto& arr = (*parent)[array_section_path.back()];
-            target = &json_back(arr);
-        } else if (!current_section.empty()) {
-            target = &navigate_to(root, current_section);
         } else {
-            target = &root;
+            base.insert_or_assign(key, val);
         }
-
-        // Check for multi-line array: value starts with '[' but doesn't end with ']'
-        if (!value_str.empty() && value_str.front() == '[') {
-            // Count brackets
-            int bracket_depth = 0;
-            bool in_str = false;
-            bool esc = false;
-            for (const char c : value_str) {
-                if (esc) { esc = false; continue; }
-                if (c == '\\') { esc = true; continue; }
-                if (c == '"') { in_str = !in_str; continue; }
-                if (!in_str) {
-                    if (c == '[') ++bracket_depth;
-                    if (c == ']') --bracket_depth;
-                }
-            }
-
-            if (bracket_depth > 0) {
-                // Multi-line array: accumulate until brackets balance
-                in_multiline_array = true;
-                multiline_key = key;
-                multiline_buffer = value_str;
-                multiline_target = target;
-                continue;
-            }
-        }
-
-        // Parse and assign value
-        jt value = parse_value(value_str);
-        (*target)[key] = std::move(value);
-    }
-
-    if (in_multiline_array) {
-        throw std::runtime_error(
-            "TOML parse error: unterminated multi-line array for key '" +
-            multiline_key + "'");
-    }
-
-    return JsonValue(std::move(root));
-}
-
-void merge_values(JsonValue& base, const JsonValue& overlay) {
-    if (overlay.is_object() && base.is_object()) {
-        auto& base_obj = base.raw().get_object();
-        for (const auto& [key, val] : overlay.items()) {
-            if (base.contains(key)) {
-                auto child = base[key];
-                merge_values(child, val);
-                base_obj[key] = child.raw();
-            } else {
-                base_obj[key] = val.raw();
-            }
-        }
-    } else if (overlay.is_array() && base.is_array()) {
-        auto& base_arr = base.raw().get_array();
-        for (const auto& item : overlay) {
-            base_arr.push_back(item.raw());
-        }
-    } else {
-        base = overlay;
     }
 }
 
-namespace {
-
-void resolve_includes(JsonValue& root, const std::string& base_dir,
-                      std::unordered_set<std::string>& visited, int depth) {
+/**
+ * @brief Resolve include directives in a parsed TOML table.
+ */
+void resolve_includes(toml::table& root, const std::string& base_dir,
+                      std::unordered_set<std::string>& visited, const int depth) {
     if (depth > 10) {
         throw std::runtime_error("Config include depth exceeds 10 — possible circular include");
     }
-    if (!root.contains("include")) return;
+    auto inc_node = root["include"];
+    if (!inc_node) return;
 
-    const auto include_val = root["include"];
     std::vector<std::string> paths;
-
-    if (include_val.is_string()) {
-        paths.push_back(include_val.get<std::string>());
-    } else if (include_val.is_array()) {
-        for (const auto& item : include_val) {
+    if (inc_node.is_string()) {
+        paths.emplace_back(inc_node.as_string()->get());
+    } else if (inc_node.is_array()) {
+        for (const auto& item : *inc_node.as_array()) {
             if (item.is_string()) {
-                paths.push_back(item.get<std::string>());
+                paths.emplace_back(item.as_string()->get());
             }
         }
     }
-
-    // Remove the include key from root before merging
-    root.raw().get_object().erase("include");
+    root.erase("include");
 
     for (const auto& rel_path : paths) {
         namespace fs = std::filesystem;
@@ -523,49 +130,58 @@ void resolve_includes(JsonValue& root, const std::string& base_dir,
                 std::format("Circular config include detected: {}", abs_path));
         }
 
-        std::ifstream file(abs_path);
-        if (!file.is_open()) {
-            throw std::runtime_error(
-                std::format("Cannot open included TOML file: {}", abs_path));
-        }
-        const std::string buffer((std::istreambuf_iterator<char>(file)),
-                           std::istreambuf_iterator<char>());
-        auto included = parse_string(buffer);  // NOLINT(misc-const-correctness)
-
-        // Recurse into included file's own includes
+        auto included = toml::parse_file(abs_path);
         const std::string inc_dir = fs::path(abs_path).parent_path().string();
         resolve_includes(included, inc_dir, visited, depth + 1);
 
         // Merge: included is base, root is overlay (main wins)
-        merge_values(included, root);
+        merge_tables(included, root);
         root = std::move(included);
     }
 }
 
-} // anonymous namespace
+toml::table parse_toml_string(const std::string& content) {
+    auto result = toml::parse(content);
+    expand_env_vars_recursive(result);
+    return result;
+}
 
-JsonValue parse_file(const std::string& file_path) {
-    std::ifstream file(file_path);
-    if (!file.is_open()) {
-        throw std::runtime_error(
-            std::format("Cannot open TOML file: {}", file_path));
-    }
+toml::table parse_toml_file(const std::string& file_path) {
+    auto result = toml::parse_file(file_path);
 
-    std::string buffer((std::istreambuf_iterator<char>(file)),
-                       std::istreambuf_iterator<char>());
-    auto root = parse_string(buffer);
-
-    // Resolve includes
     namespace fs = std::filesystem;
     const std::string base_dir = fs::path(file_path).parent_path().string();
     std::unordered_set<std::string> visited;
     visited.insert(fs::canonical(file_path).string());
-    resolve_includes(root, base_dir, visited, 0);
+    resolve_includes(result, base_dir, visited, 0);
 
-    return root;
+    expand_env_vars_recursive(result);
+    return result;
 }
 
-} // namespace toml
+// ---- Extraction helpers ----------------------------------------------------
+
+std::vector<std::string> toml_string_array(const toml::table& tbl, const std::string_view key) {
+    std::vector<std::string> result;
+    if (const auto* arr = tbl[key].as_array()) {
+        result.reserve(arr->size());
+        for (const auto& elem : *arr) {
+            if (const auto* s = elem.as_string()) {
+                result.emplace_back(s->get());
+            }
+        }
+    }
+    return result;
+}
+
+std::optional<std::string> toml_optional_string(const toml::table& tbl, const std::string_view key) {
+    if (const auto* v = tbl[key].as_string()) {
+        return std::string(v->get());
+    }
+    return std::nullopt;
+}
+
+} // anonymous namespace
 
 // ============================================================================
 // ConfigLoader Implementation
@@ -613,214 +229,84 @@ std::optional<Decision> ConfigLoader::parse_action(const std::string& action_str
     return (it != lookup.end()) ? std::make_optional(it->second) : std::nullopt;
 }
 
-// ---- Extract helpers (safe JSON access) ------------------------------------
-
-namespace {
-
-template<typename T>
-T json_value(const JsonValue& obj, std::string_view key, const T& default_val) {
-    if (obj.contains(key) && !obj[key].is_null()) {
-        try {
-            return obj[key].get<T>();
-        } catch (...) {
-            return default_val;
-        }
-    }
-    return default_val;
-}
-
-// Specialization-like overloads for common types
-std::string json_string(const JsonValue& obj, std::string_view key,
-                        const std::string& default_val = "") {
-    return json_value<std::string>(obj, key, default_val);
-}
-
-int json_int(const JsonValue& obj, std::string_view key, int default_val = 0) {
-    if (obj.contains(key) && !obj[key].is_null()) {
-        try {
-            auto val = obj[key];
-            if (val.is_number_integer()) {
-                return static_cast<int>(val.get<int64_t>());
-            }
-            if (val.is_number_float()) {
-                return static_cast<int>(val.get<double>());
-            }
-            if (val.is_number()) {
-                return static_cast<int>(val.get<double>());
-            }
-        } catch (...) {}
-    }
-    return default_val;
-}
-
-uint32_t json_uint32(const JsonValue& obj, std::string_view key, uint32_t default_val = 0) {
-    if (obj.contains(key) && !obj[key].is_null()) {
-        try {
-            auto val = obj[key];
-            if (val.is_number()) {
-                return static_cast<uint32_t>(val.get<int64_t>());
-            }
-        } catch (...) {}
-    }
-    return default_val;
-}
-
-size_t json_size(const JsonValue& obj, std::string_view key, size_t default_val = 0) {
-    if (obj.contains(key) && !obj[key].is_null()) {
-        try {
-            auto val = obj[key];
-            if (val.is_number()) {
-                return static_cast<size_t>(val.get<int64_t>());
-            }
-        } catch (...) {}
-    }
-    return default_val;
-}
-
-bool json_bool(const JsonValue& obj, std::string_view key, bool default_val = false) {
-    return json_value<bool>(obj, key, default_val);
-}
-
-double json_double(const JsonValue& obj, std::string_view key, double default_val = 0.0) {
-    if (obj.contains(key) && !obj[key].is_null()) {
-        try {
-            auto val = obj[key];
-            if (val.is_number()) {
-                return val.get<double>();
-            }
-        } catch (...) {}
-    }
-    return default_val;
-}
-
-std::vector<std::string> json_string_array(const JsonValue& obj, std::string_view key) {
-    std::vector<std::string> result;
-    if (!obj.contains(key) || !obj[key].is_array()) {
-        return result;
-    }
-    const auto arr = obj[key];
-    result.reserve(arr.size());
-    for (const auto& elem : arr) {
-        if (elem.is_string()) {
-            result.push_back(elem.get<std::string>());
-        }
-    }
-    return result;
-}
-
-std::optional<std::string> json_optional_string(const JsonValue& obj, std::string_view key) {
-    if (obj.contains(key) && obj[key].is_string()) {
-        return obj[key].get<std::string>();
-    }
-    return std::nullopt;
-}
-
-} // anonymous namespace
-
-// Constexpr config keys (used 2+ times across section extractors)
-static constexpr std::string_view kDatabases         = "databases";
-static constexpr std::string_view kUsers             = "users";
-static constexpr std::string_view kPolicies          = "policies";
-static constexpr std::string_view kClassifiers       = "classifiers";
-static constexpr std::string_view kGlobal            = "global";
-static constexpr std::string_view kPerUser           = "per_user";
-static constexpr std::string_view kPerUserDefault    = "per_user_default";
-static constexpr std::string_view kPerDatabase       = "per_database";
-static constexpr std::string_view kPerUserPerDatabase = "per_user_per_database";
-static constexpr std::string_view kTokensPerSecond   = "tokens_per_second";
-static constexpr std::string_view kBurstCapacity     = "burst_capacity";
-static constexpr std::string_view kEnabled           = "enabled";
-static constexpr std::string_view kDatabase          = "database";
-static constexpr std::string_view kFile              = "file";
-static constexpr std::string_view kFlushIntervalMs   = "flush_interval_ms";
-static constexpr std::string_view kName              = "name";
-static constexpr std::string_view kUser              = "user";
-static constexpr std::string_view kRoles             = "roles";
-static constexpr std::string_view kType              = "type";
-
 // ---- Section extractors ----------------------------------------------------
 
-ServerConfig ConfigLoader::extract_server(const JsonValue& root) {
+ServerConfig ConfigLoader::extract_server(const toml::table& root) {
     ServerConfig cfg;
-    if (!root.contains("server")) {
-        return cfg;
-    }
-    const auto s = root["server"];
-    cfg.host = json_string(s, "host", "0.0.0.0");
-    cfg.port = static_cast<uint16_t>(json_int(s, "port", 8080));
-    cfg.thread_pool_size = json_size(s, "threads", 4);
-    cfg.request_timeout = std::chrono::milliseconds(
-        json_int(s, "request_timeout_ms", 30000));
-    cfg.admin_token = json_string(s, "admin_token", "");
-    cfg.max_sql_length = json_size(s, "max_sql_length", 102400);
+    const auto* server = root["server"].as_table();
+    if (!server) return cfg;
+    const auto& s = *server;
 
-    // TLS/mTLS
-    if (s.contains("tls") && s["tls"].is_object()) {
-        const auto t = s["tls"];
-        cfg.tls.enabled = json_bool(t, kEnabled, false);
-        cfg.tls.cert_file = json_string(t, "cert_file", "");
-        cfg.tls.key_file = json_string(t, "key_file", "");
-        cfg.tls.ca_file = json_string(t, "ca_file", "");
-        cfg.tls.require_client_cert = json_bool(t, "require_client_cert", false);
+    cfg.host = s["host"].value_or("0.0.0.0"s);
+    cfg.port = static_cast<uint16_t>(s["port"].value_or(8080));
+    cfg.thread_pool_size = static_cast<size_t>(s["threads"].value_or(4));
+    cfg.request_timeout = std::chrono::milliseconds(s["request_timeout_ms"].value_or(30000));
+    cfg.admin_token = s["admin_token"].value_or(""s);
+    cfg.max_sql_length = static_cast<size_t>(s["max_sql_length"].value_or(102400));
+
+    if (const auto* tls = s["tls"].as_table()) {
+        cfg.tls.enabled = (*tls)["enabled"].value_or(false);
+        cfg.tls.cert_file = (*tls)["cert_file"].value_or(""s);
+        cfg.tls.key_file = (*tls)["key_file"].value_or(""s);
+        cfg.tls.ca_file = (*tls)["ca_file"].value_or(""s);
+        cfg.tls.require_client_cert = (*tls)["require_client_cert"].value_or(false);
     }
 
-    // Tier B: Graceful shutdown + compression
-    cfg.shutdown_timeout_ms = static_cast<uint32_t>(json_int(s, "shutdown_timeout_ms", 30000));
-    cfg.compression_enabled = json_bool(s, "compression_enabled", false);
-    cfg.compression_min_size_bytes = json_size(s, "compression_min_size_bytes", 1024);
+    cfg.shutdown_timeout_ms = static_cast<uint32_t>(s["shutdown_timeout_ms"].value_or(30000));
+    cfg.compression_enabled = s["compression_enabled"].value_or(false);
+    cfg.compression_min_size_bytes = static_cast<size_t>(s["compression_min_size_bytes"].value_or(1024));
 
     return cfg;
 }
 
-LoggingConfig ConfigLoader::extract_logging(const JsonValue& root) {
+LoggingConfig ConfigLoader::extract_logging(const toml::table& root) {
     LoggingConfig cfg;
-    if (!root.contains("logging")) {
-        return cfg;
-    }
-    const auto l = root["logging"];
-    cfg.level = json_string(l, "level", "info");
-    cfg.file = json_string(l, "file", "");
-    cfg.async_logging = json_bool(l, "async", true);
+    const auto* logging = root["logging"].as_table();
+    if (!logging) return cfg;
+    const auto& l = *logging;
+
+    cfg.level = l["level"].value_or("info"s);
+    cfg.file = l["file"].value_or(""s);
+    cfg.async_logging = l["async"].value_or(true);
     return cfg;
 }
 
-std::vector<DatabaseConfig> ConfigLoader::extract_databases(const JsonValue& root) {
+std::vector<DatabaseConfig> ConfigLoader::extract_databases(const toml::table& root) {
     std::vector<DatabaseConfig> result;
-    if (!root.contains(kDatabases) || !root[kDatabases].is_array()) {
-        return result;
-    }
-    const auto arr = root[kDatabases];
-    result.reserve(arr.size());
-    for (const auto& db : arr) {
-        DatabaseConfig cfg;
-        cfg.name = json_string(db, kName, "default");
-        cfg.type_str = json_string(db, kType, "postgresql");
-        cfg.connection_string = json_string(db, "connection_string", "");
-        cfg.min_connections = json_size(db, "min_connections", 2);
-        cfg.max_connections = json_size(db, "max_connections", 10);
-        cfg.connection_timeout = std::chrono::milliseconds(
-            json_int(db, "connection_timeout_ms", 5000));
-        cfg.query_timeout = std::chrono::milliseconds(
-            json_int(db, "query_timeout_ms", 30000));
-        cfg.health_check_query = json_string(db, "health_check_query", "SELECT 1");
-        cfg.health_check_interval_seconds = json_int(db, "health_check_interval_seconds", 10);
-        cfg.idle_timeout_seconds = json_int(db, "idle_timeout_seconds", 300);
-        cfg.pool_acquire_timeout_ms = json_int(db, "pool_acquire_timeout_ms", 5000);
-        cfg.max_result_rows = json_size(db, "max_result_rows", 10000);
+    const auto* arr = root["databases"].as_array();
+    if (!arr) return result;
+    result.reserve(arr->size());
 
-        // Parse replicas for read/write splitting
-        if (db.contains("replicas") && db["replicas"].is_array()) {
-            const auto replicas_arr = db["replicas"];
-            cfg.replicas.reserve(replicas_arr.size());
-            for (const auto& r : replicas_arr) {
+    for (const auto& elem : *arr) {
+        const auto* db = elem.as_table();
+        if (!db) continue;
+
+        DatabaseConfig cfg;
+        cfg.name = (*db)["name"].value_or("default"s);
+        cfg.type_str = (*db)["type"].value_or("postgresql"s);
+        cfg.connection_string = (*db)["connection_string"].value_or(""s);
+        cfg.min_connections = static_cast<size_t>((*db)["min_connections"].value_or(2));
+        cfg.max_connections = static_cast<size_t>((*db)["max_connections"].value_or(10));
+        cfg.connection_timeout = std::chrono::milliseconds((*db)["connection_timeout_ms"].value_or(5000));
+        cfg.query_timeout = std::chrono::milliseconds((*db)["query_timeout_ms"].value_or(30000));
+        cfg.health_check_query = (*db)["health_check_query"].value_or("SELECT 1"s);
+        cfg.health_check_interval_seconds = (*db)["health_check_interval_seconds"].value_or(10);
+        cfg.idle_timeout_seconds = (*db)["idle_timeout_seconds"].value_or(300);
+        cfg.pool_acquire_timeout_ms = (*db)["pool_acquire_timeout_ms"].value_or(5000);
+        cfg.max_result_rows = static_cast<size_t>((*db)["max_result_rows"].value_or(10000));
+
+        if (const auto* replicas = (*db)["replicas"].as_array()) {
+            cfg.replicas.reserve(replicas->size());
+            for (const auto& r_elem : *replicas) {
+                const auto* r = r_elem.as_table();
+                if (!r) continue;
                 ReplicaConfig replica;
-                replica.connection_string = json_string(r, "connection_string", "");
-                replica.min_connections = json_size(r, "min_connections", 2);
-                replica.max_connections = json_size(r, "max_connections", 5);
-                replica.connection_timeout = std::chrono::milliseconds(
-                    json_int(r, "connection_timeout_ms", 5000));
-                replica.health_check_query = json_string(r, "health_check_query", "SELECT 1");
-                replica.weight = json_int(r, "weight", 1);
+                replica.connection_string = (*r)["connection_string"].value_or(""s);
+                replica.min_connections = static_cast<size_t>((*r)["min_connections"].value_or(2));
+                replica.max_connections = static_cast<size_t>((*r)["max_connections"].value_or(5));
+                replica.connection_timeout = std::chrono::milliseconds((*r)["connection_timeout_ms"].value_or(5000));
+                replica.health_check_query = (*r)["health_check_query"].value_or("SELECT 1"s);
+                replica.weight = (*r)["weight"].value_or(1);
                 if (!replica.connection_string.empty()) {
                     cfg.replicas.emplace_back(std::move(replica));
                 }
@@ -832,37 +318,33 @@ std::vector<DatabaseConfig> ConfigLoader::extract_databases(const JsonValue& roo
     return result;
 }
 
-std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const JsonValue& root) {
+std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const toml::table& root) {
     std::unordered_map<std::string, UserInfo> result;
-    if (!root.contains(kUsers) || !root[kUsers].is_array()) {
-        return result;
-    }
-    const auto arr = root[kUsers];
-    for (const auto& u : arr) {
-        std::string name = json_string(u, kName, "");
-        if (name.empty()) {
-            continue; // Skip unnamed users
-        }
-        auto roles = json_string_array(u, kRoles);
-        std::string api_key = json_string(u, "api_key", "");
+    const auto* arr = root["users"].as_array();
+    if (!arr) return result;
+
+    for (const auto& elem : *arr) {
+        const auto* u = elem.as_table();
+        if (!u) continue;
+
+        std::string name = (*u)["name"].value_or(""s);
+        if (name.empty()) continue;
+
+        auto roles = toml_string_array(*u, "roles");
+        std::string api_key = (*u)["api_key"].value_or(""s);
 
         UserInfo info(std::move(name), std::move(roles), std::move(api_key));
+        info.allowed_ips = toml_string_array(*u, "allowed_ips");
 
-        // Parse allowed_ips (CIDR allowlist)
-        info.allowed_ips = json_string_array(u, "allowed_ips");
-
-        // Parse default_database
-        std::string default_db = json_string(u, "default_database", "");
+        std::string default_db = (*u)["default_database"].value_or(""s);
         if (!default_db.empty()) {
             info.default_database = std::move(default_db);
         }
 
-        // Parse attributes (inline table → key/value pairs for RLS)
-        auto attrs = u["attributes"];
-        if (attrs.is_object()) {
-            for (const auto& [k, v] : attrs.items()) {
+        if (const auto* attrs = (*u)["attributes"].as_table()) {
+            for (const auto& [k, v] : *attrs) {
                 if (v.is_string()) {
-                    info.attributes[k] = v.get<std::string>();
+                    info.attributes[std::string(k)] = v.as_string()->get();
                 }
             }
         }
@@ -872,68 +354,49 @@ std::unordered_map<std::string, UserInfo> ConfigLoader::extract_users(const Json
     return result;
 }
 
-std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
+std::vector<Policy> ConfigLoader::extract_policies(const toml::table& root) {
     std::vector<Policy> result;
-    if (!root.contains(kPolicies) || !root[kPolicies].is_array()) {
-        return result;
-    }
-    const auto arr = root[kPolicies];
-    result.reserve(arr.size());
+    const auto* arr = root["policies"].as_array();
+    if (!arr) return result;
+    result.reserve(arr->size());
 
-    for (const auto& p : arr) {
+    for (const auto& elem : *arr) {
+        const auto* p = elem.as_table();
+        if (!p) continue;
+
         Policy policy;
+        policy.name = (*p)["name"].value_or(""s);
+        if (policy.name.empty()) continue;
 
-        // Required: name
-        policy.name = json_string(p, kName, "");
-        if (policy.name.empty()) {
-            continue; // Skip unnamed policies
-        }
+        policy.priority = (*p)["priority"].value_or(0);
 
-        // Required: priority
-        policy.priority = json_int(p, "priority", 0);
-
-        // Required: action
-        const std::string action_str = json_string(p, "action", "BLOCK");
+        const std::string action_str = (*p)["action"].value_or("BLOCK"s);
         const auto action = parse_action(action_str);
         policy.action = action.value_or(Decision::BLOCK);
 
-        // Optional: users array
-        const auto users = json_string_array(p, kUsers);
-        for (const auto& user : users) {
+        for (const auto& user : toml_string_array(*p, "users")) {
             policy.users.insert(user);
         }
-
-        // Optional: roles array
-        const auto roles = json_string_array(p, kRoles);
-        for (const auto& role : roles) {
+        for (const auto& role : toml_string_array(*p, "roles")) {
             policy.roles.insert(role);
         }
-
-        // Optional: exclude_roles array
-        const auto exclude_roles = json_string_array(p, "exclude_roles");
-        for (const auto& role : exclude_roles) {
+        for (const auto& role : toml_string_array(*p, "exclude_roles")) {
             policy.exclude_roles.insert(role);
         }
 
-        // Optional: statement_types array
-        const auto stmt_types = json_string_array(p, "statement_types");
-        for (const auto& stmt_str : stmt_types) {
+        for (const auto& stmt_str : toml_string_array(*p, "statement_types")) {
             const auto stmt_type = parse_statement_type(stmt_str);
             if (stmt_type.has_value()) {
                 policy.scope.operations.insert(*stmt_type);
             }
         }
 
-        // Optional: scope fields
-        policy.scope.database = json_optional_string(p, kDatabase);
-        policy.scope.schema = json_optional_string(p, "schema");
-        policy.scope.table = json_optional_string(p, "table");
+        policy.scope.database = toml_optional_string(*p, "database");
+        policy.scope.schema = toml_optional_string(*p, "schema");
+        policy.scope.table = toml_optional_string(*p, "table");
+        policy.scope.columns = toml_string_array(*p, "columns");
 
-        // Optional: columns array (column-level ACL)
-        policy.scope.columns = json_string_array(p, "columns");
-
-        // Optional: masking fields
-        if (p.contains("masking_action")) {
+        if (const auto* masking_node = (*p)["masking_action"].as_string()) {
             static const std::unordered_map<std::string, MaskingAction> masking_lookup = {
                 {"none", MaskingAction::NONE},
                 {"redact", MaskingAction::REDACT},
@@ -941,20 +404,17 @@ std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
                 {"hash", MaskingAction::HASH},
                 {"nullify", MaskingAction::NULLIFY},
             };
-            const std::string masking_str = utils::to_lower(json_string(p, "masking_action", "none"));
+            const std::string masking_str = utils::to_lower(masking_node->get());
             const auto mit = masking_lookup.find(masking_str);
             if (mit != masking_lookup.end()) {
                 policy.masking_action = mit->second;
             }
         }
-        policy.masking_prefix_len = json_int(p, "masking_prefix_len", 3);
-        policy.masking_suffix_len = json_int(p, "masking_suffix_len", 3);
+        policy.masking_prefix_len = (*p)["masking_prefix_len"].value_or(3);
+        policy.masking_suffix_len = (*p)["masking_suffix_len"].value_or(3);
 
-        // Optional: reason
-        policy.reason = json_string(p, "reason", "");
-
-        // Optional: shadow mode (log-only, don't enforce)
-        policy.shadow = json_bool(p, "shadow", false);
+        policy.reason = (*p)["reason"].value_or(""s);
+        policy.shadow = (*p)["shadow"].value_or(false);
 
         result.emplace_back(std::move(policy));
     }
@@ -962,184 +422,161 @@ std::vector<Policy> ConfigLoader::extract_policies(const JsonValue& root) {
     return result;
 }
 
-RateLimitingConfig ConfigLoader::extract_rate_limiting(const JsonValue& root) {
+RateLimitingConfig ConfigLoader::extract_rate_limiting(const toml::table& root) {
     RateLimitingConfig cfg;
-    if (!root.contains("rate_limiting")) {
-        return cfg;
-    }
-    const auto rl = root["rate_limiting"];
+    const auto* rl_node = root["rate_limiting"].as_table();
+    if (!rl_node) return cfg;
+    const auto& rl = *rl_node;
 
-    cfg.enabled = json_bool(rl, kEnabled, true);
+    cfg.enabled = rl["enabled"].value_or(true);
 
-    // Level 1: Global
-    if (rl.contains(kGlobal) && rl[kGlobal].is_object()) {
-        const auto g = rl[kGlobal];
-        cfg.global_tokens_per_second = json_uint32(g, kTokensPerSecond, 50000);
-        cfg.global_burst_capacity = json_uint32(g, kBurstCapacity, 10000);
+    if (const auto* g = rl["global"].as_table()) {
+        cfg.global_tokens_per_second = static_cast<uint32_t>((*g)["tokens_per_second"].value_or(50000));
+        cfg.global_burst_capacity = static_cast<uint32_t>((*g)["burst_capacity"].value_or(10000));
     }
 
-    // Level 2: Per-User overrides
-    if (rl.contains(kPerUser) && rl[kPerUser].is_array()) {
-        const auto arr = rl[kPerUser];
-        cfg.per_user.reserve(arr.size());
-        for (const auto& u : arr) {
+    if (const auto* arr = rl["per_user"].as_array()) {
+        cfg.per_user.reserve(arr->size());
+        for (const auto& elem : *arr) {
+            const auto* u = elem.as_table();
+            if (!u) continue;
             PerUserRateLimit limit;
-            limit.user = json_string(u, kUser, "");
-            limit.tokens_per_second = json_uint32(u, kTokensPerSecond, 100);
-            limit.burst_capacity = json_uint32(u, kBurstCapacity, 20);
+            limit.user = (*u)["user"].value_or(""s);
+            limit.tokens_per_second = static_cast<uint32_t>((*u)["tokens_per_second"].value_or(100));
+            limit.burst_capacity = static_cast<uint32_t>((*u)["burst_capacity"].value_or(20));
             if (!limit.user.empty()) {
                 cfg.per_user.emplace_back(std::move(limit));
             }
         }
     }
 
-    // Per-User defaults
-    if (rl.contains(kPerUserDefault) && rl[kPerUserDefault].is_object()) {
-        const auto d = rl[kPerUserDefault];
-        cfg.per_user_default_tokens_per_second = json_uint32(d, kTokensPerSecond, 100);
-        cfg.per_user_default_burst_capacity = json_uint32(d, kBurstCapacity, 20);
+    if (const auto* d = rl["per_user_default"].as_table()) {
+        cfg.per_user_default_tokens_per_second = static_cast<uint32_t>((*d)["tokens_per_second"].value_or(100));
+        cfg.per_user_default_burst_capacity = static_cast<uint32_t>((*d)["burst_capacity"].value_or(20));
     }
 
-    // Level 3: Per-Database
-    if (rl.contains(kPerDatabase) && rl[kPerDatabase].is_array()) {
-        const auto arr = rl[kPerDatabase];
-        cfg.per_database.reserve(arr.size());
-        for (const auto& db : arr) {
+    if (const auto* arr = rl["per_database"].as_array()) {
+        cfg.per_database.reserve(arr->size());
+        for (const auto& elem : *arr) {
+            const auto* db_tbl = elem.as_table();
+            if (!db_tbl) continue;
             PerDatabaseRateLimit limit;
-            limit.database = json_string(db, kDatabase, "");
-            limit.tokens_per_second = json_uint32(db, kTokensPerSecond, 30000);
-            limit.burst_capacity = json_uint32(db, kBurstCapacity, 5000);
+            limit.database = (*db_tbl)["database"].value_or(""s);
+            limit.tokens_per_second = static_cast<uint32_t>((*db_tbl)["tokens_per_second"].value_or(30000));
+            limit.burst_capacity = static_cast<uint32_t>((*db_tbl)["burst_capacity"].value_or(5000));
             if (!limit.database.empty()) {
                 cfg.per_database.emplace_back(std::move(limit));
             }
         }
     }
 
-    // Level 4: Per-User-Per-Database
-    if (rl.contains(kPerUserPerDatabase) && rl[kPerUserPerDatabase].is_array()) {
-        const auto arr = rl[kPerUserPerDatabase];
-        cfg.per_user_per_database.reserve(arr.size());
-        for (const auto& upd : arr) {
+    if (const auto* arr = rl["per_user_per_database"].as_array()) {
+        cfg.per_user_per_database.reserve(arr->size());
+        for (const auto& elem : *arr) {
+            const auto* upd = elem.as_table();
+            if (!upd) continue;
             PerUserPerDatabaseRateLimit limit;
-            limit.user = json_string(upd, kUser, "");
-            limit.database = json_string(upd, kDatabase, "");
-            limit.tokens_per_second = json_uint32(upd, kTokensPerSecond, 100);
-            limit.burst_capacity = json_uint32(upd, kBurstCapacity, 20);
+            limit.user = (*upd)["user"].value_or(""s);
+            limit.database = (*upd)["database"].value_or(""s);
+            limit.tokens_per_second = static_cast<uint32_t>((*upd)["tokens_per_second"].value_or(100));
+            limit.burst_capacity = static_cast<uint32_t>((*upd)["burst_capacity"].value_or(20));
             if (!limit.user.empty() && !limit.database.empty()) {
                 cfg.per_user_per_database.emplace_back(std::move(limit));
             }
         }
     }
 
-    // Request queuing (backpressure)
-    if (rl.contains("queue") && rl["queue"].is_object()) {
-        const auto q = rl["queue"];
-        cfg.queue_enabled = json_bool(q, kEnabled, false);
-        cfg.queue_timeout_ms = json_uint32(q, "timeout_ms", 5000);
-        cfg.max_queue_depth = json_uint32(q, "max_depth", 1000);
+    if (const auto* q = rl["queue"].as_table()) {
+        cfg.queue_enabled = (*q)["enabled"].value_or(false);
+        cfg.queue_timeout_ms = static_cast<uint32_t>((*q)["timeout_ms"].value_or(5000));
+        cfg.max_queue_depth = static_cast<uint32_t>((*q)["max_depth"].value_or(1000));
     }
 
     return cfg;
 }
 
-CacheConfig ConfigLoader::extract_cache(const JsonValue& root) {
+CacheConfig ConfigLoader::extract_cache(const toml::table& root) {
     CacheConfig cfg;
-    if (!root.contains("cache")) {
-        return cfg;
-    }
-    const auto c = root["cache"];
-    cfg.max_entries = json_size(c, "max_entries", 10000);
-    cfg.num_shards = json_size(c, "num_shards", 16);
-    cfg.ttl = std::chrono::seconds(json_int(c, "ttl_seconds", 300));
+    const auto* cache = root["cache"].as_table();
+    if (!cache) return cfg;
+    const auto& c = *cache;
+
+    cfg.max_entries = static_cast<size_t>(c["max_entries"].value_or(10000));
+    cfg.num_shards = static_cast<size_t>(c["num_shards"].value_or(16));
+    cfg.ttl = std::chrono::seconds(c["ttl_seconds"].value_or(300));
     return cfg;
 }
 
-AuditConfig ConfigLoader::extract_audit(const JsonValue& root) {
+AuditConfig ConfigLoader::extract_audit(const toml::table& root) {
     AuditConfig cfg;
-    if (!root.contains("audit")) {
-        return cfg;
-    }
-    const auto a = root["audit"];
+    const auto* audit = root["audit"].as_table();
+    if (!audit) return cfg;
+    const auto& a = *audit;
 
-    cfg.async_mode = json_bool(a, "async_mode", true);
-    cfg.ring_buffer_size = json_size(a, "ring_buffer_size", 65536);
-    cfg.batch_flush_interval = std::chrono::milliseconds(
-        json_int(a, kFlushIntervalMs, 1000));
-    cfg.max_batch_size = json_size(a, "max_batch_size", 1000);
-    cfg.fsync_interval_batches = json_int(a, "fsync_interval_batches", 10);
+    cfg.async_mode = a["async_mode"].value_or(true);
+    cfg.ring_buffer_size = static_cast<size_t>(a["ring_buffer_size"].value_or(65536));
+    cfg.batch_flush_interval = std::chrono::milliseconds(a["flush_interval_ms"].value_or(1000));
+    cfg.max_batch_size = static_cast<size_t>(a["max_batch_size"].value_or(1000));
+    cfg.fsync_interval_batches = a["fsync_interval_batches"].value_or(10);
 
-    // File sink settings
-    if (a.contains(kFile) && a[kFile].is_object()) {
-        const auto f = a[kFile];
-        cfg.output_file = json_string(f, "output_file", "audit.jsonl");
+    if (const auto* f = a["file"].as_table()) {
+        cfg.output_file = (*f)["output_file"].value_or("audit.jsonl"s);
     }
 
-    // Database sink settings (batch_size and flush_interval_ms can also
-    // come from the database sub-section; the top-level AuditConfig
-    // captures only what the struct supports)
-    if (a.contains(kDatabase) && a[kDatabase].is_object()) {
-        const auto db = a[kDatabase];
-        // If there's a db-specific flush_interval_ms, prefer it
-        const int db_flush = json_int(db, kFlushIntervalMs, 0);
+    if (const auto* db_tbl = a["database"].as_table()) {
+        const int db_flush = (*db_tbl)["flush_interval_ms"].value_or(0);
         if (db_flush > 0) {
             cfg.batch_flush_interval = std::chrono::milliseconds(db_flush);
         }
     }
 
-    // Rotation settings
-    if (a.contains("rotation") && a["rotation"].is_object()) {
-        const auto r = a["rotation"];
-        cfg.rotation_max_file_size_mb = json_size(r, "max_file_size_mb", 100);
-        cfg.rotation_max_files = json_int(r, "max_files", 10);
-        cfg.rotation_interval_hours = json_int(r, "interval_hours", 24);
-        cfg.rotation_time_based = json_bool(r, "time_based", true);
-        cfg.rotation_size_based = json_bool(r, "size_based", true);
+    if (const auto* r = a["rotation"].as_table()) {
+        cfg.rotation_max_file_size_mb = static_cast<size_t>((*r)["max_file_size_mb"].value_or(100));
+        cfg.rotation_max_files = (*r)["max_files"].value_or(10);
+        cfg.rotation_interval_hours = (*r)["interval_hours"].value_or(24);
+        cfg.rotation_time_based = (*r)["time_based"].value_or(true);
+        cfg.rotation_size_based = (*r)["size_based"].value_or(true);
     }
 
-    // Webhook sink settings
-    if (a.contains("webhook") && a["webhook"].is_object()) {
-        const auto w = a["webhook"];
-        cfg.webhook_enabled = json_bool(w, "enabled", false);
-        cfg.webhook_url = json_string(w, "url", "");
-        cfg.webhook_auth_header = json_string(w, "auth_header", "");
-        cfg.webhook_timeout_ms = json_int(w, "timeout_ms", 5000);
-        cfg.webhook_max_retries = json_int(w, "max_retries", 3);
-        cfg.webhook_batch_size = json_int(w, "batch_size", 100);
+    if (const auto* w = a["webhook"].as_table()) {
+        cfg.webhook_enabled = (*w)["enabled"].value_or(false);
+        cfg.webhook_url = (*w)["url"].value_or(""s);
+        cfg.webhook_auth_header = (*w)["auth_header"].value_or(""s);
+        cfg.webhook_timeout_ms = (*w)["timeout_ms"].value_or(5000);
+        cfg.webhook_max_retries = (*w)["max_retries"].value_or(3);
+        cfg.webhook_batch_size = (*w)["batch_size"].value_or(100);
     }
 
-    // Syslog sink settings
-    if (a.contains("syslog") && a["syslog"].is_object()) {
-        const auto s = a["syslog"];
-        cfg.syslog_enabled = json_bool(s, "enabled", false);
-        cfg.syslog_ident = json_string(s, "ident", "sql-proxy");
+    if (const auto* sy = a["syslog"].as_table()) {
+        cfg.syslog_enabled = (*sy)["enabled"].value_or(false);
+        cfg.syslog_ident = (*sy)["ident"].value_or("sql-proxy"s);
     }
 
-    // Integrity (hash chain) settings
-    if (a.contains("integrity") && a["integrity"].is_object()) {
-        const auto i = a["integrity"];
-        cfg.integrity_enabled = json_bool(i, kEnabled, true);
-        cfg.integrity_algorithm = json_string(i, "algorithm", "sha256");
+    if (const auto* ig = a["integrity"].as_table()) {
+        cfg.integrity_enabled = (*ig)["enabled"].value_or(true);
+        cfg.integrity_algorithm = (*ig)["algorithm"].value_or("sha256"s);
     }
 
     return cfg;
 }
 
-std::vector<ClassifierConfig> ConfigLoader::extract_classifiers(const JsonValue& root) {
+std::vector<ClassifierConfig> ConfigLoader::extract_classifiers(const toml::table& root) {
     std::vector<ClassifierConfig> result;
-    if (!root.contains(kClassifiers) || !root[kClassifiers].is_array()) {
-        return result;
-    }
-    const auto arr = root[kClassifiers];
-    result.reserve(arr.size());
+    const auto* arr = root["classifiers"].as_array();
+    if (!arr) return result;
+    result.reserve(arr->size());
 
-    for (const auto& c : arr) {
+    for (const auto& elem : *arr) {
+        const auto* c = elem.as_table();
+        if (!c) continue;
+
         ClassifierConfig cfg;
-        cfg.type = json_string(c, kType, "");
-        cfg.strategy = json_string(c, "strategy", "");
-        cfg.patterns = json_string_array(c, "patterns");
-        cfg.data_validation_regex = json_string(c, "data_validation_regex", "");
-        cfg.sample_size = json_int(c, "sample_size", 0);
-        cfg.confidence_threshold = json_double(c, "confidence_threshold", 0.0);
+        cfg.type = (*c)["type"].value_or(""s);
+        cfg.strategy = (*c)["strategy"].value_or(""s);
+        cfg.patterns = toml_string_array(*c, "patterns");
+        cfg.data_validation_regex = (*c)["data_validation_regex"].value_or(""s);
+        cfg.sample_size = (*c)["sample_size"].value_or(0);
+        cfg.confidence_threshold = (*c)["confidence_threshold"].value_or(0.0);
 
         if (!cfg.type.empty()) {
             result.emplace_back(std::move(cfg));
@@ -1149,110 +586,103 @@ std::vector<ClassifierConfig> ConfigLoader::extract_classifiers(const JsonValue&
     return result;
 }
 
-CircuitBreakerConfig ConfigLoader::extract_circuit_breaker(const JsonValue& root) {
+CircuitBreakerConfig ConfigLoader::extract_circuit_breaker(const toml::table& root) {
     CircuitBreakerConfig cfg;
-    if (!root.contains("circuit_breaker")) {
-        return cfg;
-    }
-    const auto cb = root["circuit_breaker"];
-    cfg.enabled = json_bool(cb, kEnabled, true);
-    cfg.failure_threshold = json_int(cb, "failure_threshold", 15);
-    cfg.success_threshold = json_int(cb, "success_threshold", 5);
-    cfg.timeout_ms = json_int(cb, "timeout_ms", 5000);
-    cfg.half_open_max_calls = json_int(cb, "half_open_max_calls", 5);
+    const auto* cb = root["circuit_breaker"].as_table();
+    if (!cb) return cfg;
+
+    cfg.enabled = (*cb)["enabled"].value_or(true);
+    cfg.failure_threshold = (*cb)["failure_threshold"].value_or(15);
+    cfg.success_threshold = (*cb)["success_threshold"].value_or(5);
+    cfg.timeout_ms = (*cb)["timeout_ms"].value_or(5000);
+    cfg.half_open_max_calls = (*cb)["half_open_max_calls"].value_or(5);
     return cfg;
 }
 
-AllocatorConfig ConfigLoader::extract_allocator(const JsonValue& root) {
+AllocatorConfig ConfigLoader::extract_allocator(const toml::table& root) {
     AllocatorConfig cfg;
-    if (!root.contains("allocator")) {
-        return cfg;
-    }
-    const auto a = root["allocator"];
-    cfg.enabled = json_bool(a, kEnabled, true);
-    cfg.initial_size_bytes = json_size(a, "initial_size_bytes", 1024);
-    cfg.max_size_bytes = json_size(a, "max_size_bytes", 65536);
+    const auto* a = root["allocator"].as_table();
+    if (!a) return cfg;
+
+    cfg.enabled = (*a)["enabled"].value_or(true);
+    cfg.initial_size_bytes = static_cast<size_t>((*a)["initial_size_bytes"].value_or(1024));
+    cfg.max_size_bytes = static_cast<size_t>((*a)["max_size_bytes"].value_or(65536));
     return cfg;
 }
 
-MetricsConfig ConfigLoader::extract_metrics(const JsonValue& root) {
+MetricsConfig ConfigLoader::extract_metrics(const toml::table& root) {
     MetricsConfig cfg;
-    if (!root.contains("metrics")) {
-        return cfg;
-    }
-    const auto m = root["metrics"];
-    cfg.enabled = json_bool(m, kEnabled, true);
-    cfg.endpoint = json_string(m, "endpoint", "/metrics");
-    cfg.export_interval_ms = json_int(m, "export_interval_ms", 5000);
+    const auto* m = root["metrics"].as_table();
+    if (!m) return cfg;
+
+    cfg.enabled = (*m)["enabled"].value_or(true);
+    cfg.endpoint = (*m)["endpoint"].value_or("/metrics"s);
+    cfg.export_interval_ms = (*m)["export_interval_ms"].value_or(5000);
     return cfg;
 }
 
-ConfigWatcherConfig ConfigLoader::extract_config_watcher(const JsonValue& root) {
+ConfigWatcherConfig ConfigLoader::extract_config_watcher(const toml::table& root) {
     ConfigWatcherConfig cfg;
-    if (!root.contains("config_watcher")) {
-        return cfg;
-    }
-    const auto cw = root["config_watcher"];
-    cfg.enabled = json_bool(cw, kEnabled, true);
-    cfg.poll_interval_seconds = json_int(cw, "poll_interval_seconds", 5);
+    const auto* cw = root["config_watcher"].as_table();
+    if (!cw) return cfg;
+
+    cfg.enabled = (*cw)["enabled"].value_or(true);
+    cfg.poll_interval_seconds = (*cw)["poll_interval_seconds"].value_or(5);
     return cfg;
 }
 
-SecurityConfig ConfigLoader::extract_security(const JsonValue& root) {
+SecurityConfig ConfigLoader::extract_security(const toml::table& root) {
     SecurityConfig cfg;
-    if (!root.contains("security")) {
-        return cfg;
-    }
-    const auto s = root["security"];
-    cfg.injection_detection_enabled = json_bool(s, "injection_detection", true);
-    cfg.anomaly_detection_enabled = json_bool(s, "anomaly_detection", true);
-    cfg.lineage_tracking_enabled = json_bool(s, "lineage_tracking", true);
+    const auto* sec = root["security"].as_table();
+    if (!sec) return cfg;
+    const auto& s = *sec;
 
-    // Brute force protection: [security.brute_force]
-    if (s.contains("brute_force")) {
-        const auto bf = s["brute_force"];
-        cfg.brute_force_enabled = json_bool(bf, kEnabled, false);
-        cfg.brute_force_max_attempts = json_uint32(bf, "max_attempts", 5);
-        cfg.brute_force_window_seconds = json_uint32(bf, "window_seconds", 60);
-        cfg.brute_force_lockout_seconds = json_uint32(bf, "lockout_seconds", 300);
-        cfg.brute_force_max_lockout_seconds = json_uint32(bf, "max_lockout_seconds", 3600);
+    cfg.injection_detection_enabled = s["injection_detection"].value_or(true);
+    cfg.anomaly_detection_enabled = s["anomaly_detection"].value_or(true);
+    cfg.lineage_tracking_enabled = s["lineage_tracking"].value_or(true);
+
+    if (const auto* bf = s["brute_force"].as_table()) {
+        cfg.brute_force_enabled = (*bf)["enabled"].value_or(false);
+        cfg.brute_force_max_attempts = static_cast<uint32_t>((*bf)["max_attempts"].value_or(5));
+        cfg.brute_force_window_seconds = static_cast<uint32_t>((*bf)["window_seconds"].value_or(60));
+        cfg.brute_force_lockout_seconds = static_cast<uint32_t>((*bf)["lockout_seconds"].value_or(300));
+        cfg.brute_force_max_lockout_seconds = static_cast<uint32_t>((*bf)["max_lockout_seconds"].value_or(3600));
     }
     return cfg;
 }
 
-EncryptionConfig ConfigLoader::extract_encryption(const JsonValue& root) {
+EncryptionConfig ConfigLoader::extract_encryption(const toml::table& root) {
     EncryptionConfig cfg;
-    if (!root.contains("encryption")) {
-        return cfg;
-    }
-    const auto e = root["encryption"];
-    cfg.enabled = json_bool(e, kEnabled, false);
-    cfg.key_file = json_string(e, "key_file", "config/encryption_keys.json");
+    const auto* enc = root["encryption"].as_table();
+    if (!enc) return cfg;
+    const auto& e = *enc;
 
-    if (e.contains("columns") && e["columns"].is_array()) {
-        const auto arr = e["columns"];
-        cfg.columns.reserve(arr.size());
-        for (const auto& c : arr) {
+    cfg.enabled = e["enabled"].value_or(false);
+    cfg.key_file = e["key_file"].value_or("config/encryption_keys.json"s);
+
+    if (const auto* arr = e["columns"].as_array()) {
+        cfg.columns.reserve(arr->size());
+        for (const auto& elem : *arr) {
+            const auto* c = elem.as_table();
+            if (!c) continue;
             EncryptionColumnConfigEntry entry;
-            entry.database = json_string(c, kDatabase, "");
-            entry.table = json_string(c, "table", "");
-            entry.column = json_string(c, "column", "");
+            entry.database = (*c)["database"].value_or(""s);
+            entry.table = (*c)["table"].value_or(""s);
+            entry.column = (*c)["column"].value_or(""s);
             if (!entry.column.empty()) {
                 cfg.columns.emplace_back(std::move(entry));
             }
         }
     }
 
-    // Key manager provider
-    if (e.contains("key_manager") && e["key_manager"].is_object()) {
-        const auto km = e["key_manager"];
-        cfg.key_manager_provider = json_string(km, "provider", "local");
-        cfg.vault_addr = json_string(km, "vault_addr", "");
-        cfg.vault_token = json_string(km, "vault_token", "");
-        cfg.vault_key_name = json_string(km, "vault_key_name", "sql-proxy");
-        cfg.vault_mount = json_string(km, "vault_mount", "transit");
-        cfg.vault_cache_ttl_seconds = json_int(km, "vault_cache_ttl_seconds", 300);
-        cfg.env_key_var = json_string(km, "env_key_var", "ENCRYPTION_KEY");
+    if (const auto* km = e["key_manager"].as_table()) {
+        cfg.key_manager_provider = (*km)["provider"].value_or("local"s);
+        cfg.vault_addr = (*km)["vault_addr"].value_or(""s);
+        cfg.vault_token = (*km)["vault_token"].value_or(""s);
+        cfg.vault_key_name = (*km)["vault_key_name"].value_or("sql-proxy"s);
+        cfg.vault_mount = (*km)["vault_mount"].value_or("transit"s);
+        cfg.vault_cache_ttl_seconds = (*km)["vault_cache_ttl_seconds"].value_or(300);
+        cfg.env_key_var = (*km)["env_key_var"].value_or("ENCRYPTION_KEY"s);
     }
 
     return cfg;
@@ -1262,22 +692,24 @@ EncryptionConfig ConfigLoader::extract_encryption(const JsonValue& root) {
 
 namespace {
 
-std::vector<RlsRule> extract_rls_rules(const JsonValue& root) {
+std::vector<RlsRule> extract_rls_rules(const toml::table& root) {
     std::vector<RlsRule> result;
-    if (!root.contains("row_level_security") || !root["row_level_security"].is_array()) {
-        return result;
-    }
-    const auto arr = root["row_level_security"];
-    result.reserve(arr.size());
-    for (const auto& r : arr) {
+    const auto* arr = root["row_level_security"].as_array();
+    if (!arr) return result;
+    result.reserve(arr->size());
+
+    for (const auto& elem : *arr) {
+        const auto* r = elem.as_table();
+        if (!r) continue;
+
         RlsRule rule;
-        rule.name = json_string(r, "name", "");
+        rule.name = (*r)["name"].value_or(""s);
         if (rule.name.empty()) continue;
-        rule.database = json_optional_string(r, "database");
-        rule.table = json_optional_string(r, "table");
-        rule.condition = json_string(r, "condition", "");
-        rule.users = json_string_array(r, "users");
-        rule.roles = json_string_array(r, "roles");
+        rule.database = toml_optional_string(*r, "database");
+        rule.table = toml_optional_string(*r, "table");
+        rule.condition = (*r)["condition"].value_or(""s);
+        rule.users = toml_string_array(*r, "users");
+        rule.roles = toml_string_array(*r, "roles");
         if (!rule.condition.empty()) {
             result.emplace_back(std::move(rule));
         }
@@ -1285,21 +717,23 @@ std::vector<RlsRule> extract_rls_rules(const JsonValue& root) {
     return result;
 }
 
-std::vector<RewriteRule> extract_rewrite_rules(const JsonValue& root) {
+std::vector<RewriteRule> extract_rewrite_rules(const toml::table& root) {
     std::vector<RewriteRule> result;
-    if (!root.contains("rewrite_rules") || !root["rewrite_rules"].is_array()) {
-        return result;
-    }
-    const auto arr = root["rewrite_rules"];
-    result.reserve(arr.size());
-    for (const auto& r : arr) {
+    const auto* arr = root["rewrite_rules"].as_array();
+    if (!arr) return result;
+    result.reserve(arr->size());
+
+    for (const auto& elem : *arr) {
+        const auto* r = elem.as_table();
+        if (!r) continue;
+
         RewriteRule rule;
-        rule.name = json_string(r, "name", "");
+        rule.name = (*r)["name"].value_or(""s);
         if (rule.name.empty()) continue;
-        rule.type = json_string(r, "type", "");
-        rule.limit_value = json_int(r, "limit_value", 1000);
-        rule.users = json_string_array(r, "users");
-        rule.roles = json_string_array(r, "roles");
+        rule.type = (*r)["type"].value_or(""s);
+        rule.limit_value = (*r)["limit_value"].value_or(1000);
+        rule.users = toml_string_array(*r, "users");
+        rule.roles = toml_string_array(*r, "roles");
         if (!rule.type.empty()) {
             result.emplace_back(std::move(rule));
         }
@@ -1311,26 +745,30 @@ std::vector<RewriteRule> extract_rewrite_rules(const JsonValue& root) {
 
 // ---- Tier 5 extractors -----------------------------------------------------
 
-TenantConfigEntry ConfigLoader::extract_tenants(const JsonValue& root) {
+TenantConfigEntry ConfigLoader::extract_tenants(const toml::table& root) {
     TenantConfigEntry cfg;
-    if (!root.contains("tenants")) return cfg;
-    const auto t = root["tenants"];
-    cfg.enabled = json_bool(t, kEnabled, false);
-    cfg.default_tenant = json_string(t, "default_tenant", "default");
-    cfg.header_name = json_string(t, "header_name", "X-Tenant-Id");
+    const auto* t = root["tenants"].as_table();
+    if (!t) return cfg;
+
+    cfg.enabled = (*t)["enabled"].value_or(false);
+    cfg.default_tenant = (*t)["default_tenant"].value_or("default"s);
+    cfg.header_name = (*t)["header_name"].value_or("X-Tenant-Id"s);
     return cfg;
 }
 
-std::vector<PluginConfigEntry> ConfigLoader::extract_plugins(const JsonValue& root) {
+std::vector<PluginConfigEntry> ConfigLoader::extract_plugins(const toml::table& root) {
     std::vector<PluginConfigEntry> result;
-    if (!root.contains("plugins") || !root["plugins"].is_array()) return result;
-    const auto arr = root["plugins"];
-    result.reserve(arr.size());
-    for (const auto& p : arr) {
+    const auto* arr = root["plugins"].as_array();
+    if (!arr) return result;
+    result.reserve(arr->size());
+
+    for (const auto& elem : *arr) {
+        const auto* p = elem.as_table();
+        if (!p) continue;
         PluginConfigEntry entry;
-        entry.path = json_string(p, "path", "");
-        entry.type = json_string(p, kType, "");
-        entry.config = json_string(p, "config", "");
+        entry.path = (*p)["path"].value_or(""s);
+        entry.type = (*p)["type"].value_or(""s);
+        entry.config = (*p)["config"].value_or(""s);
         if (!entry.path.empty() && !entry.type.empty()) {
             result.emplace_back(std::move(entry));
         }
@@ -1338,79 +776,82 @@ std::vector<PluginConfigEntry> ConfigLoader::extract_plugins(const JsonValue& ro
     return result;
 }
 
-SchemaManagementConfigEntry ConfigLoader::extract_schema_management(const JsonValue& root) {
+SchemaManagementConfigEntry ConfigLoader::extract_schema_management(const toml::table& root) {
     SchemaManagementConfigEntry cfg;
-    if (!root.contains("schema_management")) return cfg;
-    const auto s = root["schema_management"];
-    cfg.enabled = json_bool(s, kEnabled, false);
-    cfg.require_approval = json_bool(s, "require_approval", false);
-    cfg.max_history_entries = json_size(s, "max_history_entries", 1000);
+    const auto* s = root["schema_management"].as_table();
+    if (!s) return cfg;
+
+    cfg.enabled = (*s)["enabled"].value_or(false);
+    cfg.require_approval = (*s)["require_approval"].value_or(false);
+    cfg.max_history_entries = static_cast<size_t>((*s)["max_history_entries"].value_or(1000));
     return cfg;
 }
 
-WireProtocolConfigEntry ConfigLoader::extract_wire_protocol(const JsonValue& root) {
+WireProtocolConfigEntry ConfigLoader::extract_wire_protocol(const toml::table& root) {
     WireProtocolConfigEntry cfg;
-    if (!root.contains("wire_protocol")) return cfg;
-    const auto w = root["wire_protocol"];
-    cfg.enabled = json_bool(w, kEnabled, false);
-    cfg.host = json_string(w, "host", "0.0.0.0");
-    cfg.port = static_cast<uint16_t>(json_int(w, "port", 5433));
-    cfg.max_connections = json_uint32(w, "max_connections", 100);
-    cfg.thread_pool_size = json_uint32(w, "thread_pool_size", 4);
-    cfg.require_password = json_bool(w, "require_password", false);
+    const auto* w = root["wire_protocol"].as_table();
+    if (!w) return cfg;
+
+    cfg.enabled = (*w)["enabled"].value_or(false);
+    cfg.host = (*w)["host"].value_or("0.0.0.0"s);
+    cfg.port = static_cast<uint16_t>((*w)["port"].value_or(5433));
+    cfg.max_connections = static_cast<uint32_t>((*w)["max_connections"].value_or(100));
+    cfg.thread_pool_size = static_cast<uint32_t>((*w)["thread_pool_size"].value_or(4));
+    cfg.require_password = (*w)["require_password"].value_or(false);
     return cfg;
 }
 
-GraphQLConfigEntry ConfigLoader::extract_graphql(const JsonValue& root) {
+GraphQLConfigEntry ConfigLoader::extract_graphql(const toml::table& root) {
     GraphQLConfigEntry cfg;
-    if (!root.contains("graphql")) return cfg;
-    const auto g = root["graphql"];
-    cfg.enabled = json_bool(g, kEnabled, false);
-    cfg.endpoint = json_string(g, "endpoint", "/api/v1/graphql");
-    cfg.max_query_depth = json_uint32(g, "max_query_depth", 5);
+    const auto* g = root["graphql"].as_table();
+    if (!g) return cfg;
+
+    cfg.enabled = (*g)["enabled"].value_or(false);
+    cfg.endpoint = (*g)["endpoint"].value_or("/api/v1/graphql"s);
+    cfg.max_query_depth = static_cast<uint32_t>((*g)["max_query_depth"].value_or(5));
     return cfg;
 }
 
-BinaryRpcConfigEntry ConfigLoader::extract_binary_rpc(const JsonValue& root) {
+BinaryRpcConfigEntry ConfigLoader::extract_binary_rpc(const toml::table& root) {
     BinaryRpcConfigEntry cfg;
-    if (!root.contains("binary_rpc")) return cfg;
-    const auto b = root["binary_rpc"];
-    cfg.enabled = json_bool(b, kEnabled, false);
-    cfg.host = json_string(b, "host", "0.0.0.0");
-    cfg.port = static_cast<uint16_t>(json_int(b, "port", 9090));
-    cfg.max_connections = json_uint32(b, "max_connections", 50);
+    const auto* b = root["binary_rpc"].as_table();
+    if (!b) return cfg;
+
+    cfg.enabled = (*b)["enabled"].value_or(false);
+    cfg.host = (*b)["host"].value_or("0.0.0.0"s);
+    cfg.port = static_cast<uint16_t>((*b)["port"].value_or(9090));
+    cfg.max_connections = static_cast<uint32_t>((*b)["max_connections"].value_or(50));
     return cfg;
 }
 
-AlertingConfig ConfigLoader::extract_alerting(const JsonValue& root) {
+AlertingConfig ConfigLoader::extract_alerting(const toml::table& root) {
     AlertingConfig cfg;
-    if (!root.contains("alerting")) return cfg;
-    const auto a = root["alerting"];
+    const auto* alert = root["alerting"].as_table();
+    if (!alert) return cfg;
+    const auto& a = *alert;
 
-    cfg.enabled = json_bool(a, kEnabled, false);
-    cfg.evaluation_interval_seconds = json_int(a, "evaluation_interval_seconds", 10);
-    cfg.alert_log_file = json_string(a, "alert_log_file", "alerts.jsonl");
+    cfg.enabled = a["enabled"].value_or(false);
+    cfg.evaluation_interval_seconds = a["evaluation_interval_seconds"].value_or(10);
+    cfg.alert_log_file = a["alert_log_file"].value_or("alerts.jsonl"s);
 
-    // Webhook
-    if (a.contains("webhook") && a["webhook"].is_object()) {
-        const auto w = a["webhook"];
-        cfg.webhook.enabled = json_bool(w, kEnabled, false);
-        cfg.webhook.url = json_string(w, "url", "");
-        cfg.webhook.auth_header = json_string(w, "auth_header", "");
+    if (const auto* w = a["webhook"].as_table()) {
+        cfg.webhook.enabled = (*w)["enabled"].value_or(false);
+        cfg.webhook.url = (*w)["url"].value_or(""s);
+        cfg.webhook.auth_header = (*w)["auth_header"].value_or(""s);
     }
 
-    // Rules
-    if (a.contains("rules") && a["rules"].is_array()) {
-        const auto rules_arr = a["rules"];
-        for (const auto& r : rules_arr) {
+    if (const auto* rules_arr = a["rules"].as_array()) {
+        for (const auto& elem : *rules_arr) {
+            const auto* r = elem.as_table();
+            if (!r) continue;
             AlertRule rule;
-            rule.name = json_string(r, kName, "");
-            rule.condition = parse_alert_condition(json_string(r, "condition", "custom_metric"));
-            rule.threshold = static_cast<double>(json_int(r, "threshold", 0));
-            rule.window = std::chrono::seconds(json_int(r, "window_seconds", 60));
-            rule.cooldown = std::chrono::seconds(json_int(r, "cooldown_seconds", 300));
-            rule.severity = json_string(r, "severity", "warning");
-            rule.enabled = json_bool(r, kEnabled, true);
+            rule.name = (*r)["name"].value_or(""s);
+            rule.condition = parse_alert_condition((*r)["condition"].value_or("custom_metric"s));
+            rule.threshold = (*r)["threshold"].value_or(0.0);
+            rule.window = std::chrono::seconds((*r)["window_seconds"].value_or(60));
+            rule.cooldown = std::chrono::seconds((*r)["cooldown_seconds"].value_or(300));
+            rule.severity = (*r)["severity"].value_or("warning"s);
+            rule.enabled = (*r)["enabled"].value_or(true);
             cfg.rules.emplace_back(std::move(rule));
         }
     }
@@ -1418,79 +859,251 @@ AlertingConfig ConfigLoader::extract_alerting(const JsonValue& root) {
     return cfg;
 }
 
-AuthConfig ConfigLoader::extract_auth(const JsonValue& root) {
+AuthConfig ConfigLoader::extract_auth(const toml::table& root) {
     AuthConfig cfg;
-    if (!root.contains("auth")) {
-        return cfg;
-    }
-    const auto a = root["auth"];
-    cfg.provider = json_string(a, "provider", "api_key");
+    const auto* auth = root["auth"].as_table();
+    if (!auth) return cfg;
+    const auto& a = *auth;
 
-    // JWT sub-section
-    if (a.contains("jwt") && a["jwt"].is_object()) {
-        const auto j = a["jwt"];
-        cfg.jwt_issuer = json_string(j, "issuer", "");
-        cfg.jwt_audience = json_string(j, "audience", "");
-        cfg.jwt_secret = json_string(j, "secret", "");
-        cfg.jwt_roles_claim = json_string(j, "roles_claim", "roles");
+    cfg.provider = a["provider"].value_or("api_key"s);
+
+    if (const auto* j = a["jwt"].as_table()) {
+        cfg.jwt_issuer = (*j)["issuer"].value_or(""s);
+        cfg.jwt_audience = (*j)["audience"].value_or(""s);
+        cfg.jwt_secret = (*j)["secret"].value_or(""s);
+        cfg.jwt_roles_claim = (*j)["roles_claim"].value_or("roles"s);
     }
 
-    // LDAP sub-section
-    if (a.contains("ldap") && a["ldap"].is_object()) {
-        const auto l = a["ldap"];
-        cfg.ldap_url = json_string(l, "url", "");
-        cfg.ldap_base_dn = json_string(l, "base_dn", "");
-        cfg.ldap_bind_dn = json_string(l, "bind_dn", "");
-        cfg.ldap_bind_password = json_string(l, "bind_password", "");
-        cfg.ldap_user_filter = json_string(l, "user_filter", "(uid={})");
-        cfg.ldap_group_attribute = json_string(l, "group_attribute", "memberOf");
+    if (const auto* l = a["ldap"].as_table()) {
+        cfg.ldap_url = (*l)["url"].value_or(""s);
+        cfg.ldap_base_dn = (*l)["base_dn"].value_or(""s);
+        cfg.ldap_bind_dn = (*l)["bind_dn"].value_or(""s);
+        cfg.ldap_bind_password = (*l)["bind_password"].value_or(""s);
+        cfg.ldap_user_filter = (*l)["user_filter"].value_or("(uid={})"s);
+        cfg.ldap_group_attribute = (*l)["group_attribute"].value_or("memberOf"s);
     }
 
     return cfg;
 }
 
+// ---- Tier B extractors -----------------------------------------------------
+
+ProxyConfig::AuditSamplingConfig ConfigLoader::extract_audit_sampling(const toml::table& root) {
+    ProxyConfig::AuditSamplingConfig cfg;
+    const auto* audit = root["audit"].as_table();
+    if (!audit) return cfg;
+    const auto* sampling = (*audit)["sampling"].as_table();
+    if (!sampling) return cfg;
+    const auto& s = *sampling;
+
+    cfg.enabled = s["enabled"].value_or(false);
+    cfg.default_sample_rate = s["default_sample_rate"].value_or(1.0);
+    cfg.select_sample_rate = s["select_sample_rate"].value_or(1.0);
+    cfg.always_log_blocked = s["always_log_blocked"].value_or(true);
+    cfg.always_log_writes = s["always_log_writes"].value_or(true);
+    cfg.always_log_errors = s["always_log_errors"].value_or(true);
+    cfg.deterministic = s["deterministic"].value_or(true);
+    return cfg;
+}
+
+ProxyConfig::ResultCacheConfig ConfigLoader::extract_result_cache(const toml::table& root) {
+    ProxyConfig::ResultCacheConfig cfg;
+    const auto* rc = root["result_cache"].as_table();
+    if (!rc) return cfg;
+
+    cfg.enabled = (*rc)["enabled"].value_or(false);
+    cfg.max_entries = static_cast<size_t>((*rc)["max_entries"].value_or(5000));
+    cfg.num_shards = static_cast<size_t>((*rc)["num_shards"].value_or(16));
+    cfg.ttl_seconds = (*rc)["ttl_seconds"].value_or(60);
+    cfg.max_result_size_bytes = static_cast<size_t>((*rc)["max_result_size_bytes"].value_or(1048576));
+    return cfg;
+}
+
+// ---- Tier C/F/G extractors -------------------------------------------------
+
+ProxyConfig::SlowQueryConfig ConfigLoader::extract_slow_query(const toml::table& root) {
+    ProxyConfig::SlowQueryConfig cfg;
+    const auto* sq = root["slow_query"].as_table();
+    if (!sq) return cfg;
+
+    cfg.enabled = (*sq)["enabled"].value_or(false);
+    cfg.threshold_ms = static_cast<uint32_t>((*sq)["threshold_ms"].value_or(500));
+    cfg.max_entries = static_cast<size_t>((*sq)["max_entries"].value_or(1000));
+    return cfg;
+}
+
+ProxyConfig::QueryCostConfig ConfigLoader::extract_query_cost(const toml::table& root) {
+    ProxyConfig::QueryCostConfig cfg;
+    const auto* qc = root["query_cost"].as_table();
+    if (!qc) return cfg;
+
+    cfg.enabled = (*qc)["enabled"].value_or(false);
+    cfg.max_cost = (*qc)["max_cost"].value_or(100000.0);
+    cfg.max_estimated_rows = static_cast<uint64_t>((*qc)["max_estimated_rows"].value_or(1000000));
+    cfg.log_estimates = (*qc)["log_estimates"].value_or(false);
+    return cfg;
+}
+
+ProxyConfig::SchemaDriftConfig ConfigLoader::extract_schema_drift(const toml::table& root) {
+    ProxyConfig::SchemaDriftConfig cfg;
+    const auto* sd = root["schema_drift"].as_table();
+    if (!sd) return cfg;
+
+    cfg.enabled = (*sd)["enabled"].value_or(false);
+    cfg.check_interval_seconds = (*sd)["check_interval_seconds"].value_or(600);
+    cfg.database = (*sd)["database"].value_or("testdb"s);
+    cfg.schema_name = (*sd)["schema_name"].value_or("public"s);
+    return cfg;
+}
+
+ProxyConfig::RetryConfig ConfigLoader::extract_retry(const toml::table& root) {
+    ProxyConfig::RetryConfig cfg;
+    const auto* rt = root["retry"].as_table();
+    if (!rt) return cfg;
+
+    cfg.enabled = (*rt)["enabled"].value_or(false);
+    cfg.max_retries = (*rt)["max_retries"].value_or(1);
+    cfg.initial_backoff_ms = (*rt)["initial_backoff_ms"].value_or(100);
+    cfg.max_backoff_ms = (*rt)["max_backoff_ms"].value_or(2000);
+    return cfg;
+}
+
+ProxyConfig::RequestTimeoutConfig ConfigLoader::extract_request_timeout(const toml::table& root) {
+    ProxyConfig::RequestTimeoutConfig cfg;
+    const auto* rt = root["request_timeout"].as_table();
+    if (!rt) return cfg;
+
+    cfg.enabled = (*rt)["enabled"].value_or(true);
+    cfg.timeout_ms = static_cast<uint32_t>((*rt)["timeout_ms"].value_or(30000));
+    return cfg;
+}
+
+ProxyConfig::AuditEncryptionConfig ConfigLoader::extract_audit_encryption(const toml::table& root) {
+    ProxyConfig::AuditEncryptionConfig cfg;
+
+    if (const auto* ae = root["audit_encryption"].as_table()) {
+        cfg.enabled = (*ae)["enabled"].value_or(false);
+        cfg.key_id = (*ae)["key_id"].value_or("audit-key-1"s);
+    } else if (const auto* audit = root["audit"].as_table()) {
+        if (const auto* enc = (*audit)["encryption"].as_table()) {
+            cfg.enabled = (*enc)["enabled"].value_or(false);
+            cfg.key_id = (*enc)["key_id"].value_or("audit-key-1"s);
+        }
+    }
+    return cfg;
+}
+
+ProxyConfig::TracingConfig ConfigLoader::extract_tracing(const toml::table& root) {
+    ProxyConfig::TracingConfig cfg;
+    const auto* t = root["tracing"].as_table();
+    if (!t) return cfg;
+
+    cfg.spans_enabled = (*t)["spans_enabled"].value_or(false);
+    return cfg;
+}
+
+ProxyConfig::AdaptiveRateLimitingConfig ConfigLoader::extract_adaptive_rate_limiting(const toml::table& root) {
+    ProxyConfig::AdaptiveRateLimitingConfig cfg;
+    const auto* arl = root["adaptive_rate_limiting"].as_table();
+    if (!arl) return cfg;
+
+    cfg.enabled = (*arl)["enabled"].value_or(false);
+    cfg.adjustment_interval_seconds = static_cast<uint32_t>((*arl)["adjustment_interval_seconds"].value_or(10));
+    cfg.latency_target_ms = static_cast<uint32_t>((*arl)["latency_target_ms"].value_or(50));
+    cfg.throttle_threshold_ms = static_cast<uint32_t>((*arl)["throttle_threshold_ms"].value_or(200));
+    return cfg;
+}
+
+ProxyConfig::PriorityConfig ConfigLoader::extract_priority(const toml::table& root) {
+    ProxyConfig::PriorityConfig cfg;
+    const auto* p = root["priority"].as_table();
+    if (!p) return cfg;
+
+    cfg.enabled = (*p)["enabled"].value_or(false);
+    return cfg;
+}
+
+RouteConfig ConfigLoader::extract_routes(const toml::table& root) {
+    RouteConfig cfg;
+    const auto* routes = root["routes"].as_table();
+    if (!routes) return cfg;
+    const auto& r = *routes;
+
+    cfg.query              = r["query"].value_or(cfg.query);
+    cfg.dry_run            = r["dry_run"].value_or(cfg.dry_run);
+    cfg.health             = r["health"].value_or(cfg.health);
+    cfg.metrics            = r["metrics"].value_or(cfg.metrics);
+    cfg.openapi_spec       = r["openapi_spec"].value_or(cfg.openapi_spec);
+    cfg.swagger_ui         = r["swagger_ui"].value_or(cfg.swagger_ui);
+    cfg.policies_reload    = r["policies_reload"].value_or(cfg.policies_reload);
+    cfg.config_validate    = r["config_validate"].value_or(cfg.config_validate);
+    cfg.slow_queries       = r["slow_queries"].value_or(cfg.slow_queries);
+    cfg.circuit_breakers   = r["circuit_breakers"].value_or(cfg.circuit_breakers);
+    cfg.pii_report         = r["pii_report"].value_or(cfg.pii_report);
+    cfg.security_summary   = r["security_summary"].value_or(cfg.security_summary);
+    cfg.lineage            = r["lineage"].value_or(cfg.lineage);
+    cfg.data_subject_access = r["data_subject_access"].value_or(cfg.data_subject_access);
+    cfg.schema_history     = r["schema_history"].value_or(cfg.schema_history);
+    cfg.schema_pending     = r["schema_pending"].value_or(cfg.schema_pending);
+    cfg.schema_approve     = r["schema_approve"].value_or(cfg.schema_approve);
+    cfg.schema_reject      = r["schema_reject"].value_or(cfg.schema_reject);
+    cfg.schema_drift       = r["schema_drift"].value_or(cfg.schema_drift);
+    cfg.graphql            = r["graphql"].value_or(cfg.graphql);
+    return cfg;
+}
+
+void ConfigLoader::extract_features(const toml::table& root, ProxyConfig& config) {
+    const auto* feat = root["features"].as_table();
+    if (!feat) return;
+
+    config.classification_enabled = (*feat)["classification"].value_or(config.classification_enabled);
+    config.masking_enabled        = (*feat)["masking"].value_or(config.masking_enabled);
+    config.openapi_enabled        = (*feat)["openapi"].value_or(config.openapi_enabled);
+    config.dry_run_enabled        = (*feat)["dry_run"].value_or(config.dry_run_enabled);
+}
+
 // ---- Shared extraction + validation ----------------------------------------
 
-ProxyConfig ConfigLoader::extract_all_sections(const JsonValue& json) {
+ProxyConfig ConfigLoader::extract_all_sections(const toml::table& tbl) {
     ProxyConfig config;
-    config.server = extract_server(json);
-    config.logging = extract_logging(json);
-    config.databases = extract_databases(json);
-    config.users = extract_users(json);
-    config.policies = extract_policies(json);
-    config.rate_limiting = extract_rate_limiting(json);
-    config.cache = extract_cache(json);
-    config.audit = extract_audit(json);
-    config.classifiers = extract_classifiers(json);
-    config.circuit_breaker = extract_circuit_breaker(json);
-    config.allocator = extract_allocator(json);
-    config.metrics = extract_metrics(json);
-    config.config_watcher = extract_config_watcher(json);
-    config.rls_rules = extract_rls_rules(json);
-    config.rewrite_rules = extract_rewrite_rules(json);
-    config.security = extract_security(json);
-    config.encryption = extract_encryption(json);
-    config.tenants = extract_tenants(json);
-    config.plugins = extract_plugins(json);
-    config.schema_management = extract_schema_management(json);
-    config.wire_protocol = extract_wire_protocol(json);
-    config.graphql = extract_graphql(json);
-    config.binary_rpc = extract_binary_rpc(json);
-    config.alerting = extract_alerting(json);
-    config.auth = extract_auth(json);
-    config.audit_sampling = extract_audit_sampling(json);
-    config.result_cache = extract_result_cache(json);
-    config.slow_query = extract_slow_query(json);
-    config.query_cost = extract_query_cost(json);
-    config.schema_drift = extract_schema_drift(json);
-    config.retry = extract_retry(json);
-    config.request_timeout = extract_request_timeout(json);
-    config.audit_encryption = extract_audit_encryption(json);
-    config.tracing = extract_tracing(json);
-    config.adaptive_rate_limiting = extract_adaptive_rate_limiting(json);
-    config.priority = extract_priority(json);
-    config.routes = extract_routes(json);
-    extract_features(json, config);
+    config.server = extract_server(tbl);
+    config.logging = extract_logging(tbl);
+    config.databases = extract_databases(tbl);
+    config.users = extract_users(tbl);
+    config.policies = extract_policies(tbl);
+    config.rate_limiting = extract_rate_limiting(tbl);
+    config.cache = extract_cache(tbl);
+    config.audit = extract_audit(tbl);
+    config.classifiers = extract_classifiers(tbl);
+    config.circuit_breaker = extract_circuit_breaker(tbl);
+    config.allocator = extract_allocator(tbl);
+    config.metrics = extract_metrics(tbl);
+    config.config_watcher = extract_config_watcher(tbl);
+    config.rls_rules = extract_rls_rules(tbl);
+    config.rewrite_rules = extract_rewrite_rules(tbl);
+    config.security = extract_security(tbl);
+    config.encryption = extract_encryption(tbl);
+    config.tenants = extract_tenants(tbl);
+    config.plugins = extract_plugins(tbl);
+    config.schema_management = extract_schema_management(tbl);
+    config.wire_protocol = extract_wire_protocol(tbl);
+    config.graphql = extract_graphql(tbl);
+    config.binary_rpc = extract_binary_rpc(tbl);
+    config.alerting = extract_alerting(tbl);
+    config.auth = extract_auth(tbl);
+    config.audit_sampling = extract_audit_sampling(tbl);
+    config.result_cache = extract_result_cache(tbl);
+    config.slow_query = extract_slow_query(tbl);
+    config.query_cost = extract_query_cost(tbl);
+    config.schema_drift = extract_schema_drift(tbl);
+    config.retry = extract_retry(tbl);
+    config.request_timeout = extract_request_timeout(tbl);
+    config.audit_encryption = extract_audit_encryption(tbl);
+    config.tracing = extract_tracing(tbl);
+    config.adaptive_rate_limiting = extract_adaptive_rate_limiting(tbl);
+    config.priority = extract_priority(tbl);
+    config.routes = extract_routes(tbl);
+    extract_features(tbl, config);
     return config;
 }
 
@@ -1508,8 +1121,8 @@ ConfigLoader::LoadResult ConfigLoader::validate_and_return(ProxyConfig config) {
 
 ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_path) {
     try {
-        const auto json = toml::parse_file(config_path);
-        return validate_and_return(extract_all_sections(json));
+        const auto tbl = parse_toml_file(config_path);
+        return validate_and_return(extract_all_sections(tbl));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to load config: {}", e.what()));
     }
@@ -1517,210 +1130,11 @@ ConfigLoader::LoadResult ConfigLoader::load_from_file(const std::string& config_
 
 ConfigLoader::LoadResult ConfigLoader::load_from_string(const std::string& toml_content) {
     try {
-        const auto json = toml::parse_string(toml_content);
-        return validate_and_return(extract_all_sections(json));
+        const auto tbl = parse_toml_string(toml_content);
+        return validate_and_return(extract_all_sections(tbl));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Failed to parse config: {}", e.what()));
     }
-}
-
-// ============================================================================
-// Tier B extractors
-// ============================================================================
-
-ProxyConfig::AuditSamplingConfig ConfigLoader::extract_audit_sampling(const JsonValue& root) {
-    ProxyConfig::AuditSamplingConfig cfg;
-    if (!root.contains("audit")) return cfg;
-    const auto a = root["audit"];
-    if (!a.contains("sampling") || !a["sampling"].is_object()) return cfg;
-    const auto s = a["sampling"];
-
-    cfg.enabled = json_bool(s, kEnabled, false);
-    cfg.default_sample_rate = json_double(s, "default_sample_rate", 1.0);
-    cfg.select_sample_rate = json_double(s, "select_sample_rate", 1.0);
-    cfg.always_log_blocked = json_bool(s, "always_log_blocked", true);
-    cfg.always_log_writes = json_bool(s, "always_log_writes", true);
-    cfg.always_log_errors = json_bool(s, "always_log_errors", true);
-    cfg.deterministic = json_bool(s, "deterministic", true);
-    return cfg;
-}
-
-ProxyConfig::ResultCacheConfig ConfigLoader::extract_result_cache(const JsonValue& root) {
-    ProxyConfig::ResultCacheConfig cfg;
-    if (!root.contains("result_cache")) return cfg;
-    const auto c = root["result_cache"];
-
-    cfg.enabled = json_bool(c, kEnabled, false);
-    cfg.max_entries = json_size(c, "max_entries", 5000);
-    cfg.num_shards = json_size(c, "num_shards", 16);
-    cfg.ttl_seconds = json_int(c, "ttl_seconds", 60);
-    cfg.max_result_size_bytes = json_size(c, "max_result_size_bytes", 1048576);
-    return cfg;
-}
-
-// ============================================================================
-// Tier C extractors
-// ============================================================================
-
-ProxyConfig::SlowQueryConfig ConfigLoader::extract_slow_query(const JsonValue& root) {
-    ProxyConfig::SlowQueryConfig cfg;
-    if (!root.contains("slow_query")) return cfg;
-    const auto s = root["slow_query"];
-
-    cfg.enabled = json_bool(s, kEnabled, false);
-    cfg.threshold_ms = json_uint32(s, "threshold_ms", 500);
-    cfg.max_entries = json_size(s, "max_entries", 1000);
-    return cfg;
-}
-
-// ============================================================================
-// Tier F extractors
-// ============================================================================
-
-ProxyConfig::QueryCostConfig ConfigLoader::extract_query_cost(const JsonValue& root) {
-    ProxyConfig::QueryCostConfig cfg;
-    if (!root.contains("query_cost")) return cfg;
-    const auto s = root["query_cost"];
-
-    cfg.enabled = json_bool(s, kEnabled, false);
-    cfg.max_cost = json_double(s, "max_cost", 100000.0);
-    cfg.max_estimated_rows = static_cast<uint64_t>(json_int(s, "max_estimated_rows", 1000000));
-    cfg.log_estimates = json_bool(s, "log_estimates", false);
-    return cfg;
-}
-
-ProxyConfig::SchemaDriftConfig ConfigLoader::extract_schema_drift(const JsonValue& root) {
-    ProxyConfig::SchemaDriftConfig cfg;
-    if (!root.contains("schema_drift")) return cfg;
-    const auto s = root["schema_drift"];
-
-    cfg.enabled = json_bool(s, kEnabled, false);
-    cfg.check_interval_seconds = json_int(s, "check_interval_seconds", 600);
-    cfg.database = json_string(s, "database", "testdb");
-    cfg.schema_name = json_string(s, "schema_name", "public");
-    return cfg;
-}
-
-ProxyConfig::RetryConfig ConfigLoader::extract_retry(const JsonValue& root) {
-    ProxyConfig::RetryConfig cfg;
-    if (!root.contains("retry")) return cfg;
-    const auto s = root["retry"];
-
-    cfg.enabled = json_bool(s, kEnabled, false);
-    cfg.max_retries = json_int(s, "max_retries", 1);
-    cfg.initial_backoff_ms = json_int(s, "initial_backoff_ms", 100);
-    cfg.max_backoff_ms = json_int(s, "max_backoff_ms", 2000);
-    return cfg;
-}
-
-ProxyConfig::RequestTimeoutConfig ConfigLoader::extract_request_timeout(const JsonValue& root) {
-    ProxyConfig::RequestTimeoutConfig cfg;
-    if (!root.contains("request_timeout")) return cfg;
-    const auto s = root["request_timeout"];
-
-    cfg.enabled = json_bool(s, kEnabled, true);
-    cfg.timeout_ms = json_uint32(s, "timeout_ms", 30000);
-    return cfg;
-}
-
-// ============================================================================
-// Tier G Extractors
-// ============================================================================
-
-ProxyConfig::AuditEncryptionConfig ConfigLoader::extract_audit_encryption(const JsonValue& root) {
-    ProxyConfig::AuditEncryptionConfig cfg;
-    if (!root.contains("audit_encryption") && !root.contains("audit")) return cfg;
-
-    // Support both [audit_encryption] and [audit.encryption]
-    if (root.contains("audit_encryption")) {
-        const auto s = root["audit_encryption"];
-        cfg.enabled = json_bool(s, kEnabled, false);
-        cfg.key_id = json_string(s, "key_id", "audit-key-1");
-    } else if (root.contains("audit")) {
-        const auto a = root["audit"];
-        if (a.contains("encryption")) {
-            const auto s = a["encryption"];
-            cfg.enabled = json_bool(s, kEnabled, false);
-            cfg.key_id = json_string(s, "key_id", "audit-key-1");
-        }
-    }
-    return cfg;
-}
-
-ProxyConfig::TracingConfig ConfigLoader::extract_tracing(const JsonValue& root) {
-    ProxyConfig::TracingConfig cfg;
-    if (!root.contains("tracing")) return cfg;
-    const auto s = root["tracing"];
-
-    cfg.spans_enabled = json_bool(s, "spans_enabled", false);
-    return cfg;
-}
-
-ProxyConfig::AdaptiveRateLimitingConfig ConfigLoader::extract_adaptive_rate_limiting(const JsonValue& root) {
-    ProxyConfig::AdaptiveRateLimitingConfig cfg;
-    if (!root.contains("adaptive_rate_limiting")) return cfg;
-    const auto s = root["adaptive_rate_limiting"];
-
-    cfg.enabled = json_bool(s, kEnabled, false);
-    cfg.adjustment_interval_seconds = json_uint32(s, "adjustment_interval_seconds", 10);
-    cfg.latency_target_ms = json_uint32(s, "latency_target_ms", 50);
-    cfg.throttle_threshold_ms = json_uint32(s, "throttle_threshold_ms", 200);
-    return cfg;
-}
-
-ProxyConfig::PriorityConfig ConfigLoader::extract_priority(const JsonValue& root) {
-    ProxyConfig::PriorityConfig cfg;
-    if (!root.contains("priority")) return cfg;
-    const auto s = root["priority"];
-
-    cfg.enabled = json_bool(s, kEnabled, false);
-    return cfg;
-}
-
-// ============================================================================
-// Route Config Extractor
-// ============================================================================
-
-RouteConfig ConfigLoader::extract_routes(const JsonValue& root) {
-    RouteConfig cfg;
-    if (!root.contains("routes")) return cfg;
-    const auto routes = root["routes"];
-
-    cfg.query              = json_string(routes, "query",              cfg.query);
-    cfg.dry_run            = json_string(routes, "dry_run",            cfg.dry_run);
-    cfg.health             = json_string(routes, "health",             cfg.health);
-    cfg.metrics            = json_string(routes, "metrics",            cfg.metrics);
-    cfg.openapi_spec       = json_string(routes, "openapi_spec",       cfg.openapi_spec);
-    cfg.swagger_ui         = json_string(routes, "swagger_ui",         cfg.swagger_ui);
-    cfg.policies_reload    = json_string(routes, "policies_reload",    cfg.policies_reload);
-    cfg.config_validate    = json_string(routes, "config_validate",    cfg.config_validate);
-    cfg.slow_queries       = json_string(routes, "slow_queries",       cfg.slow_queries);
-    cfg.circuit_breakers   = json_string(routes, "circuit_breakers",   cfg.circuit_breakers);
-    cfg.pii_report         = json_string(routes, "pii_report",         cfg.pii_report);
-    cfg.security_summary   = json_string(routes, "security_summary",   cfg.security_summary);
-    cfg.lineage            = json_string(routes, "lineage",            cfg.lineage);
-    cfg.data_subject_access = json_string(routes, "data_subject_access", cfg.data_subject_access);
-    cfg.schema_history     = json_string(routes, "schema_history",     cfg.schema_history);
-    cfg.schema_pending     = json_string(routes, "schema_pending",     cfg.schema_pending);
-    cfg.schema_approve     = json_string(routes, "schema_approve",     cfg.schema_approve);
-    cfg.schema_reject      = json_string(routes, "schema_reject",      cfg.schema_reject);
-    cfg.schema_drift       = json_string(routes, "schema_drift",       cfg.schema_drift);
-    cfg.graphql            = json_string(routes, "graphql",            cfg.graphql);
-    return cfg;
-}
-
-// ============================================================================
-// Feature Flags Extractor
-// ============================================================================
-
-void ConfigLoader::extract_features(const JsonValue& root, ProxyConfig& config) {
-    if (!root.contains("features")) return;
-    const auto feat = root["features"];
-
-    config.classification_enabled = json_bool(feat, "classification", config.classification_enabled);
-    config.masking_enabled        = json_bool(feat, "masking",        config.masking_enabled);
-    config.openapi_enabled        = json_bool(feat, "openapi",        config.openapi_enabled);
-    config.dry_run_enabled        = json_bool(feat, "dry_run",        config.dry_run_enabled);
 }
 
 // ============================================================================
@@ -1730,12 +1144,10 @@ void ConfigLoader::extract_features(const JsonValue& root, ProxyConfig& config) 
 std::vector<std::string> ConfigLoader::validate_config(const ProxyConfig& config) {
     std::vector<std::string> errors;
 
-    // Server
     if (!utils::in_range<1, 65535>(config.server.port)) {
         errors.push_back(std::format("server.port must be 1-65535, got {}", config.server.port));
     }
 
-    // TLS
     if (config.server.tls.enabled) {
         if (config.server.tls.cert_file.empty()) {
             errors.push_back("server.tls.cert_file required when TLS is enabled");
@@ -1748,7 +1160,6 @@ std::vector<std::string> ConfigLoader::validate_config(const ProxyConfig& config
         }
     }
 
-    // Databases
     for (size_t i = 0; i < config.databases.size(); ++i) {
         const auto& db = config.databases[i];
         if (db.name.empty()) {
@@ -1764,14 +1175,12 @@ std::vector<std::string> ConfigLoader::validate_config(const ProxyConfig& config
         }
     }
 
-    // Rate limiting
     if (config.rate_limiting.enabled) {
         if (config.rate_limiting.global_tokens_per_second == 0) {
             errors.push_back("rate_limiting.global.tokens_per_second must be > 0 when enabled");
         }
     }
 
-    // Circuit breaker
     if (config.circuit_breaker.enabled) {
         if (config.circuit_breaker.failure_threshold <= 0) {
             errors.push_back("circuit_breaker.failure_threshold must be > 0");
@@ -1781,7 +1190,6 @@ std::vector<std::string> ConfigLoader::validate_config(const ProxyConfig& config
         }
     }
 
-    // Audit webhook
     if (config.audit.webhook_enabled && config.audit.webhook_url.empty()) {
         errors.push_back("audit.webhook.url required when webhook is enabled");
     }

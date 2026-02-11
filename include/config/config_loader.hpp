@@ -3,8 +3,9 @@
 #include "core/types.hpp"
 #include "server/http_server.hpp"  // UserInfo
 #include "alerting/alert_types.hpp"
+#include "config/config_types.hpp"
 
-#include "core/json.hpp"
+#include <toml.hpp>
 
 #include <string>
 #include <vector>
@@ -355,54 +356,6 @@ struct ProxyConfig {
 };
 
 // ============================================================================
-// TOML Parser - Lightweight subset parser using JsonValue
-// ============================================================================
-
-/**
- * @brief Parse a TOML file into JsonValue representation
- *
- * Supports the subset of TOML used by proxy.toml:
- * - [section] headers
- * - [section.subsection] dotted headers
- * - [[array]] repeated sections
- * - [[section.array]] nested array sections
- * - key = "value" strings
- * - key = 123 integers
- * - key = 1.5 floats
- * - key = true/false booleans
- * - key = ["a", "b"] inline string arrays
- * - # comments
- * - Multi-line arrays with [ ... ]
- */
-namespace toml {
-
-/**
- * @brief Parse TOML content string into JSON
- * @param content TOML text
- * @return Parsed JSON object
- * @throws std::runtime_error on parse failure
- */
-[[nodiscard]] JsonValue parse_string(const std::string& content);
-
-/**
- * @brief Parse TOML file into JSON
- * @param file_path Path to .toml file
- * @return Parsed JSON object
- * @throws std::runtime_error on file I/O or parse failure
- */
-[[nodiscard]] JsonValue parse_file(const std::string& file_path);
-
-/**
- * @brief Deep-merge two JSON objects
- * Objects: recursively merge, overlay wins for scalar conflicts
- * Arrays: concatenate overlay onto base
- * Scalars: overlay wins
- */
-void merge_values(JsonValue& base, const JsonValue& overlay);
-
-} // namespace toml
-
-// ============================================================================
 // ConfigLoader - Extract typed config from parsed TOML
 // ============================================================================
 
@@ -428,75 +381,64 @@ public:
         }
     };
 
-    /**
-     * @brief Load complete config from TOML file
-     * @param config_path Path to proxy.toml
-     * @return LoadResult with parsed config or error
-     */
     [[nodiscard]] static LoadResult load_from_file(const std::string& config_path);
-
-    /**
-     * @brief Load complete config from TOML string
-     * @param toml_content TOML content
-     * @return LoadResult with parsed config or error
-     */
     [[nodiscard]] static LoadResult load_from_string(const std::string& toml_content);
 
 private:
-    static ServerConfig extract_server(const JsonValue& root);
-    static LoggingConfig extract_logging(const JsonValue& root);
-    static std::vector<DatabaseConfig> extract_databases(const JsonValue& root);
-    static std::unordered_map<std::string, UserInfo> extract_users(const JsonValue& root);
-    static std::vector<Policy> extract_policies(const JsonValue& root);
-    static RateLimitingConfig extract_rate_limiting(const JsonValue& root);
-    static CacheConfig extract_cache(const JsonValue& root);
-    static AuditConfig extract_audit(const JsonValue& root);
-    static std::vector<ClassifierConfig> extract_classifiers(const JsonValue& root);
-    static CircuitBreakerConfig extract_circuit_breaker(const JsonValue& root);
-    static AllocatorConfig extract_allocator(const JsonValue& root);
-    static MetricsConfig extract_metrics(const JsonValue& root);
-    static ConfigWatcherConfig extract_config_watcher(const JsonValue& root);
-    static SecurityConfig extract_security(const JsonValue& root);
-    static EncryptionConfig extract_encryption(const JsonValue& root);
+    static ServerConfig extract_server(const toml::table& root);
+    static LoggingConfig extract_logging(const toml::table& root);
+    static std::vector<DatabaseConfig> extract_databases(const toml::table& root);
+    static std::unordered_map<std::string, UserInfo> extract_users(const toml::table& root);
+    static std::vector<Policy> extract_policies(const toml::table& root);
+    static RateLimitingConfig extract_rate_limiting(const toml::table& root);
+    static CacheConfig extract_cache(const toml::table& root);
+    static AuditConfig extract_audit(const toml::table& root);
+    static std::vector<ClassifierConfig> extract_classifiers(const toml::table& root);
+    static CircuitBreakerConfig extract_circuit_breaker(const toml::table& root);
+    static AllocatorConfig extract_allocator(const toml::table& root);
+    static MetricsConfig extract_metrics(const toml::table& root);
+    static ConfigWatcherConfig extract_config_watcher(const toml::table& root);
+    static SecurityConfig extract_security(const toml::table& root);
+    static EncryptionConfig extract_encryption(const toml::table& root);
 
     // Tier 5 extractors
-    static TenantConfigEntry extract_tenants(const JsonValue& root);
-    static std::vector<PluginConfigEntry> extract_plugins(const JsonValue& root);
-    static SchemaManagementConfigEntry extract_schema_management(const JsonValue& root);
-    static WireProtocolConfigEntry extract_wire_protocol(const JsonValue& root);
-    static GraphQLConfigEntry extract_graphql(const JsonValue& root);
-    static BinaryRpcConfigEntry extract_binary_rpc(const JsonValue& root);
+    static TenantConfigEntry extract_tenants(const toml::table& root);
+    static std::vector<PluginConfigEntry> extract_plugins(const toml::table& root);
+    static SchemaManagementConfigEntry extract_schema_management(const toml::table& root);
+    static WireProtocolConfigEntry extract_wire_protocol(const toml::table& root);
+    static GraphQLConfigEntry extract_graphql(const toml::table& root);
+    static BinaryRpcConfigEntry extract_binary_rpc(const toml::table& root);
 
     // Tier 2 extractors
-    static AlertingConfig extract_alerting(const JsonValue& root);
+    static AlertingConfig extract_alerting(const toml::table& root);
 
     // Tier A extractors
-    static AuthConfig extract_auth(const JsonValue& root);
+    static AuthConfig extract_auth(const toml::table& root);
 
     // Tier B extractors
-    static ProxyConfig::AuditSamplingConfig extract_audit_sampling(const JsonValue& root);
-    static ProxyConfig::ResultCacheConfig extract_result_cache(const JsonValue& root);
+    static ProxyConfig::AuditSamplingConfig extract_audit_sampling(const toml::table& root);
+    static ProxyConfig::ResultCacheConfig extract_result_cache(const toml::table& root);
 
     // Tier C extractors
-    static ProxyConfig::SlowQueryConfig extract_slow_query(const JsonValue& root);
+    static ProxyConfig::SlowQueryConfig extract_slow_query(const toml::table& root);
 
     // Tier F extractors
-    static ProxyConfig::QueryCostConfig extract_query_cost(const JsonValue& root);
-    static ProxyConfig::SchemaDriftConfig extract_schema_drift(const JsonValue& root);
-    static ProxyConfig::RetryConfig extract_retry(const JsonValue& root);
-    static ProxyConfig::RequestTimeoutConfig extract_request_timeout(const JsonValue& root);
+    static ProxyConfig::QueryCostConfig extract_query_cost(const toml::table& root);
+    static ProxyConfig::SchemaDriftConfig extract_schema_drift(const toml::table& root);
+    static ProxyConfig::RetryConfig extract_retry(const toml::table& root);
+    static ProxyConfig::RequestTimeoutConfig extract_request_timeout(const toml::table& root);
 
     // Tier G extractors
-    static ProxyConfig::AuditEncryptionConfig extract_audit_encryption(const JsonValue& root);
-    static ProxyConfig::TracingConfig extract_tracing(const JsonValue& root);
-    static ProxyConfig::AdaptiveRateLimitingConfig extract_adaptive_rate_limiting(const JsonValue& root);
-    static ProxyConfig::PriorityConfig extract_priority(const JsonValue& root);
+    static ProxyConfig::AuditEncryptionConfig extract_audit_encryption(const toml::table& root);
+    static ProxyConfig::TracingConfig extract_tracing(const toml::table& root);
+    static ProxyConfig::AdaptiveRateLimitingConfig extract_adaptive_rate_limiting(const toml::table& root);
+    static ProxyConfig::PriorityConfig extract_priority(const toml::table& root);
 
     // Route config extractor
-    static RouteConfig extract_routes(const JsonValue& root);
+    static RouteConfig extract_routes(const toml::table& root);
 
     // Feature flags extractor
-    static void extract_features(const JsonValue& root, ProxyConfig& config);
+    static void extract_features(const toml::table& root, ProxyConfig& config);
 
     // Helper: parse statement type string to enum
     static std::optional<StatementType> parse_statement_type(const std::string& type_str);
@@ -504,8 +446,8 @@ private:
     // Helper: parse action string to Decision enum
     static std::optional<Decision> parse_action(const std::string& action_str);
 
-    // Shared extraction + validation (eliminates duplication between load_from_file/string)
-    [[nodiscard]] static ProxyConfig extract_all_sections(const JsonValue& root);
+    // Shared extraction + validation
+    [[nodiscard]] static ProxyConfig extract_all_sections(const toml::table& root);
     [[nodiscard]] static LoadResult validate_and_return(ProxyConfig config);
 
     // Semantic validation (called after parsing)

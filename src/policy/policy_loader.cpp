@@ -1,9 +1,11 @@
 #include "policy/policy_loader.hpp"
-#include "config/config_loader.hpp"
 #include "core/utils.hpp"
 
+#include <toml.hpp>
 #include <format>
 #include <fstream>
+
+using namespace std::string_literals;
 
 namespace sqlproxy {
 
@@ -18,11 +20,29 @@ static constexpr std::string_view kSchema         = "schema";
 static constexpr std::string_view kTable          = "table";
 
 // ============================================================================
+// Helper: extract string set from a toml array
+// ============================================================================
+
+namespace {
+
+void extract_string_set(const toml::table& tbl, std::string_view key,
+                        std::unordered_set<std::string>& out) {
+    const auto* arr = tbl[key].as_array();
+    if (!arr) return;
+    for (const auto& elem : *arr) {
+        if (const auto* s = elem.as_string(); s && !s->get().empty()) {
+            out.insert(std::string(s->get()));
+        }
+    }
+}
+
+} // anonymous namespace
+
+// ============================================================================
 // Public API - Load from file
 // ============================================================================
 
 PolicyLoader::LoadResult PolicyLoader::load_from_file(const std::string& config_path) {
-    // Read file contents
     std::ifstream file(config_path);
     if (!file.is_open()) {
         return LoadResult::error(std::format("Cannot open config file: {}", config_path));
@@ -41,31 +61,33 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
     std::vector<Policy> policies;
 
     try {
-        // Parse TOML into JSON using our lightweight parser
-        const auto config = toml::parse_string(toml_content);
+        auto config = toml::parse(toml_content);
 
         // Extract [[policies]] array
-        if (!config.contains(kPolicies) || !config[kPolicies].is_array()) {
+        const auto* policies_array = config[kPolicies].as_array();
+        if (!policies_array) {
             return LoadResult::error("No [[policies]] array found in configuration");
         }
 
-        const auto& policies_array = config[kPolicies];
-
         // Parse each policy
-        for (const auto& node : policies_array) {
+        for (const auto& elem : *policies_array) {
+            const auto* node = elem.as_table();
+            if (!node) continue;
+            const auto& tbl = *node;
+
             Policy policy;
 
             // Required: name
-            policy.name = node.value("name", std::string(""));
+            policy.name = tbl["name"].value_or(""s);
             if (policy.name.empty()) {
                 return LoadResult::error("Policy must have a name");
             }
 
             // Required: priority
-            policy.priority = node.value("priority", 0);
+            policy.priority = tbl["priority"].value_or(0);
 
             // Required: action (ALLOW or BLOCK)
-            const std::string action_str = node.value("action", std::string("BLOCK"));
+            const std::string action_str = tbl["action"].value_or("BLOCK"s);
             const auto action = parse_action(action_str);
             if (!action) {
                 return LoadResult::error(
@@ -74,46 +96,19 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             policy.action = *action;
 
             // Optional: users array
-            if (node.contains(kUsers) && node[kUsers].is_array()) {
-                for (const auto& user : node[kUsers]) {
-                    if (user.is_string()) {
-                        const std::string user_str = user.get<std::string>();
-                        if (!user_str.empty()) {
-                            policy.users.insert(user_str);
-                        }
-                    }
-                }
-            }
+            extract_string_set(tbl, kUsers, policy.users);
 
             // Optional: roles array
-            if (node.contains(kRoles) && node[kRoles].is_array()) {
-                for (const auto& role : node[kRoles]) {
-                    if (role.is_string()) {
-                        const std::string role_str = role.get<std::string>();
-                        if (!role_str.empty()) {
-                            policy.roles.insert(role_str);
-                        }
-                    }
-                }
-            }
+            extract_string_set(tbl, kRoles, policy.roles);
 
             // Optional: exclude_roles array
-            if (node.contains(kExcludeRoles) && node[kExcludeRoles].is_array()) {
-                for (const auto& role : node[kExcludeRoles]) {
-                    if (role.is_string()) {
-                        const std::string role_str = role.get<std::string>();
-                        if (!role_str.empty()) {
-                            policy.exclude_roles.insert(role_str);
-                        }
-                    }
-                }
-            }
+            extract_string_set(tbl, kExcludeRoles, policy.exclude_roles);
 
             // Optional: statement_types array
-            if (node.contains(kStatementTypes) && node[kStatementTypes].is_array()) {
-                for (const auto& stmt : node[kStatementTypes]) {
-                    if (stmt.is_string()) {
-                        const std::string stmt_str = stmt.get<std::string>();
+            if (const auto* stmt_arr = tbl[kStatementTypes].as_array()) {
+                for (const auto& stmt : *stmt_arr) {
+                    if (const auto* s = stmt.as_string()) {
+                        const std::string stmt_str(s->get());
                         const auto stmt_type = parse_statement_type(stmt_str);
                         if (stmt_type) {
                             policy.scope.operations.insert(*stmt_type);
@@ -126,30 +121,21 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
             }
 
             // Optional: Scope fields (database, schema, table)
-            if (node.contains(kDatabase) && node[kDatabase].is_string()) {
-                policy.scope.database = node[kDatabase].get<std::string>();
-            }
-            if (node.contains(kSchema) && node[kSchema].is_string()) {
-                policy.scope.schema = node[kSchema].get<std::string>();
-            }
-            if (node.contains(kTable) && node[kTable].is_string()) {
-                policy.scope.table = node[kTable].get<std::string>();
-            }
+            if (auto v = tbl[kDatabase].value<std::string>()) policy.scope.database = *v;
+            if (auto v = tbl[kSchema].value<std::string>())   policy.scope.schema = *v;
+            if (auto v = tbl[kTable].value<std::string>())     policy.scope.table = *v;
 
             // Optional: columns array (column-level ACL)
-            if (node.contains("columns") && node["columns"].is_array()) {
-                for (const auto& col : node["columns"]) {
-                    if (col.is_string()) {
-                        std::string col_str = col.get<std::string>();
-                        if (!col_str.empty()) {
-                            policy.scope.columns.emplace_back(std::move(col_str));
-                        }
+            if (const auto* col_arr = tbl["columns"].as_array()) {
+                for (const auto& col : *col_arr) {
+                    if (const auto* s = col.as_string(); s && !s->get().empty()) {
+                        policy.scope.columns.emplace_back(std::string(s->get()));
                     }
                 }
             }
 
             // Optional: masking fields (for column-level ALLOW policies)
-            if (node.contains("masking_action") && node["masking_action"].is_string()) {
+            if (auto masking_str_opt = tbl["masking_action"].value<std::string>()) {
                 static const std::unordered_map<std::string, MaskingAction> masking_lookup = {
                     {"none", MaskingAction::NONE},
                     {"redact", MaskingAction::REDACT},
@@ -157,22 +143,20 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
                     {"hash", MaskingAction::HASH},
                     {"nullify", MaskingAction::NULLIFY},
                 };
-                const std::string masking_str = utils::to_lower(node["masking_action"].get<std::string>());
+                const std::string masking_str = utils::to_lower(*masking_str_opt);
                 const auto mit = masking_lookup.find(masking_str);
                 if (mit != masking_lookup.end()) {
                     policy.masking_action = mit->second;
                 }
             }
-            policy.masking_prefix_len = node.value("masking_prefix_len", 3);
-            policy.masking_suffix_len = node.value("masking_suffix_len", 3);
+            policy.masking_prefix_len = tbl["masking_prefix_len"].value_or(3);
+            policy.masking_suffix_len = tbl["masking_suffix_len"].value_or(3);
 
             // Optional: reason (for audit logs)
-            policy.reason = node.value("reason", std::string(""));
+            policy.reason = tbl["reason"].value_or(""s);
 
             // Optional: shadow mode (log-only, don't enforce)
-            if (node.contains("shadow") && node["shadow"].is_boolean()) {
-                policy.shadow = node["shadow"].get<bool>();
-            }
+            policy.shadow = tbl["shadow"].value_or(false);
 
             // Validate policy
             std::string error_msg;
@@ -185,13 +169,15 @@ PolicyLoader::LoadResult PolicyLoader::load_from_string(const std::string& toml_
 
         return LoadResult::ok(std::move(policies));
 
+    } catch (const toml::parse_error& e) {
+        return LoadResult::error(std::format("TOML parse error: {}", e.what()));
     } catch (const std::exception& e) {
         return LoadResult::error(std::format("Error parsing policies: {}", e.what()));
     }
 }
 
 // ============================================================================
-// Private Helpers - kept as-is from original implementation
+// Private Helpers
 // ============================================================================
 
 std::optional<StatementType> PolicyLoader::parse_statement_type(const std::string& type_str) {
@@ -219,7 +205,7 @@ std::optional<StatementType> PolicyLoader::parse_statement_type(const std::strin
 
 std::optional<Decision> PolicyLoader::parse_action(const std::string& action_str) {
     const std::string lower = utils::to_lower(action_str);
-    
+
     static const std::unordered_map<std::string, Decision> lookup = {
         {"allow", Decision::ALLOW},
         {"block", Decision::BLOCK},
@@ -230,25 +216,21 @@ std::optional<Decision> PolicyLoader::parse_action(const std::string& action_str
 }
 
 bool PolicyLoader::validate_policy(const Policy& policy, std::string& error_msg) {
-    // Validate policy has a name
     if (policy.name.empty()) {
         error_msg = "Policy must have a name";
         return false;
     }
 
-    // Validate action
     if (policy.action != Decision::ALLOW && policy.action != Decision::BLOCK) {
         error_msg = "Policy action must be ALLOW or BLOCK";
         return false;
     }
 
-    // Validate priority
     if (policy.priority < 0) {
         error_msg = "Policy priority must be non-negative";
         return false;
     }
 
-    // Validate at least one user or role
     if (policy.users.empty() && policy.roles.empty()) {
         error_msg = "Policy must specify at least one user or role";
         return false;

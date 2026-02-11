@@ -54,6 +54,9 @@ find_library(UUID_LIBRARY uuid REQUIRED)
 # xxHash - hashing
 set(XXHASH_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third_party/xxHash)
 
+# toml++ - TOML parser (vendored single-header)
+set(TOMLPP_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third_party/tomlplusplus)
+
 # glaze (high-performance JSON library with compile-time reflection)
 include(FetchContent)
 FetchContent_Declare(
@@ -68,9 +71,8 @@ FetchContent_MakeAvailable(glaze)
 # Download dependencies via FetchContent
 # ============================================================================
 
-# REMOVED: glaze, tomlplusplus, ctre - not used in codebase
-# These were causing "Failed to connect to github.com" errors
-# If needed in future, vendor them to third_party/ instead of FetchContent
+# tomlplusplus is now vendored at third_party/tomlplusplus/ (single header)
+# ctre was removed (not used in codebase)
 
 # ============================================================================
 # libpg_query - PostgreSQL parser
@@ -144,6 +146,7 @@ set(ALL_SOURCES
 set(INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/include
     ${XXHASH_INCLUDE_DIR}
+    ${TOMLPP_INCLUDE_DIR}
     ${OPENSSL_INCLUDE_DIR}
 )
 
@@ -348,6 +351,7 @@ endif()
 message(STATUS "")
 message(STATUS "Dependencies:")
 message(STATUS "  xxHash:         ${XXHASH_INCLUDE_DIR}")
+message(STATUS "  toml++:         ${TOMLPP_INCLUDE_DIR}")
 message(STATUS "")
 message(STATUS "Install prefix:   ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "Build tests:      ${BUILD_TESTS}")

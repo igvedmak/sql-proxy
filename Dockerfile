@@ -55,6 +55,7 @@ COPY --from=libpgquery-builder /build/libpg_query /build/sql_proxy/third_party/l
 # Copy header-only libraries
 COPY third_party/cpp-httplib /build/sql_proxy/third_party/cpp-httplib
 COPY third_party/xxHash /build/sql_proxy/third_party/xxHash
+COPY third_party/tomlplusplus /build/sql_proxy/third_party/tomlplusplus
 # Copy source files (this layer rebuilds on code changes, but deps are cached)
 COPY src /build/sql_proxy/src
 
