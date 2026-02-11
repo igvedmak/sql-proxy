@@ -8,98 +8,155 @@
                               │   POST /api/v1/query             │
                               │   { "user", "sql", "database" }  │
                               └───────────────┬─────────────────┘
-                                              │ HTTP
+                                              │ HTTP / PG Wire / Binary RPC
                                               ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                          HTTP SERVER (cpp-httplib)                           │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │ Endpoints:                                                           │   │
-│  │  POST /api/v1/query      → Query execution pipeline                 │   │
-│  │  GET  /health            → {"status":"healthy"}                     │   │
-│  │  GET  /metrics           → Prometheus format (rate_limiter + audit)  │   │
-│  │  POST /policies/reload   → Hot-reload policies from TOML config     │   │
-│  │  GET  /api/v1/compliance/pii-report       → PII access report       │   │
-│  │  GET  /api/v1/compliance/security-summary → Security overview       │   │
-│  │  GET  /api/v1/compliance/lineage          → Data lineage summaries  │   │
+│  │ Core Endpoints:                                                      │   │
+│  │  POST /api/v1/query          → Query execution pipeline              │   │
+│  │  POST /api/v1/query/dry-run  → Policy check without execution        │   │
+│  │  GET  /health                → Shallow/deep/readiness health check   │   │
+│  │  GET  /metrics               → Prometheus metrics (60+ metrics)      │   │
+│  │  GET  /openapi.json          → OpenAPI 3.0 spec                      │   │
+│  │  GET  /api/docs              → Swagger UI                            │   │
+│  │                                                                      │   │
+│  │ Admin Endpoints:                                                     │   │
+│  │  POST /policies/reload       → Hot-reload policies from TOML         │   │
+│  │  POST /api/v1/config/validate→ Validate TOML config                  │   │
+│  │  GET  /api/v1/slow-queries   → Recent slow queries                   │   │
+│  │  GET  /api/v1/circuit-breakers → Circuit breaker state/events        │   │
+│  │                                                                      │   │
+│  │ Compliance Endpoints:                                                │   │
+│  │  GET  /api/v1/compliance/pii-report       → PII access report        │   │
+│  │  GET  /api/v1/compliance/security-summary → Security overview        │   │
+│  │  GET  /api/v1/compliance/lineage          → Data lineage summaries   │   │
+│  │  GET  /api/v1/compliance/data-subject-access → GDPR subject access   │   │
+│  │                                                                      │   │
+│  │ Schema Endpoints:                                                    │   │
+│  │  GET  /api/v1/schema/history → DDL change history                    │   │
+│  │  GET  /api/v1/schema/pending → Pending DDL approvals                 │   │
+│  │  POST /api/v1/schema/approve → Approve pending DDL                   │   │
+│  │  POST /api/v1/schema/reject  → Reject pending DDL                    │   │
+│  │  GET  /api/v1/schema/drift   → Schema drift events                   │   │
+│  │                                                                      │   │
+│  │ Optional Endpoints:                                                  │   │
+│  │  POST /api/v1/graphql        → GraphQL-to-SQL translation            │   │
+│  │  GET  /dashboard             → Admin web UI (HTML)                   │   │
+│  │  GET  /dashboard/api/stats   → Real-time stats JSON                  │   │
+│  │  GET  /dashboard/api/policies→ Policy listing                        │   │
+│  │  GET  /dashboard/api/users   → User listing                          │   │
+│  │  GET  /dashboard/api/alerts  → Active/historical alerts              │   │
+│  │  GET  /dashboard/api/metrics/stream → SSE metrics stream             │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
+│  Feature Flags (config-driven route gating):                                │
+│  ┌─ dry_run, openapi, swagger_ui, metrics, slow_query, schema_drift,       │
+│  │  classification, injection_detection, lineage_tracking, masking,         │
+│  └─ dashboard — each toggleable via [features] in TOML                     │
+│                                                                              │
 │  Request Validation:                                                         │
-│  ┌─ Content-Type: application/json? ──── NO ──→ 400 Bad Request             │
+│  ┌─ Graceful shutdown check ─────────── DRAINING → 503 Server shutting down │
+│  ├─ Content-Type: application/json? ──── NO ──→ 400 Bad Request             │
 │  ├─ Body has valid JSON? ──────────────── NO ──→ 400 Bad Request             │
-│  ├─ "user" field present? ─────────────── NO ──→ 400 Missing user            │
 │  ├─ "sql" field present? ──────────────── NO ──→ 400 Missing sql             │
-│  ├─ SQL length < 100KB? ──────────────── NO ──→ 400 SQL too long             │
+│  ├─ SQL length < max_sql_length? ──────── NO ──→ 400 SQL too long            │
 │  ├─ Brute force check (IP/user)? ─────── BLOCKED → 429 + Retry-After        │
 │  ├─ User authenticated? ──────────────── NO ──→ 401 (+ record_failure)       │
 │  ├─ IP allowlist check? ─────────────── BLOCKED → 403 IP not allowed         │
 │  └─ record_success on auth pass                                              │
 │                                                                              │
 │  Build ProxyRequest:                                                         │
-│  ├─ request_id  = UUID                                                       │
-│  ├─ user        = from JSON                                                  │
-│  ├─ roles       = from UserInfo (resolved by validate_user)                  │
-│  ├─ sql         = from JSON                                                  │
-│  ├─ database    = from JSON (default: "testdb")                              │
-│  └─ source_ip   = X-Forwarded-For header (fallback: remote_addr)            │
+│  ├─ request_id    = UUID                                                     │
+│  ├─ user          = from auth (API key → username, or JSON "user")           │
+│  ├─ roles         = from UserInfo (resolved by validate_user)                │
+│  ├─ sql           = from JSON                                                │
+│  ├─ database      = from JSON (fallback: user.default_database, "testdb")    │
+│  ├─ source_ip     = X-Forwarded-For (first IP) or remote_addr               │
+│  ├─ traceparent   = W3C trace propagation header                             │
+│  ├─ tracestate    = W3C trace state header                                   │
+│  └─ priority      = from JSON "priority" field (LOW/NORMAL/HIGH/CRITICAL)    │
 └──────────────────────────────┬───────────────────────────────────────────────┘
                                │
                                ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                     PIPELINE ORCHESTRATOR (pipeline.cpp)                      │
 │                                                                              │
-│  Creates RequestContext (carries state through all 7 layers):                │
+│  Creates RequestContext (carries state through all layers):                  │
 │  ┌──────────────────────────────────────────────────────────────────┐       │
 │  │ RequestContext {                                                   │       │
 │  │   // Input                                                        │       │
 │  │   request_id, user, roles, database, sql, source_ip               │       │
+│  │   user_attributes, tenant_id, priority, dry_run                   │       │
+│  │   // W3C Distributed Tracing                                      │       │
+│  │   trace_context { trace_id, span_id, parent_span_id, tracestate } │       │
 │  │   // Timestamps                                                   │       │
 │  │   received_at (system_clock), started_at (steady_clock)           │       │
-│  │   // Per-request memory arena (1KB initial)                       │       │
-│  │   arena                                                           │       │
 │  │   // Stage results (populated as pipeline progresses)             │       │
 │  │   fingerprint, statement_info, analysis,                          │       │
 │  │   policy_result, query_result, classification_result              │       │
+│  │   rate_limit_result, injection_result, anomaly_result             │       │
+│  │   column_decisions, masking_applied                               │       │
 │  │   // Timing breakdown (microseconds)                              │       │
 │  │   parse_time, policy_time, execution_time, classification_time    │       │
+│  │   column_policy_time, masking_time, injection_check_time          │       │
 │  │   // Flags                                                        │       │
-│  │   cache_hit, rate_limited, circuit_breaker_open                   │       │
+│  │   cache_hit, rate_limited, sql_rewritten, ddl_requires_approval   │       │
+│  │   // Tracing spans (ScopedSpan per layer)                         │       │
+│  │   spans: vector<SpanRecord>                                       │       │
 │  │ }                                                                 │       │
 │  └──────────────────────────────────────────────────────────────────┘       │
+│                                                                              │
+│  Tenant Resolution (if multi-tenant enabled):                               │
+│  ├─ TenantManager::resolve(tenant_id) → per-tenant overrides               │
+│  └─ Can swap: policy_engine, rate_limiter, audit_emitter                    │
 │                                                                              │
 │  Sequential layer execution with short-circuit on failure:                   │
 │                                                                              │
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐          │
-│  │ Layer 1 │─▶│ Layer 2 │─▶│ Layer 3 │─▶│Layer3.5 │─▶│Layer3.7 │──┐       │
-│  │  RATE   │  │  PARSE  │  │ ANALYZE │  │  SQLI   │  │ ANOMALY │  │       │
-│  │  LIMIT  │  │ + CACHE │  │         │  │ DETECT  │  │ (info)  │  │       │
-│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘  └─────────┘  │       │
-│       │FAIL        │FAIL        │FAIL        │BLOCK               │PASS   │
-│       ▼            ▼            ▼            ▼                    ▼       │
-│   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐          ┌──────────┐   │
-│   │ AUDIT │   │ AUDIT │   │ AUDIT │   │ AUDIT │          │ Layer 4  │   │
-│   │ + RES │   │ + RES │   │ + RES │   │ + RES │          │  POLICY  │   │
-│   └───────┘   └───────┘   └───────┘   └───────┘          └────┬─────┘   │
-│                                                                 │         │
-│                                            FAIL ◀───────────────┤         │
-│                                            ▼                    │PASS     │
-│                                       ┌───────┐           ┌─────▼─────┐  │
-│                                       │ AUDIT │           │  Layer 5  │  │
-│                                       │ + RES │           │  EXECUTE  │  │
-│                                       └───────┘           └─────┬─────┘  │
-│                                                                 │        │
-│                          ┌──────────────────────────────────────┘        │
-│                          ▼                                               │
-│                   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │
-│                   │Layer 5.3 │─▶│Layer 5.5 │─▶│ Layer 6  │─▶│Lay 6.5│  │
-│                   │ DECRYPT  │  │ COL ACL  │  │ CLASSIFY │  │LINEAGE│  │
-│                   │ COLUMNS  │  │ + MASK   │  │          │  │TRACK  │  │
-│                   └──────────┘  └──────────┘  └──────────┘  └───┬────┘  │
-│                                                                  │       │
-│                                                            ┌─────▼─────┐ │
-│                                                            │  Layer 7  │ │
-│                                                            │   AUDIT   │ │
-│                                                            │ + RESPOND │ │
-│                                                            └───────────┘ │
+│  │ Layer 1 │─▶│ Layer 2 │─▶│ Layer 3 │─▶│Lay 2.5  │─▶│Layer3.5 │──┐       │
+│  │  RATE   │  │  PARSE  │  │ ANALYZE │  │ RESULT  │  │  SQLI   │  │       │
+│  │  LIMIT  │  │ + CACHE │  │         │  │ CACHE?  │  │ DETECT  │  │       │
+│  └────┬────┘  └────┬────┘  └─────────┘  └────┬────┘  └────┬────┘  │       │
+│       │FAIL        │FAIL                     │HIT         │BLOCK  │       │
+│       ▼            ▼                         ▼            ▼       │       │
+│   ┌───────┐   ┌───────┐               ┌──────────┐  ┌───────┐    │       │
+│   │ AUDIT │   │ AUDIT │               │ CLASSIFY │  │ AUDIT │    │       │
+│   │ + RES │   │ + RES │               │ LINEAGE  │  │ + RES │    │PASS   │
+│   └───────┘   └───────┘               │ AUDIT+RES│  └───────┘    │       │
+│                                        └──────────┘               │       │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐│       │
+│  │Layer3.7 │─▶│ Layer 4 │─▶│Lay 4.1  │─▶│Lay 4.5  │─▶│Lay 4.8  ││       │
+│  │ ANOMALY │  │ POLICY  │  │ DDL     │  │ QUERY   │  │ QUERY   │◀┘       │
+│  │ (info)  │  │         │  │INTERCEPT│  │ REWRITE │  │ COST    │         │
+│  └─────────┘  └────┬────┘  └────┬────┘  └─────────┘  └────┬────┘         │
+│                    │FAIL        │FAIL                      │FAIL          │
+│                    ▼            ▼                          ▼              │
+│               ┌───────┐   ┌───────┐                  ┌───────┐           │
+│               │ AUDIT │   │ AUDIT │                  │ AUDIT │           │
+│               │ + RES │   │ + RES │                  │ + RES │           │
+│               └───────┘   └───────┘                  └───────┘           │
+│                                                                          │
+│  ── DRY-RUN CHECK: if ctx.dry_run → skip execution, audit + respond ──  │
+│                                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐                 │
+│  │ Layer 5  │─▶│Lay 5.01  │─▶│Lay 5.02  │─▶│Lay 5.05  │──┐              │
+│  │ EXECUTE  │  │ SLOW Q   │  │ DDL INVAL│  │ RESULT   │  │              │
+│  │(+RETRY)  │  │ TRACK    │  │ CACHE    │  │ CACHE    │  │              │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘  │              │
+│                                                           ▼              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐                 │
+│  │Layer 5.3 │─▶│Layer 5.5 │─▶│Layer 5.6 │─▶│ Layer 6  │──┐              │
+│  │ DECRYPT  │  │ COL ACL  │  │ MASKING  │  │ CLASSIFY │  │              │
+│  │ COLUMNS  │  │ (remove) │  │ (in-place│  │          │  │              │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘  │              │
+│                                                           ▼              │
+│                                              ┌──────────────────────┐    │
+│                                              │ Layer 6.5: LINEAGE   │    │
+│                                              │ Layer 7:  AUDIT      │    │
+│                                              │ BUILD RESPONSE       │    │
+│                                              │ (+ gzip compression) │    │
+│                                              └──────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -112,52 +169,64 @@
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  LAYER 1: HIERARCHICAL RATE LIMITER                                          │
-│  Class: HierarchicalRateLimiter                                              │
-│  Performance: ~52ns for all 4 checks                                         │
+│  Class: HierarchicalRateLimiter (+ optional WaitableRateLimiter queue)      │
+│  Performance: ~48ns for all 4 checks (single timestamp amortization)        │
+│                                                                              │
+│  Optional request queuing (WaitableRateLimiter):                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ If queue_enabled: rejected requests wait up to queue_timeout_ms     │     │
+│  │ before failing. Max queue depth configurable. Prevents burst drops. │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  4 levels - ALL must pass:                                                   │
 │                                                                              │
 │  ┌────────────────────┐                                                      │
 │  │ Level 1: GLOBAL    │  Protects proxy CPU                                  │
 │  │ 50K tokens/sec     │  Single TokenBucket for entire proxy                 │
-│  │ ~20ns (CAS loop)   │───── FAIL? ──→ { rate_limited=true, level="global" } │
+│  │ ~12ns (CAS loop)   │───── FAIL? ──→ { rate_limited=true, level="global" } │
 │  └────────┬───────────┘                                                      │
 │           │ PASS                                                             │
 │  ┌────────▼───────────┐                                                      │
 │  │ Level 2: PER-USER  │  Prevents one user starving others                   │
 │  │ 1K tokens/sec      │  TokenBucket per username                            │
-│  │ ~30ns (shared_lock │───── FAIL? ──→ { rate_limited=true, level="user" }   │
+│  │ ~12ns (shared_lock │───── FAIL? ──→ { rate_limited=true, level="user" }   │
 │  │  + CAS)            │                                                      │
 │  └────────┬───────────┘                                                      │
 │           │ PASS                                                             │
 │  ┌────────▼───────────┐                                                      │
 │  │ Level 3: PER-DB    │  Protects each database independently                │
 │  │ 30K tokens/sec     │  TokenBucket per database name                       │
-│  │ ~30ns              │───── FAIL? ──→ { rate_limited=true, level="db" }     │
+│  │ ~12ns              │───── FAIL? ──→ { rate_limited=true, level="db" }     │
 │  └────────┬───────────┘                                                      │
 │           │ PASS                                                             │
 │  ┌────────▼───────────┐                                                      │
 │  │ Level 4: USER+DB   │  Most specific control                               │
 │  │ 100 tokens/sec     │  TokenBucket per "user:database" key                 │
-│  │ ~30ns              │───── FAIL? ──→ { rate_limited=true, level="user_db" }│
+│  │ ~12ns              │───── FAIL? ──→ { rate_limited=true, level="user_db" }│
 │  └────────┬───────────┘                                                      │
 │           │ PASS                                                             │
 │           ▼                                                                  │
 │  { allowed=true, tokens_remaining=N }                                        │
 │                                                                              │
-│  Token Bucket Algorithm (lock-free):                                         │
+│  Token Bucket Algorithm (lock-free, integer arithmetic):                     │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │ State = packed 64-bit atomic: [tokens:32][timestamp_ms:32]          │     │
+│  │ State: tokens_ (atomic<uint32_t>) + last_refill_ns_ (atomic<int64>)│     │
 │  │                                                                     │     │
-│  │ try_acquire(1):                                                     │     │
-│  │   loop {                                                            │     │
-│  │     old = state.load()                                              │     │
-│  │     elapsed = now - old.timestamp                                   │     │
-│  │     refilled = old.tokens + elapsed * tokens_per_second             │     │
-│  │     new_tokens = min(refilled, burst_capacity) - 1                  │     │
+│  │ try_acquire_at(now_ns, 1):  // timestamp passed from check()        │     │
+│  │   loop (max 8 retries) {                                            │     │
+│  │     current_tokens = tokens_.load()                                 │     │
+│  │     last_refill = last_refill_ns_.load()                            │     │
+│  │     elapsed_ns = now_ns - last_refill                               │     │
+│  │     raw_tokens = elapsed_ns * tps / 1'000'000'000LL  // integer!    │     │
+│  │     new_tokens = min(current + raw_tokens, burst) - 1               │     │
 │  │     if (new_tokens < 0) return false  // Rate limited               │     │
-│  │     if (state.CAS(old, pack(new_tokens, now))) return true          │     │
-│  │   }  // Retry on CAS failure (another thread modified state)        │     │
+│  │     if (tokens_.CAS(current, new_tokens)) {                         │     │
+│  │       last_refill_ns_.store(now_ns)                                 │     │
+│  │       return true                                                   │     │
+│  │     }                                                               │     │
+│  │   }  // Retry on CAS failure                                        │     │
+│  │                                                                     │     │
+│  │ check() reads steady_clock::now() ONCE for all 4 levels             │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  Bucket Management:                                                          │
@@ -170,16 +239,22 @@
 │  │   2. unique_lock → try_emplace → create if needed                   │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
+│  Adaptive Rate Controller (optional, background thread):                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ Observes P95 execution latency from Pipeline                        │     │
+│  │ Adjusts global TPS every adjustment_interval_seconds:               │     │
+│  │   P95 < latency_target_ms  → increase TPS (+10%, up to base)       │     │
+│  │   P95 > throttle_threshold → throttle to 40% of base TPS           │     │
+│  │   P95 > 2x throttle       → protect mode: 10% of base TPS         │     │
+│  │ Metrics: current_tps, p95_us, adjustments, throttle/protect events │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
 │  Bucket Cleanup (background thread):                                        │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │ Cleanup thread runs every cleanup_interval_seconds (default: 60)    │     │
-│  │                                                                     │     │
 │  │ For each bucket map (user, db, user_db):                            │     │
-│  │   unique_lock → erase_if:                                           │     │
-│  │     now_ns - bucket.last_access_ns() > idle_timeout_ns              │     │
-│  │                                                                     │     │
+│  │   unique_lock → erase_if: now_ns - last_access > idle_timeout_ns    │     │
 │  │ Metrics: buckets_active, buckets_evicted_total                      │     │
-│  │ Config: bucket_idle_timeout_seconds (default: 3600)                 │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -193,9 +268,13 @@
 │                                                                              │
 │  Input: ctx.sql (raw SQL string)                                             │
 │                                                                              │
-│  Step 1: FINGERPRINTING (single-pass, ~450ns)                                │
+│  Step 1: FINGERPRINTING (single-pass, constexpr lookup table, ~280ns)        │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │ Fingerprinter::fingerprint(sql):                                    │     │
+│  │                                                                     │     │
+│  │ Uses constexpr 256-byte CharTable for character classification:     │     │
+│  │   table[c] → ALPHA | DIGIT | SPACE | QUOTE | COMMENT | OTHER       │     │
+│  │ Replaces locale-dependent std::tolower/std::isdigit calls           │     │
 │  │                                                                     │     │
 │  │ "SELECT * FROM users WHERE id = 42 /* admin */"                     │     │
 │  │                          ↓                                          │     │
@@ -226,7 +305,7 @@
 │  │ HIT  → Return cached StatementInfo (skip libpg_query)              │     │
 │  │ MISS → Continue to Step 3                                           │     │
 │  │                                                                     │     │
-│  │ DDL Invalidation:                                                   │     │
+│  │ DDL Invalidation (Layer 5.02):                                      │     │
 │  │   On successful DDL → invalidate_table(ddl_object_name)             │     │
 │  │   Scans all shards, removes entries referencing affected table       │     │
 │  │   Metric: sql_proxy_cache_ddl_invalidations_total                   │     │
@@ -242,8 +321,9 @@
 │  │       ├─ extract_statement_type() → StatementType enum              │     │
 │  │       │   (O(1) hash map lookup: "SelectStmt"→SELECT, etc.)         │     │
 │  │       ├─ extract_tables() → vector<TableRef>                        │     │
-│  │       │   (schema.table from RangeVar nodes in AST)                 │     │
 │  │       └─ Store in cache for next time                               │     │
+│  │                                                                     │     │
+│  │ Database routing: resolves parser per-database via DatabaseRouter    │     │
 │  │                                                                     │     │
 │  │ Output → StatementInfo:                                             │     │
 │  │   { fingerprint, parsed: { type, tables, columns, is_write } }      │     │
@@ -285,6 +365,31 @@
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  Written to ctx: analysis                                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Layer 2.5: Result Cache Lookup
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 2.5: RESULT CACHE LOOKUP (Short-circuit on hit)                       │
+│  Class: ResultCache (16 shards, LRU, configurable TTL)                      │
+│                                                                              │
+│  Only for SELECT queries with a valid fingerprint.                          │
+│                                                                              │
+│  Cache key: (fingerprint_hash, user, database)                              │
+│                                                                              │
+│  HIT → skip Layers 3.5 through 5.05, jump to:                              │
+│    classify_results() → record_lineage() → emit_audit() → respond           │
+│                                                                              │
+│  MISS → continue to Layer 3.5                                               │
+│                                                                              │
+│  Write-back: After successful execution (Layer 5.05)                        │
+│  Write-invalidation: DML/DDL on same database clears that DB's entries      │
+│                                                                              │
+│  Config: max_entries, num_shards, ttl_seconds, max_result_size_bytes        │
+│  Metrics: sql_proxy_cache_hits_total, cache_misses_total,                   │
+│           cache_entries, cache_evictions_total                                │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -452,7 +557,7 @@
 │  │                                                                     │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  HOT RELOAD (POST /policies/reload):                                         │
+│  HOT RELOAD (POST /policies/reload or ConfigWatcher):                        │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │ 1. Build new PolicyStore offline (no locks held)                    │     │
 │  │ 2. atomic_store(store_, new_store)  // RCU pointer swap             │     │
@@ -465,101 +570,182 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Layer 4.1: Schema DDL Interception
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 4.1: SCHEMA DDL INTERCEPTION (Optional gate)                          │
+│  Class: SchemaManager                                                        │
+│                                                                              │
+│  Only runs for DDL statements when SchemaManager is enabled.                │
+│                                                                              │
+│  If require_approval = true:                                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ 1. DDL is stored as "pending" for admin review                      │     │
+│  │ 2. Request blocked with "DDL requires approval — submitted"         │     │
+│  │ 3. Admin uses POST /api/v1/schema/approve or /reject                │     │
+│  │ 4. Approved DDL must be re-submitted to execute                     │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  If require_approval = false:                                               │
+│  └─ DDL passes through, recorded in history after execution (Layer 5.1)     │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Layer 4.5: Query Rewriting (RLS)
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 4.5: QUERY REWRITING (Row-Level Security + Enforce Limit)             │
+│  Class: QueryRewriter                                                        │
+│                                                                              │
+│  Input: ctx.sql, ctx.user, ctx.roles, ctx.database, ctx.user_attributes     │
+│                                                                              │
+│  Two types of rewrite rules:                                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ 1. RLS Rules — inject WHERE clause filters                          │     │
+│  │    Rule: { table: "orders", filter: "tenant_id = :tenant_id" }      │     │
+│  │    Input:  SELECT * FROM orders                                     │     │
+│  │    Output: SELECT * FROM orders WHERE tenant_id = '42'              │     │
+│  │    (user_attributes["tenant_id"] → '42')                            │     │
+│  │                                                                     │     │
+│  │ 2. Rewrite Rules — arbitrary SQL transformations                    │     │
+│  │    Rule: { match: "table_name", add_limit: 1000 }                   │     │
+│  │    Enforces LIMIT on queries that don't have one                    │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  If rewritten: ctx.original_sql saved, ctx.sql_rewritten = true             │
+│  Hot-reloadable via ConfigWatcher callback                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Layer 4.8: Query Cost Estimation
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 4.8: QUERY COST ESTIMATION (Blocking gate for expensive queries)      │
+│  Class: QueryCostEstimator                                                   │
+│                                                                              │
+│  Only runs for SELECT statements when estimator is enabled.                 │
+│                                                                              │
+│  Uses EXPLAIN on real connection pool to get PostgreSQL cost estimate:       │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ CostEstimate {                                                      │     │
+│  │   total_cost:      float (planner units)                            │     │
+│  │   estimated_rows:  int                                              │     │
+│  │   plan_type:       string ("Seq Scan", "Index Scan", etc.)          │     │
+│  │   is_rejected():   cost > max_cost OR rows > max_estimated_rows     │     │
+│  │ }                                                                   │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  BLOCK → ErrorCode::QUERY_TOO_EXPENSIVE (HTTP 403)                          │
+│  Metrics: sql_proxy_query_cost_rejected_total, estimated_total              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Layer 5: Query Executor
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  LAYER 5: QUERY EXECUTOR                                                     │
-│  Classes: QueryExecutor + ConnectionPool + CircuitBreaker                    │
+│  Classes: GenericQueryExecutor + IConnectionPool + CircuitBreaker            │
 │                                                                              │
 │  Input: ctx.sql, ctx.analysis.statement_type                                 │
+│                                                                              │
+│  RETRY WITH EXPONENTIAL BACKOFF (on DATABASE_ERROR):                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ if retry_config.enabled && error == DATABASE_ERROR:                  │     │
+│  │   for attempt in 0..max_retries:                                    │     │
+│  │     sleep(backoff_ms)  // doubles each attempt                      │     │
+│  │     retry execute_query()                                           │     │
+│  │     if success: break                                               │     │
+│  │     backoff_ms = min(backoff_ms * 2, max_backoff_ms)                │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  CIRCUIT BREAKER (per database):                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │                                                                     │     │
-│  │  ┌────────┐   10 failures   ┌────────┐   60s timeout  ┌──────────┐│     │
-│  │  │ CLOSED │ ──────────────→ │  OPEN  │ ─────────────→ │HALF_OPEN ││     │
-│  │  │(normal)│ ←────────────── │(reject)│                │ (probe)  ││     │
-│  │  └────────┘   5 successes   └────────┘                └──────────┘│     │
+│  │  ┌────────┐   N failures    ┌────────┐   timeout     ┌──────────┐ │     │
+│  │  │ CLOSED │ ──────────────→ │  OPEN  │ ─────────────→│HALF_OPEN │ │     │
+│  │  │(normal)│ ←────────────── │(reject)│               │ (probe)  │ │     │
+│  │  └────────┘   M successes   └────────┘               └──────────┘ │     │
 │  │       ▲         in half_open                              │       │     │
 │  │       └───────────────────────────────────────────────────┘       │     │
-│  │                         5 successes                               │     │
 │  │                                                                     │     │
-│  │  OPEN state → reject immediately (ErrorCode::CIRCUIT_OPEN)         │     │
-│  │  HALF_OPEN  → allow 1 probe request                                │     │
-│  │                                                                     │     │
-│  │  State Change Events:                                               │     │
-│  │  ├─ Emits StateChangeEvent on every transition (from, to, time)    │     │
-│  │  ├─ Stored in bounded deque (max 100 recent events)                │     │
-│  │  ├─ Optional callback for alerting integrations                    │     │
-│  │  └─ Exposed via GET /api/v1/circuit-breakers                       │     │
+│  │  OPEN state → reject immediately (ErrorCode::CIRCUIT_OPEN, 503)   │     │
+│  │  State changes exposed via GET /api/v1/circuit-breakers            │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  CONNECTION POOL (per database):                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │                                                                     │     │
-│  │  Config: min=2, max=10, timeout=5s                                  │     │
-│  │                                                                     │     │
-│  │  ┌──────────────────────────────────────────────────┐               │     │
-│  │  │ Semaphore (max_connections)                       │               │     │
-│  │  │  Controls max concurrent connections              │               │     │
-│  │  └────────────────────┬─────────────────────────────┘               │     │
-│  │                       │ try_acquire_for(5s)                         │     │
-│  │                       ▼                                             │     │
-│  │  ┌──────────────────────────────────────────────────┐               │     │
-│  │  │ Idle Pool (std::deque<PGconn*>)                  │               │     │
-│  │  │  ├─ Has idle conn? → Pop front + health check    │               │     │
-│  │  │  └─ Empty? → create_connection() via PQconnectdb │               │     │
-│  │  └──────────────────────────────────────────────────┘               │     │
-│  │                       │                                             │     │
-│  │                       ▼                                             │     │
-│  │  ┌──────────────────────────────────────────────────┐               │     │
-│  │  │ Health Check: PQexec(conn, "SELECT 1")           │               │     │
-│  │  │  ├─ Healthy → use this connection                │               │     │
-│  │  │  └─ Unhealthy → PQfinish + create new            │               │     │
-│  │  └──────────────────────────────────────────────────┘               │     │
-│  │                       │                                             │     │
-│  │                       ▼                                             │     │
-│  │  ┌──────────────────────────────────────────────────┐               │     │
-│  │  │ Max Lifetime Check:                              │               │     │
-│  │  │  now - created_at > max_lifetime (default: 1hr)? │               │     │
-│  │  │  ├─ Within lifetime → use connection             │               │     │
-│  │  │  └─ Exceeded → close + create new (recycled)     │               │     │
-│  │  │  Metric: pool_connections_recycled_total          │               │     │
-│  │  └──────────────────────────────────────────────────┘               │     │
-│  │                       │                                             │     │
-│  │                       ▼                                             │     │
-│  │  ┌──────────────────────────────────────────────────┐               │     │
-│  │  │ RAII Wrapper: PooledConnection                   │               │     │
-│  │  │  Destructor auto-returns conn to idle pool       │               │     │
-│  │  │  + releases semaphore slot                        │               │     │
-│  │  └──────────────────────────────────────────────────┘               │     │
+│  │ Config: min=2, max=10, timeout=5s, max_lifetime=1hr                 │     │
+│  │ Semaphore controls max concurrent connections                       │     │
+│  │ Health check: SELECT 1 on idle connections                          │     │
+│  │ Max lifetime: recycle connections older than max_lifetime            │     │
+│  │ RAII Wrapper: PooledConnection auto-returns on destructor           │     │
+│  │ Metrics: pool_acquire_duration_seconds (histogram),                 │     │
+│  │          pool_connections_recycled_total                             │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  STATEMENT BRANCHING:                                                        │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ stmt_type ─┬─ SELECT ──→ execute_select():                          │     │
+│  │            │              SET statement_timeout, PQexec(sql)         │     │
+│  │            │              Fetch column_names + column_type_oids      │     │
+│  │            │              Fetch all rows → vector<vector<string>>    │     │
+│  │            ├─ INSERT ──→ execute_dml():                              │     │
+│  │            ├─ UPDATE      PQexec(sql), affected_rows = PQcmdTuples  │     │
+│  │            ├─ DELETE                                                 │     │
+│  │            └─ DDL ─────→ execute_ddl(): PQexec(sql)                  │     │
 │  │                                                                     │     │
-│  │  stmt_type ─┬─ SELECT ──→ execute_select():                         │     │
-│  │             │              SET statement_timeout                     │     │
-│  │             │              PQexec(sql)                               │     │
-│  │             │              Fetch column_names + column_type_oids     │     │
-│  │             │              Fetch all rows → vector<vector<string>>   │     │
-│  │             │                                                       │     │
-│  │             ├─ INSERT ──→ execute_dml():                             │     │
-│  │             ├─ UPDATE      PQexec(sql)                              │     │
-│  │             ├─ DELETE      Capture affected_rows = PQcmdTuples       │     │
-│  │             │                                                       │     │
-│  │             └─ DDL ─────→ execute_ddl():                             │     │
-│  │               (CREATE,     PQexec(sql)                              │     │
-│  │                ALTER,      TODO: Trigger schema cache invalidation  │     │
-│  │                DROP)                                                │     │
-│  │                                                                     │     │
-│  │  On success → circuit_breaker.record_success()                      │     │
-│  │  On failure → circuit_breaker.record_failure()                      │     │
+│  │ On success → circuit_breaker.record_success()                       │     │
+│  │ On failure → circuit_breaker.record_failure()                       │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  POST-EXECUTION (latency reporting):                                        │
+│  └─ AdaptiveRateController::observe_latency(execution_time_us)              │
 │                                                                              │
 │  Output: QueryResult { success, columns, rows, affected_rows, error }        │
 │  Written to ctx: query_result, execution_time                                │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Layers 5.01–5.1: Post-Execution Bookkeeping
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  POST-EXECUTION BOOKKEEPING (Layers 5.01 – 5.1)                             │
+│                                                                              │
+│  Layer 5.01: SLOW QUERY TRACKING                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ If execution_time > threshold_ms → store SlowQueryRecord             │     │
+│  │ Bounded deque (max N entries), exposed via GET /api/v1/slow-queries  │     │
+│  │ Metric: sql_proxy_slow_queries_total                                 │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Layer 5.02: PARSE CACHE DDL INVALIDATION                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ If DDL succeeded + has ddl_object_name:                              │     │
+│  │   parse_cache->invalidate_table(object_name)                        │     │
+│  │ Scans all 16 shards, removes entries referencing the table           │     │
+│  │ Metric: sql_proxy_cache_ddl_invalidations_total                     │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Layer 5.05: RESULT CACHE STORE                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ If SELECT succeeded + fingerprint exists:                            │     │
+│  │   result_cache->put(hash, user, database, query_result)             │     │
+│  │                                                                     │     │
+│  │ Write-invalidation: DML/DDL on database → invalidate(database)      │     │
+│  │ Clears all cached entries for the modified database                  │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Layer 5.1: SCHEMA CHANGE RECORDING                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ If DDL succeeded + SchemaManager enabled:                            │     │
+│  │   schema_manager->record_change(user, database, table, sql, type)   │     │
+│  │ Stores in bounded history, exposed via GET /api/v1/schema/history   │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -571,39 +757,24 @@
 │  Class: ColumnEncryptor + IKeyManager                                        │
 │                                                                              │
 │  Input: ctx.query_result (after execution), ctx.analysis.source_tables       │
-│                                                                              │
 │  Only runs when encryption is enabled and query returned results.            │
 │                                                                              │
 │  ENCRYPTED VALUE FORMAT:                                                    │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │ ENC:v1:<key_id>:<base64(IV + ciphertext + auth_tag)>               │     │
-│  │                                                                     │     │
-│  │ Algorithm: AES-256-GCM                                              │     │
-│  │ IV:        12 bytes (random per encryption)                         │     │
-│  │ Tag:       16 bytes (authentication)                                │     │
-│  │ Key:       256-bit from IKeyManager                                 │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│  DECRYPTION FLOW:                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │ 1. For each column in result, check is_encrypted_column(db,tbl,col) │     │
-│  │    (O(1) lookup in unordered_set<string>)                           │     │
-│  │ 2. For matching columns, scan each row:                              │     │
-│  │    ├─ Starts with "ENC:v1:" → decrypt with key from key_id          │     │
-│  │    └─ Plain text → passthrough (not encrypted)                      │     │
+│  │ Algorithm: AES-256-GCM  |  IV: 12B  |  Tag: 16B  |  Key: 256-bit  │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  KEY MANAGEMENT:                                                            │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │ IKeyManager (interface):                                            │     │
-│  │   ├─ get_active_key() → current encryption key                      │     │
-│  │   ├─ get_key(key_id)  → lookup by ID (for decryption)              │     │
-│  │   └─ rotate_key()     → generate new key, deactivate old            │     │
+│  │ IKeyManager (interface): get_active_key(), get_key(id), rotate()    │     │
 │  │                                                                     │     │
-│  │ LocalKeyManager (file-based implementation):                        │     │
-│  │   ├─ Stores keys in file: key_id:hex_key:active                     │     │
-│  │   ├─ Supports key rotation (old keys kept for decryption)           │     │
-│  │   └─ Thread-safe with shared_mutex                                  │     │
+│  │ Implementations:                                                    │     │
+│  │   ├─ LocalKeyManager  (file: key_id:hex_key:active)                 │     │
+│  │   ├─ VaultKeyManager  (HashiCorp Vault Transit)                     │     │
+│  │   └─ EnvKeyManager    (environment variable)                        │     │
+│  │                                                                     │     │
+│  │ All thread-safe with shared_mutex                                   │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  Config: [encryption] section in proxy.toml                                 │
@@ -611,67 +782,62 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Layer 5.5: Column-Level ACL + Layer 5.6: Data Masking
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 5.5: COLUMN-LEVEL ACL (Remove blocked columns from result)            │
+│  Class: PolicyEngine::evaluate_columns()                                     │
+│                                                                              │
+│  Evaluates per-column policies: which columns the user may see.             │
+│  Blocked columns are REMOVED from: column_names, type_oids, rows            │
+│  Surviving column_decisions passed to masking layer.                         │
+│                                                                              │
+│  LAYER 5.6: DATA MASKING (In-place value masking)                            │
+│  Class: MaskingEngine::apply()                                               │
+│  Gated by: masking_enabled flag (configurable)                              │
+│                                                                              │
+│  Masking actions per column_decision:                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ PARTIAL  → "alice@example.com" → "a***@example.com"                 │     │
+│  │ HASH     → "alice@example.com" → "sha256:a1b2c3..."                 │     │
+│  │ REDACT   → "alice@example.com" → "[REDACTED]"                       │     │
+│  │ NONE     → passthrough (no masking)                                  │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Written to ctx: column_decisions, masking_applied                           │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Layer 6: Classification
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  LAYER 6: PII CLASSIFICATION (Post-execution)                                │
+│  LAYER 6: PII CLASSIFICATION (Post-masking)                                  │
 │  Class: ClassifierRegistry                                                   │
 │                                                                              │
 │  Input: ctx.query_result (columns + rows), ctx.analysis (projections)        │
-│  Only runs on successful SELECT queries with results                         │
+│  Only runs on successful queries with results, AFTER masking.               │
+│  (Runs on masked data — won't double-report masked PII)                     │
 │                                                                              │
-│  4-STRATEGY CHAIN (highest confidence wins):                                 │
+│  4-STRATEGY CHAIN (allocation-free, zero-copy where possible):              │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ Strategy 1: COLUMN NAME (90% confidence, ~10ns)                     │     │
+│  │   Hash map lookup: "email"→PII_EMAIL, "ssn"→PII_SSN, etc.          │     │
+│  │   Uses iequals() for case-insensitive comparison                    │     │
 │  │                                                                     │     │
-│  │  For EACH column in query_result.column_names:                      │     │
+│  │ Strategy 2: TYPE OID (85% confidence, ~5ns)                         │     │
+│  │   PostgreSQL type OID → PII type mapping                            │     │
 │  │                                                                     │     │
-│  │  ┌──────────────────────────────────────────────────────┐           │     │
-│  │  │ Strategy 1: COLUMN NAME (90% confidence, ~10ns)      │           │     │
-│  │  │                                                      │           │     │
-│  │  │  Hash map lookup:                                    │           │     │
-│  │  │  "email"       → PII_EMAIL                           │           │     │
-│  │  │  "phone"       → PII_PHONE                           │           │     │
-│  │  │  "ssn"         → PII_SSN                             │           │     │
-│  │  │  "credit_card" → PII_CREDIT_CARD                     │           │     │
-│  │  │  "salary"      → SENSITIVE_SALARY                    │           │     │
-│  │  │  "password"    → SENSITIVE_PASSWORD                   │           │     │
-│  │  │                                                      │           │     │
-│  │  │  Match? → DONE (skip remaining strategies)           │           │     │
-│  │  └───────────────────────┬──────────────────────────────┘           │     │
-│  │                          │ NO MATCH                                 │     │
-│  │  ┌───────────────────────▼──────────────────────────────┐           │     │
-│  │  │ Strategy 2: TYPE OID (85% confidence, ~5ns)          │           │     │
-│  │  │                                                      │           │     │
-│  │  │  PostgreSQL type OID → PII type mapping              │           │     │
-│  │  │  (e.g., custom domain types registered as PII)       │           │     │
-│  │  │                                                      │           │     │
-│  │  │  Match? → DONE                                       │           │     │
-│  │  └───────────────────────┬──────────────────────────────┘           │     │
-│  │                          │ NO MATCH                                 │     │
-│  │  ┌───────────────────────▼──────────────────────────────┐           │     │
-│  │  │ Strategy 3: PATTERN VALUE (80% confidence, ~100ns)   │           │     │
-│  │  │                                                      │           │     │
-│  │  │  Sample up to 20 rows, hand-rolled O(n) scanners:   │           │     │
-│  │  │  ├─ looks_like_email():       user@domain.com        │           │     │
-│  │  │  ├─ looks_like_phone():       +1-555-123-4567        │           │     │
-│  │  │  ├─ looks_like_ssn():         123-45-6789            │           │     │
-│  │  │  └─ looks_like_credit_card(): 4111-1111-1111-1111    │           │     │
-│  │  │                                                      │           │     │
-│  │  │  Match? → DONE                                       │           │     │
-│  │  └───────────────────────┬──────────────────────────────┘           │     │
-│  │                          │ NO MATCH                                 │     │
-│  │  ┌───────────────────────▼──────────────────────────────┐           │     │
-│  │  │ Strategy 4: DERIVED COLUMN (inherited PII)           │           │     │
-│  │  │                                                      │           │     │
-│  │  │  Check projection.derived_from → source column PII   │           │     │
-│  │  │                                                      │           │     │
-│  │  │  PII-preserving:  UPPER(email) → still PII_EMAIL     │           │     │
-│  │  │  PII-destroying:  COUNT(email) → NOT PII             │           │     │
-│  │  │                   AVG(salary)  → NOT SENSITIVE        │           │     │
-│  │  │                   MD5(ssn)     → NOT PII              │           │     │
-│  │  └──────────────────────────────────────────────────────┘           │     │
+│  │ Strategy 3: PATTERN VALUE (80% confidence, ~100ns)                  │     │
+│  │   Sample up to 20 rows, hand-rolled O(n) scanners:                  │     │
+│  │   ├─ looks_like_email(), looks_like_phone()                         │     │
+│  │   ├─ looks_like_ssn(), looks_like_credit_card()                     │     │
+│  │   Uses icontains() for zero-copy substring search                   │     │
 │  │                                                                     │     │
+│  │ Strategy 4: DERIVED COLUMN (inherited PII)                          │     │
+│  │   PII-preserving: UPPER(email) → still PII_EMAIL                    │     │
+│  │   PII-destroying: COUNT(email), AVG(salary), MD5(ssn) → NOT PII    │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  Output: ClassificationResult { column → { type, confidence, strategy } }    │
@@ -695,9 +861,7 @@
 │  │   timestamp, user, database, table, column                          │     │
 │  │   classification: "PII.Email" / "PII.SSN" / ...                     │     │
 │  │   access_type: "SELECT" / "UPDATE" / ...                            │     │
-│  │   query_fingerprint (normalized hash)                               │     │
-│  │   was_masked: bool (was masking applied?)                           │     │
-│  │   masking_action: "PARTIAL" / "HASH" / "REDACT" / ""               │     │
+│  │   query_fingerprint, was_masked, masking_action                     │     │
 │  │ }                                                                   │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
@@ -705,21 +869,13 @@
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │ Events:     std::deque<LineageEvent> (bounded, max 100K)            │     │
 │  │ Summaries:  unordered_map<column_key, LineageSummary>               │     │
-│  │                                                                     │     │
-│  │ LineageSummary per column:                                          │     │
-│  │   column_key:      "testdb.customers.email"                         │     │
-│  │   classification:  "PII.Email"                                      │     │
-│  │   total_accesses:  count                                            │     │
-│  │   masked_accesses: count (GDPR compliance metric)                   │     │
-│  │   accessing_users: set<string> (who accessed this column)           │     │
-│  │   first/last_access timestamps                                      │     │
+│  │   Per column: total_accesses, masked_accesses, accessing_users      │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  Thread safety: shared_mutex (shared_lock for reads, unique_lock for writes) │
-│  Data feeds into: Compliance Reporter (PII reports, security summaries)     │
+│  Thread safety: shared_mutex (reads) / unique_lock (writes)                 │
 │                                                                              │
 │  API: GET /api/v1/compliance/lineage → summaries JSON                       │
-│       GET /api/v1/compliance/lineage/events?user=X&table=Y&limit=N          │
+│       GET /api/v1/compliance/data-subject-access?user=X → GDPR access       │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -728,15 +884,26 @@
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  LAYER 7: AUDIT EMITTER (Async, Non-blocking)                                │
-│  Class: AuditEmitter + MPSCRingBuffer                                        │
+│  Class: AuditEmitter + MPSCRingBuffer + AuditSampler + AuditEncryptor       │
 │                                                                              │
 │  ALWAYS fires - on success AND every failure path                            │
+│                                                                              │
+│  PRE-EMIT: AUDIT SAMPLING (optional)                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ AuditSampler checks before building the record:                     │     │
+│  │   always_log_blocked: true    (always log BLOCK decisions)          │     │
+│  │   always_log_writes:  true    (always log INSERT/UPDATE/DELETE)      │     │
+│  │   always_log_errors:  true    (always log errors)                   │     │
+│  │   select_sample_rate: 0.1     (10% of SELECTs sampled)             │     │
+│  │   deterministic:      true    (same fingerprint → same decision)    │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  AUDIT RECORD (comprehensive):                                               │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │ {                                                                   │     │
 │  │   "audit_id": "evt_...",           // UUIDv7 (time-sortable)        │     │
-│  │   "sequence_num": 12345,           // Monotonic (gap detection)     │     │
+│  │   "trace_id": "...",               // W3C distributed tracing       │     │
+│  │   "span_id": "...",                // Current span                  │     │
 │  │   "timestamp": "2026-02-07T...",                                    │     │
 │  │   "user": "analyst",                                                │     │
 │  │   "source_ip": "10.0.0.5",                                         │     │
@@ -746,50 +913,55 @@
 │  │   "statement_type": "SELECT",                                       │     │
 │  │   "decision": "ALLOW",                                              │     │
 │  │   "matched_policy": "allow_analyst_read",                           │     │
+│  │   "shadow_blocked": false,         // Shadow policy mode             │     │
 │  │   "execution_success": true,                                        │     │
 │  │   "rows_returned": 150,                                             │     │
 │  │   "detected_classifications": ["PII.Email"],                        │     │
+│  │   "masked_columns": ["email"],                                      │     │
+│  │   "sql_rewritten": false,                                           │     │
 │  │   "parse_time_us": 12,                                              │     │
 │  │   "policy_time_us": 5,                                              │     │
 │  │   "execution_time_us": 1200,                                        │     │
 │  │   "total_duration_us": 1250,                                        │     │
 │  │   "rate_limited": false,                                            │     │
 │  │   "cache_hit": true,                                                │     │
-│  │   // Security fields (Tier 4):                                      │     │
-│  │   "threat_level": "NONE",       // SQL injection threat             │     │
-│  │   "injection_patterns": [],     // Matched patterns                 │     │
-│  │   "injection_blocked": false,   // Was request blocked?             │     │
-│  │   "anomaly_score": 0.3,         // Behavioral anomaly score         │     │
-│  │   "anomalies": ["NEW_TABLE:sensitive_data"]                         │     │
+│  │   "threat_level": "NONE",                                           │     │
+│  │   "injection_patterns": [],                                         │     │
+│  │   "anomaly_score": 0.3,                                             │     │
+│  │   "anomalies": ["NEW_TABLE:sensitive_data"],                        │     │
+│  │   "spans": [{"op":"rate_limit","us":48}, ...],  // Per-layer timing │     │
+│  │   "priority": "NORMAL"                                              │     │
 │  │ }                                                                   │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  OPTIONAL: AUDIT ENCRYPTION AT REST                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ AuditEncryptor wraps record before writing:                         │     │
+│  │   AES-256-GCM encryption using IKeyManager                         │     │
+│  │   Encrypted record stored as base64 in audit.jsonl                  │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  ASYNC ARCHITECTURE:                                                         │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │                                                                     │     │
 │  │   HTTP Thread 1 ──emit()──┐                                         │     │
 │  │   HTTP Thread 2 ──emit()──┤    ┌──────────────┐    ┌────────────┐  │     │
 │  │   HTTP Thread 3 ──emit()──┼──→ │  MPSC Ring   │──→ │  Writer    │  │     │
 │  │   HTTP Thread N ──emit()──┘    │  Buffer      │    │  Thread    │  │     │
-│  │                                │  65536 slots │    │  (single)  │  │     │
-│  │       ~210ns CAS enqueue       │  lock-free   │    │            │  │     │
-│  │                                └──────────────┘    │ Batch drain│  │     │
-│  │                                                    │ 1000/batch │  │     │
-│  │                                                    │ or 100ms   │  │     │
-│  │                                                    │            │  │     │
-│  │                                                    │ fsync every│  │     │
-│  │                                                    │ 10 batches │  │     │
+│  │                                │  65536 slots │    │ Batch drain│  │     │
+│  │       ~210ns CAS enqueue       │  lock-free   │    │ 1000/batch │  │     │
+│  │                                └──────────────┘    │ or 100ms   │  │     │
+│  │                                                    │ fsync/10   │  │     │
 │  │                                                    └─────┬──────┘  │     │
 │  │                                                          │         │     │
-│  │                                                          ▼         │     │
-│  │                                               ┌──────────────────┐ │     │
-│  │                                               │ logs/audit.jsonl │ │     │
-│  │                                               │ (append-only)    │ │     │
-│  │                                               └──────────────────┘ │     │
+│  │                         ┌──────────────┐                 ▼         │     │
+│  │                         │ Webhook Sink │    ┌──────────────────┐   │     │
+│  │                         └──────────────┘    │ logs/audit.jsonl │   │     │
+│  │                         ┌──────────────┐    │ (append-only)    │   │     │
+│  │                         │ Syslog Sink  │    └──────────────────┘   │     │
+│  │                         └──────────────┘                           │     │
 │  │                                                                     │     │
-│  │  Overflow handling:                                                  │     │
-│  │  Buffer full → record dropped + overflow counter incremented        │     │
-│  │  Stats tracked: total_emitted, total_written, overflow_dropped      │     │
+│  │  Overflow: buffer full → record dropped + overflow counter          │     │
+│  │  Stats: total_emitted, total_written, overflow_dropped              │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -802,7 +974,7 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  RESPONSE BUILDER (build_response)                                           │
 │                                                                              │
-│  Reads from RequestContext, builds ProxyResponse:                             │
+│  Built BEFORE audit emit (response should not wait on audit I/O)            │
 │                                                                              │
 │  SUCCESS (HTTP 200):                                                         │
 │  {                                                                           │
@@ -810,9 +982,11 @@
 │    "audit_id": "evt_...",                                                    │
 │    "data": {                                                                 │
 │      "columns": ["id", "name", "email"],                                     │
-│      "rows": [["1", "Alice", "alice@example.com"], ...]                      │
+│      "rows": [["1", "Alice", "a***@example.com"], ...]                      │
 │    },                                                                        │
 │    "classifications": { "email": "PII.Email" },                              │
+│    "masked_columns": ["email"],                                              │
+│    "blocked_columns": ["ssn"],                                               │
 │    "execution_time_us": 1250                                                 │
 │  }                                                                           │
 │                                                                              │
@@ -825,19 +999,35 @@
 │    "execution_time_us": 45                                                   │
 │  }                                                                           │
 │                                                                              │
+│  RESPONSE HEADERS:                                                           │
+│  ├─ X-RateLimit-Remaining: N                                                 │
+│  ├─ Retry-After: N (on 429)                                                  │
+│  ├─ traceparent: W3C trace propagation                                       │
+│  └─ Content-Encoding: gzip (if compressed)                                   │
+│                                                                              │
+│  RESPONSE COMPRESSION (optional):                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ If compression_enabled && response > min_size_bytes:                 │     │
+│  │   Check Accept-Encoding: gzip → try_compress() → set gzip header    │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
 │  HTTP STATUS MAPPING:                                                        │
-│  ┌───────────────────────┬──────────┐                                        │
-│  │ ErrorCode             │ HTTP     │                                        │
-│  ├───────────────────────┼──────────┤                                        │
-│  │ NONE (success)        │ 200      │                                        │
-│  │ PARSE_ERROR           │ 400      │                                        │
-│  │ ACCESS_DENIED         │ 403      │                                        │
-│  │ SQLI_BLOCKED          │ 403      │                                        │
-│  │ RATE_LIMITED          │ 429      │                                        │
-│  │ CIRCUIT_OPEN          │ 503      │                                        │
-│  │ DATABASE_ERROR        │ 502      │                                        │
-│  │ INTERNAL_ERROR        │ 500      │                                        │
-│  └───────────────────────┴──────────┘                                        │
+│  ┌───────────────────────────┬──────────┐                                    │
+│  │ ErrorCode                 │ HTTP     │                                    │
+│  ├───────────────────────────┼──────────┤                                    │
+│  │ NONE (success)            │ 200      │                                    │
+│  │ PARSE_ERROR               │ 400      │                                    │
+│  │ INVALID_REQUEST           │ 400      │                                    │
+│  │ ACCESS_DENIED             │ 403      │                                    │
+│  │ SQLI_BLOCKED              │ 403      │                                    │
+│  │ QUERY_TOO_EXPENSIVE       │ 403      │                                    │
+│  │ QUERY_TIMEOUT             │ 408      │                                    │
+│  │ RESULT_TOO_LARGE          │ 413      │                                    │
+│  │ RATE_LIMITED              │ 429      │                                    │
+│  │ DATABASE_ERROR            │ 502      │                                    │
+│  │ CIRCUIT_OPEN              │ 503      │                                    │
+│  │ INTERNAL_ERROR            │ 500      │                                    │
+│  └───────────────────────────┴──────────┘                                    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -847,52 +1037,82 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
+│  HEALTH CHECK                                                                │
 │  GET /health?level=shallow|deep|readiness                                    │
 │  ├─ shallow (default): {"status":"healthy","service":"sql-proxy"} (200)      │
 │  ├─ deep: checks circuit breaker, connection pool, audit emitter (200/503)   │
 │  └─ readiness: deep + rate limiter reject ratio check (200/503)              │
 │                                                                              │
-│  GET /metrics (Prometheus format)                                            │
+│  PROMETHEUS METRICS                                                          │
+│  GET /metrics (60+ metrics, text/plain Prometheus format)                    │
 │  ├─ sql_proxy_requests_total{status="allowed|blocked"}                       │
 │  ├─ sql_proxy_rate_limit_total{level="global|user|database|user_database"}   │
 │  ├─ sql_proxy_rate_limit_checks_total                                        │
-│  ├─ sql_proxy_audit_emitted_total                                            │
-│  ├─ sql_proxy_audit_written_total                                            │
-│  ├─ sql_proxy_audit_dropped_total                                            │
-│  ├─ sql_proxy_audit_flushes_total                                            │
-│  ├─ sql_proxy_info{version="1.0.0"}                                          │
-│  ├─ sql_proxy_rate_limiter_buckets_active{level}                             │
-│  ├─ sql_proxy_rate_limiter_buckets_evicted_total                             │
+│  ├─ sql_proxy_queue_depth, sql_proxy_queue_total, queue_timeouts_total       │
+│  ├─ sql_proxy_audit_emitted_total, written_total, dropped_total, flushes     │
+│  ├─ sql_proxy_cache_hits_total, misses, entries, evictions                   │
+│  ├─ sql_proxy_slow_queries_total                                             │
 │  ├─ sql_proxy_circuit_breaker_transitions_total{to="open|half_open|closed"}  │
 │  ├─ sql_proxy_pool_connections_recycled_total                                │
 │  ├─ sql_proxy_pool_acquire_duration_seconds{le=...} (histogram)             │
-│  ├─ sql_proxy_auth_failures_total                                            │
-│  ├─ sql_proxy_auth_blocks_total                                              │
+│  ├─ sql_proxy_rate_limiter_buckets_active, buckets_evicted_total            │
+│  ├─ sql_proxy_auth_failures_total, auth_blocks_total                        │
 │  ├─ sql_proxy_ip_blocked_total                                               │
-│  └─ sql_proxy_cache_ddl_invalidations_total                                  │
+│  ├─ sql_proxy_cache_ddl_invalidations_total                                  │
+│  ├─ sql_proxy_query_cost_rejected_total, estimated_total                    │
+│  ├─ sql_proxy_schema_drifts_total, drift_checks_total                       │
+│  ├─ sql_proxy_adaptive_rate_current_tps, p95_us, adjustments_total          │
+│  ├─ sql_proxy_adaptive_rate_throttle_events, protect_events                 │
+│  └─ sql_proxy_info{version="1.0.0"}                                          │
 │                                                                              │
-│  POST /policies/reload                                                       │
-│  ├─ Reads config/proxy.toml                                                  │
-│  ├─ Parses policies via PolicyLoader                                         │
-│  ├─ Hot-reloads via RCU (atomic pointer swap)                                │
+│  ADMIN ENDPOINTS                                                             │
+│  POST /policies/reload (admin auth required)                                 │
+│  ├─ Reloads policies from config/proxy.toml via PolicyLoader                 │
 │  └─ Returns: {"success":true,"policies_loaded":20}                           │
 │                                                                              │
-│  GET /api/v1/circuit-breakers (Admin)                                        │
-│  ├─ Returns current state, stats, and recent state change events             │
-│  └─ Returns: { state, stats, recent_events[] }                               │
+│  POST /api/v1/config/validate (admin auth required)                          │
+│  ├─ Validates TOML config syntax without applying                            │
+│  └─ Returns: {"valid":true|false,"errors":[]}                                │
 │                                                                              │
-│  GET /api/v1/compliance/pii-report (Tier 4)                                  │
-│  ├─ Aggregates lineage data into PII access report                           │
-│  ├─ Per-column: access counts, masked/unmasked, accessing users              │
+│  GET /api/v1/slow-queries (admin, feature-gated)                             │
+│  └─ Returns: { slow_queries[], total_slow_queries, threshold_ms, enabled }   │
+│                                                                              │
+│  GET /api/v1/circuit-breakers (admin)                                        │
+│  └─ Returns: { breakers[{ name, state, stats, recent_events }] }            │
+│                                                                              │
+│  COMPLIANCE ENDPOINTS (admin auth required)                                  │
+│  GET /api/v1/compliance/pii-report                                           │
 │  └─ Returns: { total_pii_accesses, masking_coverage_pct, entries[] }         │
 │                                                                              │
-│  GET /api/v1/compliance/security-summary (Tier 4)                            │
-│  ├─ Aggregates audit stats, anomaly data, lineage counts                     │
+│  GET /api/v1/compliance/security-summary                                     │
 │  └─ Returns: { total_queries, blocked, injection_attempts, tracked_users }   │
 │                                                                              │
-│  GET /api/v1/compliance/lineage (Tier 4)                                     │
-│  ├─ Returns data lineage summaries per column                                │
-│  └─ Returns: { summaries: [{ column_key, classification, accesses, ... }] }  │
+│  GET /api/v1/compliance/lineage                                              │
+│  └─ Returns: { summaries[{ column_key, classification, accesses }] }        │
+│                                                                              │
+│  GET /api/v1/compliance/data-subject-access?user=X                           │
+│  └─ Returns: { subject, events[{ timestamp, column, classification }] }     │
+│                                                                              │
+│  SCHEMA MANAGEMENT (admin, requires SchemaManager enabled)                   │
+│  GET  /api/v1/schema/history  → DDL change history                           │
+│  GET  /api/v1/schema/pending  → Pending DDL approvals                        │
+│  POST /api/v1/schema/approve  → Approve by ID                                │
+│  POST /api/v1/schema/reject   → Reject by ID                                 │
+│  GET  /api/v1/schema/drift    → Schema drift events (feature-gated)          │
+│                                                                              │
+│  OPTIONAL ENDPOINTS                                                          │
+│  POST /api/v1/query/dry-run   → Policy check without execution              │
+│  POST /api/v1/graphql         → GraphQL-to-SQL (feature-gated)               │
+│  GET  /openapi.json           → OpenAPI 3.0 spec (feature-gated)             │
+│  GET  /api/docs               → Swagger UI (feature-gated)                   │
+│                                                                              │
+│  DASHBOARD (feature-gated, admin auth)                                       │
+│  GET  /dashboard               → Embedded single-page web UI (HTML)          │
+│  GET  /dashboard/api/stats     → Real-time pipeline + audit stats (JSON)     │
+│  GET  /dashboard/api/policies  → Policy listing (JSON)                       │
+│  GET  /dashboard/api/users     → User listing (JSON)                         │
+│  GET  /dashboard/api/alerts    → Active + historical alerts (JSON)           │
+│  GET  /dashboard/api/metrics/stream → SSE, 2s interval, 10 min max          │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -902,47 +1122,85 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  STARTUP (10 phases)                                                         │
+│  STARTUP (9 phases)                                                          │
 │                                                                              │
-│  [1/10] Load configuration from config/proxy.toml (ConfigLoader)             │
-│         ├─ Resolve `include` directives (recursive, max depth 10)           │
-│         ├─ Deep-merge included files (arrays concat, main wins scalars)     │
-│         ├─ Parse users, roles, policies, rate limits                         │
-│         ├─ Parse [security] section (injection, anomaly, lineage, brute_force)│
-│         ├─ Parse [encryption] section (columns, key_file)                    │
-│         ├─ Parse users.allowed_ips for IP allowlisting                       │
-│         └─ Fallback: 2 hardcoded policies + 4 users if config fails          │
+│  [1/9] Load configuration from config/proxy.toml (ConfigLoader)              │
+│        ├─ Resolve `include` directives (recursive, max depth 10)            │
+│        ├─ Deep-merge included files (arrays concat, main wins scalars)      │
+│        ├─ Parse users, roles, policies, rate limits                          │
+│        ├─ Parse [security] section (injection, anomaly, lineage, brute_force)│
+│        ├─ Parse [encryption] section (columns, key_file)                     │
+│        ├─ Parse [features] section (feature flags for route gating)         │
+│        ├─ Parse users.allowed_ips for IP allowlisting                        │
+│        └─ Fallback: 2 hardcoded policies + 4 users if config fails           │
 │                                                                              │
-│  [2/10] Initialize Parse Cache (10K entries, 16 shards)                      │
+│  [2/9] Database backend resolution (PostgreSQL / MySQL)                      │
+│        └─ BackendRegistry::create() via static registration                  │
 │                                                                              │
-│  [3/10] Initialize SQL Parser (wraps libpg_query)                            │
+│  [3/9] Parse Cache + SQL Parser                                              │
+│        ├─ Parse cache: 10K entries, 16 shards                                │
+│        └─ Parser created via backend (wraps libpg_query or MySQL parser)     │
 │                                                                              │
-│  [4/10] Initialize Policy Engine + load policies                             │
+│  [4/9] Policy Engine + Rate Limiter                                          │
+│        ├─ Policy engine: load all policies into trie                         │
+│        ├─ Hierarchical rate limiter: 4 levels                                │
+│        ├─ Apply per-user/per-database/per-user-per-database overrides        │
+│        └─ Optional WaitableRateLimiter queue wrapper                         │
 │                                                                              │
-│  [5/10] Initialize Rate Limiter (4-level hierarchy)                          │
-│         ├─ Apply per-user rate limit overrides                               │
-│         ├─ Apply per-database rate limit overrides                           │
-│         └─ Apply per-user-per-database overrides                             │
+│  [5/9] Connection Pool + Circuit Breaker + Query Executor                    │
+│        ├─ Pool: pre-warm with min_connections                                │
+│        ├─ Circuit breaker: configurable thresholds                           │
+│        └─ Executor: timeout, max_result_rows                                 │
 │                                                                              │
-│  [6/10] Initialize Connection Pool + Circuit Breaker + Query Executor        │
-│         └─ Pre-warm pool with min_connections (2)                            │
+│  [6/9] Classifier + Audit + Query Rewriter                                   │
+│        ├─ ClassifierRegistry (conditional on classification_enabled)          │
+│        ├─ AuditEmitter → starts background writer thread                     │
+│        └─ QueryRewriter (conditional on RLS/rewrite rules existing)          │
 │                                                                              │
-│  [7/10] Initialize ClassifierRegistry + AuditEmitter                         │
-│         └─ AuditEmitter starts background writer thread                      │
+│  [7/9] Security + Compliance + Schema + Plugins                              │
+│        ├─ SqlInjectionDetector (conditional on injection_detection_enabled)   │
+│        ├─ AnomalyDetector (conditional on anomaly_detection_enabled)          │
+│        ├─ LineageTracker (conditional on lineage_tracking_enabled)            │
+│        ├─ ColumnEncryptor + IKeyManager (if encryption enabled)              │
+│        │   └─ Key managers: Local / Vault / Env                              │
+│        ├─ ComplianceReporter (lineage + anomaly + audit)                     │
+│        ├─ SchemaManager (if schema_management.enabled)                       │
+│        ├─ TenantManager (if tenants.enabled)                                 │
+│        ├─ PluginRegistry (classifier + audit sink plugins)                   │
+│        ├─ AuditSampler (if audit_sampling.enabled)                           │
+│        ├─ ResultCache (if result_cache.enabled)                              │
+│        ├─ SlowQueryTracker (if slow_query.enabled)                           │
+│        ├─ QueryCostEstimator (if query_cost.enabled)                         │
+│        ├─ SchemaDriftDetector → starts background thread                     │
+│        ├─ AuditEncryptor (if audit_encryption.enabled)                       │
+│        └─ AdaptiveRateController → starts background thread                  │
 │                                                                              │
-│  [8/10] Initialize Security Components (Tier 4)                              │
-│         ├─ SqlInjectionDetector (config from [security] section)              │
-│         ├─ AnomalyDetector (per-user behavioral profiling)                   │
-│         ├─ LineageTracker (PII access tracking)                              │
-│         ├─ ColumnEncryptor + LocalKeyManager (if encryption enabled)         │
-│         └─ ComplianceReporter (aggregates lineage + anomaly + audit)         │
+│  [8/9] Build Pipeline (via PipelineBuilder, all layers wired)                │
+│        ├─ 20+ components wired via builder pattern                           │
+│        ├─ Retry config set if retry.enabled                                  │
+│        ├─ GraphQLHandler (if graphql.enabled)                                │
+│        ├─ AlertEvaluator → starts background thread                          │
+│        └─ DashboardHandler (routes from config)                              │
 │                                                                              │
-│  [9/10] Build Pipeline (all 11 layers wired)                                 │
-│                                                                              │
-│ [10/10] Create HttpServer → server.start()                                   │
-│         └─ Listening on 0.0.0.0:8080                                         │
+│  [9/9] Create servers + start                                                │
+│        ├─ HttpServer (TLS/mTLS optional, feature flags, compression)         │
+│        ├─ ShutdownCoordinator                                                │
+│        ├─ BruteForceProtector (if brute_force.enabled)                       │
+│        ├─ WireServer → starts (if wire_protocol.enabled)                     │
+│        ├─ BinaryRpcServer → starts (if binary_rpc.enabled)                   │
+│        ├─ ConfigWatcher → starts (file polling for hot-reload)               │
+│        └─ HttpServer::start() — blocking listen on host:port                 │
 │                                                                              │
 │  Signal handling: SIGINT/SIGTERM → graceful shutdown                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ 1. ShutdownCoordinator::initiate_shutdown() (stop accepting)        │     │
+│  │ 2. Stop background services:                                        │     │
+│  │    AdaptiveRateController, SchemaDriftDetector, AlertEvaluator,     │     │
+│  │    ConfigWatcher, WireServer, BinaryRpcServer                       │     │
+│  │ 3. ShutdownCoordinator::wait_for_drain() (drain in-flight requests) │     │
+│  │ 4. HttpServer::stop()                                               │     │
+│  │ 5. exit(0)                                                          │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -955,57 +1213,60 @@
                     │   main.cpp    │
                     └───────┬───────┘
                             │ creates
-                            ▼
-                    ┌───────────────┐
-                    │  HttpServer   │──────────────────────────────────┐
-                    │  (cpp-httplib)│                                  │
-                    └───────┬───────┘                                  │
-                            │ owns                                    │
-                            ▼                                         ▼
-                    ┌───────────────┐                          ┌──────────────┐
-                    │   Pipeline    │──────────────┐           │ Compliance   │
-                    └─┬──┬──┬──┬───┘              │           │  Reporter    │
-                      │  │  │  │                  │           └──────┬───────┘
-        ┌─────────────┘  │  │  └──────┐           │                  │
-        ▼                │  │         ▼           ▼           ┌──────▼───────┐
-  ┌──────────────┐       │  │  ┌──────────────┐ ┌──────────┐ │  Lineage     │
-  │  SQLParser   │       │  │  │ RateLimiter  │ │AuditEmit │ │  Tracker     │
-  └──────┬───────┘       │  │  └──────────────┘ └────┬─────┘ └──────────────┘
-         │               │  │                        │
-         ▼               │  │                        ▼
-  ┌──────────────┐       │  │                 ┌──────────────┐
-  │  ParseCache  │       │  │                 │  RingBuffer  │
-  │  (16 shards) │       │  │                 │  (65536)     │
-  └──────┬───────┘       │  │                 └──────────────┘
-         │               │  │
-         ▼               │  │
-  ┌──────────────┐       │  │
-  │ Fingerprinter│       │  │
-  │ (xxHash64)   │       │  │
-  └──────────────┘       │  │
-                         │  │
-           ┌─────────────┘  └──────────────┐
-           ▼                               ▼
-  ┌──────────────┐     ┌──────────────┐  ┌──────────────────┐
-  │ PolicyEngine │     │QueryExecutor │  │ Security Layer   │
-  └──────┬───────┘     └──────┬───────┘  │                  │
-         │                    │          │ SqlInjection     │
-         ▼                    ▼          │  Detector        │
-  ┌──────────────┐     ┌──────────────┐  │ AnomalyDetector  │
-  │  PolicyTrie  │     │ ConnPool     │  │ ColumnEncryptor  │
-  │  (radix)     │     │ (libpq)      │  │  └─IKeyManager   │
-  └──────────────┘     └──────┬───────┘  │    └─LocalKeyMgr │
-                              │          └──────────────────┘
-                              ▼
-                       ┌──────────────┐
-                       │CircuitBreaker│
-                       │ (per-DB FSM) │
-                       └──────────────┘
-
-  ┌──────────────┐
-  │ Classifier   │  (4-strategy chain: name → OID → pattern → derived)
-  │  Registry    │
-  └──────────────┘
+              ┌─────────────┼─────────────────────────────┐
+              ▼             ▼                              ▼
+      ┌───────────────┐  ┌────────────┐          ┌────────────────┐
+      │  HttpServer   │  │ WireServer │          │ BinaryRpcServer│
+      │  (cpp-httplib)│  │ (PG v3)    │          │ (custom proto) │
+      └───────┬───────┘  └─────┬──────┘          └───────┬────────┘
+              │                │                          │
+              └────────────────┼──────────────────────────┘
+                               │ all use
+                               ▼
+                       ┌───────────────┐
+                       │   Pipeline    │
+                       │  (20+ comps)  │
+                       └─┬──┬──┬──┬───┘
+                         │  │  │  │
+       ┌─────────────────┘  │  │  └──────────────────┐
+       ▼                    │  │                      ▼
+ ┌──────────────┐           │  │              ┌──────────────────┐
+ │  SQLParser   │           │  │              │ Security Layer   │
+ │  + ParseCache│           │  │              │ ┌─SqlInjection   │
+ │  + Fingerprint│          │  │              │ ├─AnomalyDetect  │
+ └──────────────┘           │  │              │ ├─ColumnEncryptor│
+                            │  │              │ │  └─IKeyManager  │
+       ┌────────────────────┘  │              │ └─LineageTracker │
+       ▼                       ▼              └──────────────────┘
+ ┌──────────────┐     ┌──────────────┐
+ │ PolicyEngine │     │QueryExecutor │     ┌──────────────────────┐
+ │ + PolicyTrie │     │ + ConnPool   │     │ Post-Exec Components │
+ │ (RCU reload) │     │ + CircuitBrk │     │ ┌─ResultCache        │
+ └──────────────┘     └──────────────┘     │ ├─SlowQueryTracker   │
+                                           │ ├─QueryCostEstimator │
+ ┌──────────────┐     ┌──────────────┐     │ ├─SchemaManager      │
+ │ Classifier   │     │ AuditEmitter │     │ └─QueryRewriter (RLS)│
+ │  Registry    │     │ + RingBuffer │     └──────────────────────┘
+ │ (4 strategy) │     │ + Encryptor  │
+ └──────────────┘     │ + Sampler    │     ┌──────────────────────┐
+                      │ + Sinks      │     │ Background Services  │
+ ┌──────────────┐     └──────────────┘     │ ┌─ConfigWatcher      │
+ │ RateLimiter  │                          │ ├─AlertEvaluator     │
+ │ + Waitable   │     ┌──────────────┐     │ ├─SchemaDriftDetect  │
+ │ + Adaptive   │     │ TenantManager│     │ ├─AdaptiveRateCtrl   │
+ └──────────────┘     └──────────────┘     │ └─ShutdownCoordinator│
+                                           └──────────────────────┘
+ ┌──────────────┐     ┌──────────────┐
+ │ Compliance   │     │  Dashboard   │     ┌──────────────────────┐
+ │  Reporter    │     │  Handler     │     │ HTTP-Level Security  │
+ └──────────────┘     │ (HTML+JSON   │     │ ┌─BruteForceProtect  │
+                      │  +SSE stream)│     │ ├─IpAllowlist        │
+ ┌──────────────┐     └──────────────┘     │ └─ResponseCompressor │
+ │ GraphQL      │                          └──────────────────────┘
+ │  Handler     │     ┌──────────────┐
+ └──────────────┘     │ OpenAPI +    │
+                      │ Swagger UI   │
+                      └──────────────┘
 ```
 
 ---
@@ -1017,42 +1278,71 @@
 │  THREAD MODEL                                                                │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────┐             │
-│  │ HTTP Worker Threads (cpp-httplib thread pool)               │             │
+│  │ HTTP Worker Threads (cpp-httplib thread pool, default 4)     │             │
 │  │                                                             │             │
-│  │  Thread 1 ──→ Pipeline::execute() ──→ Rate Limit ──→ ...   │             │
-│  │  Thread 2 ──→ Pipeline::execute() ──→ Rate Limit ──→ ...   │             │
-│  │  Thread N ──→ Pipeline::execute() ──→ Rate Limit ──→ ...   │             │
+│  │  Thread 1 ──→ Pipeline::execute() ──→ all layers ──→ ...   │             │
+│  │  Thread 2 ──→ Pipeline::execute() ──→ all layers ──→ ...   │             │
+│  │  Thread N ──→ Pipeline::execute() ──→ all layers ──→ ...   │             │
 │  │                                                             │             │
 │  │  Shared state protection:                                   │             │
 │  │  ├─ Rate limiter buckets: atomic CAS (lock-free)            │             │
 │  │  ├─ Rate limiter maps: std::shared_mutex (reader-writer)    │             │
 │  │  ├─ Parse cache: per-shard mutex (16-way parallel)          │             │
+│  │  ├─ Result cache: per-shard mutex (16-way parallel)         │             │
 │  │  ├─ Policy store: atomic shared_ptr (RCU, lock-free reads)  │             │
 │  │  ├─ Connection pool: std::mutex + semaphore                 │             │
 │  │  ├─ Circuit breaker: atomic state transitions               │             │
 │  │  ├─ Audit emit: lock-free CAS enqueue to ring buffer        │             │
 │  │  ├─ Anomaly profiles: shared_mutex (double-checked locking) │             │
 │  │  ├─ Lineage tracker: shared_mutex (reads) / unique (writes) │             │
-│  │  └─ Key manager: shared_mutex (reads) / unique (rotation)   │             │
-│  └─────────────────────────────────────────────────────────────┘             │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────┐             │
-│  │ Rate Limiter Cleanup Thread (single, background)            │             │
-│  │                                                             │             │
-│  │  loop:                                                      │             │
-│  │    wait(cleanup_interval_seconds) or shutdown signal         │             │
-│  │    for each bucket map (user, db, user_db):                 │             │
-│  │      unique_lock → erase idle buckets (> idle_timeout)      │             │
+│  │  ├─ Key manager: shared_mutex (reads) / unique (rotation)   │             │
+│  │  ├─ User registry: shared_mutex (reads) / unique (reload)   │             │
+│  │  └─ Slow query tracker: mutex (bounded deque)               │             │
 │  └─────────────────────────────────────────────────────────────┘             │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────┐             │
 │  │ Audit Writer Thread (single, background)                    │             │
-│  │                                                             │             │
-│  │  loop:                                                      │             │
-│  │    sleep(100ms) or wake on flush/shutdown signal             │             │
-│  │    drain ring buffer → batch of up to 1000 records          │             │
-│  │    write batch to audit.jsonl                               │             │
-│  │    every 10 batches → fsync                                 │             │
+│  │  loop: sleep(100ms) → drain ring buffer → batch write       │             │
+│  │        encrypt if AuditEncryptor enabled → fsync every 10   │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Rate Limiter Cleanup Thread (single, background)            │             │
+│  │  loop: wait(60s) → unique_lock → erase idle buckets         │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Config Watcher Thread (single, background)                  │             │
+│  │  loop: poll config file every N seconds (default: 5)        │             │
+│  │        on change: reload policies, users, rate limits, RLS  │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Alert Evaluator Thread (single, background)                 │             │
+│  │  loop: evaluate rules every evaluation_interval_seconds     │             │
+│  │        fire/resolve alerts based on metric thresholds        │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Schema Drift Detector Thread (single, background)           │             │
+│  │  loop: query information_schema every check_interval_seconds│             │
+│  │        compare with previous snapshot → emit drift events    │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Adaptive Rate Controller Thread (single, background)        │             │
+│  │  loop: every adjustment_interval_seconds                    │             │
+│  │        compute P95 latency → adjust global TPS              │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Wire Protocol Threads (if enabled, thread pool)             │             │
+│  │  Accept PostgreSQL v3 connections → Pipeline::execute()     │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Binary RPC Threads (if enabled, thread pool)                │             │
+│  │  Accept binary protocol connections → Pipeline::execute()   │             │
 │  └─────────────────────────────────────────────────────────────┘             │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
