@@ -7,6 +7,7 @@
 #include <openssl/evp.h>
 
 #include <format>
+#include <future>
 #include <thread>
 
 namespace sqlproxy {
@@ -129,8 +130,29 @@ AuditEmitter::Stats AuditEmitter::get_stats() const {
 // ============================================================================
 
 void AuditEmitter::write_to_sinks(std::string_view data) {
+    if (sinks_.size() <= 1) {
+        // Single sink: no parallelization overhead
+        for (auto& sink : sinks_) {
+            if (!sink->write(data)) {
+                sink_write_failures_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        return;
+    }
+
+    // Multiple sinks: write concurrently (e.g. file + webhook)
+    // Each future writes to one sink; the data string_view remains valid
+    // because we wait for all futures before returning.
+    std::vector<std::future<bool>> futures;
+    futures.reserve(sinks_.size());
+
     for (auto& sink : sinks_) {
-        if (!sink->write(data)) {
+        futures.push_back(std::async(std::launch::async,
+            [&sink, data] { return sink->write(data); }));
+    }
+
+    for (auto& f : futures) {
+        if (!f.get()) {
             sink_write_failures_.fetch_add(1, std::memory_order_relaxed);
         }
     }

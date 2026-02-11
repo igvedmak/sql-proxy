@@ -8,6 +8,13 @@
 #include "classifier/classifier_registry.hpp"
 #include "audit/audit_emitter.hpp"
 #include "core/pipeline.hpp"
+#include "core/masking.hpp"
+#include "core/query_rewriter.hpp"
+#include "cache/result_cache.hpp"
+#include "policy/policy_types.hpp"
+#include "security/sql_injection_detector.hpp"
+#include "security/anomaly_detector.hpp"
+#include "executor/circuit_breaker.hpp"
 #include "db/iquery_executor.hpp"
 #include "analyzer/sql_analyzer.hpp"
 
@@ -643,3 +650,449 @@ static void BM_RateLimiter_UniqueUsers(benchmark::State& state) {
     state.SetLabel("users=" + std::to_string(num_users));
 }
 BENCHMARK(BM_RateLimiter_UniqueUsers)->Arg(1)->Arg(10)->Arg(100)->Arg(1000);
+
+// ============================================================================
+// Category E: Result Cache Benchmarks
+// ============================================================================
+
+// E1: ResultCache get — hit
+static void BM_ResultCache_Hit(benchmark::State& state) {
+    ResultCache::Config cfg;
+    cfg.enabled = true;
+    cfg.max_entries = 10000;
+    cfg.num_shards = 16;
+    cfg.ttl = std::chrono::seconds(300);
+    ResultCache cache(cfg);
+
+    auto result = make_query_result(10, 3);
+    cache.put(12345, "bench_user", "testdb", result);
+
+    for (auto _ : state) {
+        auto r = cache.get(12345, "bench_user", "testdb");
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_ResultCache_Hit);
+
+// E2: ResultCache get — miss
+static void BM_ResultCache_Miss(benchmark::State& state) {
+    ResultCache::Config cfg;
+    cfg.enabled = true;
+    cfg.max_entries = 10000;
+    cfg.num_shards = 16;
+    ResultCache cache(cfg);
+
+    for (auto _ : state) {
+        auto r = cache.get(99999, "nobody", "nodb");
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_ResultCache_Miss);
+
+// E3: ResultCache put
+static void BM_ResultCache_Put(benchmark::State& state) {
+    ResultCache::Config cfg;
+    cfg.enabled = true;
+    cfg.max_entries = 100000;
+    cfg.num_shards = 16;
+    ResultCache cache(cfg);
+    auto result = make_query_result(5, 3);
+
+    uint64_t i = 0;
+    for (auto _ : state) {
+        cache.put(i++, "bench_user", "testdb", result);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ResultCache_Put);
+
+// E4: ResultCache invalidate
+static void BM_ResultCache_Invalidate(benchmark::State& state) {
+    ResultCache::Config cfg;
+    cfg.enabled = true;
+    cfg.max_entries = 10000;
+    cfg.num_shards = 16;
+    ResultCache cache(cfg);
+
+    auto result = make_query_result(5, 3);
+    for (uint64_t i = 0; i < 1000; ++i) {
+        cache.put(i, "user", "testdb", result);
+    }
+
+    for (auto _ : state) {
+        cache.invalidate("testdb");
+        // Re-populate for next iteration
+        state.PauseTiming();
+        for (uint64_t i = 0; i < 1000; ++i) {
+            cache.put(i, "user", "testdb", result);
+        }
+        state.ResumeTiming();
+    }
+}
+BENCHMARK(BM_ResultCache_Invalidate);
+
+// ============================================================================
+// Category F: SQL Injection Detector Benchmarks
+// ============================================================================
+
+// F1: Benign query (no threats)
+static void BM_SQLInjection_Benign(benchmark::State& state) {
+    SqlInjectionDetector detector;
+    ParsedQuery parsed;
+    parsed.type = StatementType::SELECT;
+    TableRef ref;
+    ref.table = "users";
+    parsed.tables.push_back(ref);
+
+    for (auto _ : state) {
+        auto r = detector.analyze(kSimpleSelect, kSimpleSelect, parsed);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_SQLInjection_Benign);
+
+// F2: Tautology attack
+static void BM_SQLInjection_Tautology(benchmark::State& state) {
+    SqlInjectionDetector detector;
+    const std::string sql = "SELECT * FROM users WHERE id = 1 OR 1=1";
+    ParsedQuery parsed;
+    parsed.type = StatementType::SELECT;
+    TableRef ref;
+    ref.table = "users";
+    parsed.tables.push_back(ref);
+
+    for (auto _ : state) {
+        auto r = detector.analyze(sql, sql, parsed);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_SQLInjection_Tautology);
+
+// F3: Union injection
+static void BM_SQLInjection_Union(benchmark::State& state) {
+    SqlInjectionDetector detector;
+    const std::string sql =
+        "SELECT id FROM users WHERE name = '' UNION SELECT password FROM admin --";
+    ParsedQuery parsed;
+    parsed.type = StatementType::SELECT;
+    TableRef r1, r2;
+    r1.table = "users";
+    r2.table = "admin";
+    parsed.tables.push_back(r1);
+    parsed.tables.push_back(r2);
+
+    for (auto _ : state) {
+        auto r = detector.analyze(sql, sql, parsed);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_SQLInjection_Union);
+
+// F4: Stacked queries
+static void BM_SQLInjection_Stacked(benchmark::State& state) {
+    SqlInjectionDetector detector;
+    const std::string sql = "SELECT 1; DROP TABLE users; --";
+    ParsedQuery parsed;
+    parsed.type = StatementType::SELECT;
+
+    for (auto _ : state) {
+        auto r = detector.analyze(sql, sql, parsed);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_SQLInjection_Stacked);
+
+// F5: Time-based blind
+static void BM_SQLInjection_TimeBased(benchmark::State& state) {
+    SqlInjectionDetector detector;
+    const std::string sql =
+        "SELECT * FROM users WHERE id = 1 AND pg_sleep(5)";
+    ParsedQuery parsed;
+    parsed.type = StatementType::SELECT;
+    TableRef ref;
+    ref.table = "users";
+    parsed.tables.push_back(ref);
+
+    for (auto _ : state) {
+        auto r = detector.analyze(sql, sql, parsed);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_SQLInjection_TimeBased);
+
+// ============================================================================
+// Category G: Masking Engine Benchmarks
+// ============================================================================
+
+// G1: mask_value — REDACT
+static void BM_Masking_Redact(benchmark::State& state) {
+    for (auto _ : state) {
+        auto r = MaskingEngine::mask_value("alice@example.com", MaskingAction::REDACT);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_Masking_Redact);
+
+// G2: mask_value — PARTIAL
+static void BM_Masking_Partial(benchmark::State& state) {
+    for (auto _ : state) {
+        auto r = MaskingEngine::mask_value("alice@example.com", MaskingAction::PARTIAL, 3, 3);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_Masking_Partial);
+
+// G3: mask_value — HASH (SHA256)
+static void BM_Masking_Hash(benchmark::State& state) {
+    for (auto _ : state) {
+        auto r = MaskingEngine::mask_value("alice@example.com", MaskingAction::HASH);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_Masking_Hash);
+
+// G4: mask_value — NULLIFY
+static void BM_Masking_Nullify(benchmark::State& state) {
+    for (auto _ : state) {
+        auto r = MaskingEngine::mask_value("alice@example.com", MaskingAction::NULLIFY);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_Masking_Nullify);
+
+// G5: Masking apply — scaling with row count
+static void BM_Masking_Apply(benchmark::State& state) {
+    const auto num_rows = static_cast<size_t>(state.range(0));
+
+    ColumnPolicyDecision d1;
+    d1.column_name = "col_1";
+    d1.decision = Decision::ALLOW;
+    d1.masking = MaskingAction::REDACT;
+    d1.matched_policy = "bench_policy";
+
+    ColumnPolicyDecision d2;
+    d2.column_name = "col_2";
+    d2.decision = Decision::ALLOW;
+    d2.masking = MaskingAction::HASH;
+    d2.matched_policy = "bench_policy";
+
+    std::vector<ColumnPolicyDecision> decisions = {d1, d2};
+
+    for (auto _ : state) {
+        state.PauseTiming();
+        auto result = make_query_result(num_rows, 5);
+        state.ResumeTiming();
+
+        auto records = MaskingEngine::apply(result, decisions);
+        benchmark::DoNotOptimize(records);
+    }
+    state.SetLabel("rows=" + std::to_string(num_rows));
+}
+BENCHMARK(BM_Masking_Apply)->Arg(10)->Arg(100)->Arg(1000)->Arg(5000)->Arg(10000);
+
+// ============================================================================
+// Category H: Anomaly Detector Benchmarks
+// ============================================================================
+
+// H1: check — new user (cold profile)
+static void BM_AnomalyDetector_Check_Cold(benchmark::State& state) {
+    AnomalyDetector detector;
+    std::vector<std::string> tables = {"users"};
+    int i = 0;
+    for (auto _ : state) {
+        auto r = detector.check("cold_user_" + std::to_string(i++), tables, 12345);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_AnomalyDetector_Check_Cold);
+
+// H2: check — warm user (established profile)
+static void BM_AnomalyDetector_Check_Warm(benchmark::State& state) {
+    AnomalyDetector detector;
+    std::vector<std::string> tables = {"users", "orders"};
+    // Build profile
+    for (int i = 0; i < 200; ++i) {
+        detector.record("warm_user", tables, static_cast<uint64_t>(i));
+    }
+    for (auto _ : state) {
+        auto r = detector.check("warm_user", tables, 12345);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_AnomalyDetector_Check_Warm);
+
+// H3: record
+static void BM_AnomalyDetector_Record(benchmark::State& state) {
+    AnomalyDetector detector;
+    std::vector<std::string> tables = {"users"};
+    uint64_t fp = 0;
+    for (auto _ : state) {
+        detector.record("bench_user", tables, fp++);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_AnomalyDetector_Record);
+
+// H4: Anomaly detector scaling with tracked users
+static void BM_AnomalyDetector_UserScaling(benchmark::State& state) {
+    const auto num_users = static_cast<size_t>(state.range(0));
+    AnomalyDetector detector;
+    std::vector<std::string> tables = {"users"};
+
+    // Pre-populate user profiles
+    for (size_t i = 0; i < num_users; ++i) {
+        detector.record("user_" + std::to_string(i), tables, i);
+    }
+
+    size_t idx = 0;
+    for (auto _ : state) {
+        auto r = detector.check("user_" + std::to_string(idx % num_users), tables, 99);
+        benchmark::DoNotOptimize(r);
+        ++idx;
+    }
+    state.SetLabel("users=" + std::to_string(num_users));
+}
+BENCHMARK(BM_AnomalyDetector_UserScaling)->Arg(1)->Arg(10)->Arg(100)->Arg(1000);
+
+// ============================================================================
+// Category I: Circuit Breaker Benchmarks
+// ============================================================================
+
+// I1: allow_request — CLOSED state (happy path)
+static void BM_CircuitBreaker_AllowClosed(benchmark::State& state) {
+    CircuitBreaker cb("bench_cb");
+    for (auto _ : state) {
+        bool r = cb.allow_request();
+        benchmark::DoNotOptimize(r);
+        cb.record_success();
+    }
+}
+BENCHMARK(BM_CircuitBreaker_AllowClosed);
+
+// I2: allow_request — OPEN state (fast reject)
+static void BM_CircuitBreaker_RejectOpen(benchmark::State& state) {
+    CircuitBreaker::Config cfg;
+    cfg.failure_threshold = 1;
+    cfg.timeout = std::chrono::milliseconds(60000); // Long timeout so it stays open
+    CircuitBreaker cb("bench_cb_open", cfg);
+
+    // Trip the breaker
+    cb.allow_request();
+    cb.record_failure();
+
+    for (auto _ : state) {
+        bool r = cb.allow_request();
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_CircuitBreaker_RejectOpen);
+
+// I3: record_success + record_failure cycle
+static void BM_CircuitBreaker_RecordCycle(benchmark::State& state) {
+    CircuitBreaker cb("bench_cb_cycle");
+    for (auto _ : state) {
+        cb.allow_request();
+        cb.record_success();
+        cb.allow_request();
+        cb.record_failure(FailureCategory::TRANSIENT);
+    }
+    state.SetItemsProcessed(state.iterations() * 2);
+}
+BENCHMARK(BM_CircuitBreaker_RecordCycle);
+
+// I4: get_stats
+static void BM_CircuitBreaker_GetStats(benchmark::State& state) {
+    CircuitBreaker cb("bench_cb_stats");
+    for (int i = 0; i < 100; ++i) {
+        cb.allow_request();
+        cb.record_success();
+    }
+    for (auto _ : state) {
+        auto s = cb.get_stats();
+        benchmark::DoNotOptimize(s);
+    }
+}
+BENCHMARK(BM_CircuitBreaker_GetStats);
+
+// ============================================================================
+// Category J: Query Rewriter Benchmarks
+// ============================================================================
+
+// J1: Rewrite with RLS injection
+static void BM_QueryRewriter_RLS(benchmark::State& state) {
+    QueryRewriter rewriter;
+    RlsRule rule;
+    rule.name = "tenant_isolation";
+    rule.table = "orders";
+    rule.condition = "tenant_id = '$USER'";
+    rule.users = {"*"};
+    rewriter.load_rules({rule}, {});
+
+    AnalysisResult analysis;
+    analysis.statement_type = StatementType::SELECT;
+    TableRef ref;
+    ref.table = "orders";
+    analysis.source_tables.push_back(ref);
+    analysis.table_usage["orders"] = TableUsage::READ;
+
+    const std::string sql = "SELECT * FROM orders WHERE total > 100";
+    std::unordered_map<std::string, std::string> attrs;
+
+    for (auto _ : state) {
+        auto r = rewriter.rewrite(sql, "alice", {"user"}, "testdb", analysis, attrs);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_QueryRewriter_RLS);
+
+// J2: Rewrite with enforce_limit
+static void BM_QueryRewriter_EnforceLimit(benchmark::State& state) {
+    QueryRewriter rewriter;
+    RewriteRule rule;
+    rule.name = "enforce_limit";
+    rule.type = "enforce_limit";
+    rule.limit_value = 1000;
+    rule.users = {"*"};
+    rewriter.load_rules({}, {rule});
+
+    AnalysisResult analysis;
+    analysis.statement_type = StatementType::SELECT;
+    TableRef ref;
+    ref.table = "users";
+    analysis.source_tables.push_back(ref);
+
+    const std::string sql = "SELECT * FROM users WHERE active = true";
+    std::unordered_map<std::string, std::string> attrs;
+
+    for (auto _ : state) {
+        auto r = rewriter.rewrite(sql, "alice", {"user"}, "testdb", analysis, attrs);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_QueryRewriter_EnforceLimit);
+
+// J3: Rewrite — no matching rules (passthrough)
+static void BM_QueryRewriter_NoMatch(benchmark::State& state) {
+    QueryRewriter rewriter;
+    RlsRule rule;
+    rule.name = "other_table";
+    rule.table = "orders";
+    rule.condition = "tenant_id = '$USER'";
+    rule.users = {"*"};
+    rewriter.load_rules({rule}, {});
+
+    AnalysisResult analysis;
+    analysis.statement_type = StatementType::SELECT;
+    TableRef ref;
+    ref.table = "users";
+    analysis.source_tables.push_back(ref);
+
+    const std::string sql = "SELECT * FROM users WHERE id = 1";
+    std::unordered_map<std::string, std::string> attrs;
+
+    for (auto _ : state) {
+        auto r = rewriter.rewrite(sql, "alice", {"user"}, "testdb", analysis, attrs);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_QueryRewriter_NoMatch);

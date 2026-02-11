@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <format>
+#include <future>
+#include <thread>
 
 namespace sqlproxy {
 
@@ -84,25 +86,63 @@ std::vector<MaskingRecord> MaskingEngine::apply(
         col_idx[result.column_names[i]] = i;
     }
 
-    // Apply masking for each decision that has a non-NONE masking action
+    // Collect masking tasks: column index + masking parameters
+    struct MaskTask {
+        size_t col_idx;
+        MaskingAction action;
+        int prefix_len;
+        int suffix_len;
+    };
+    std::vector<MaskTask> tasks;
+
     for (const auto& decision : decisions) {
         if (decision.decision != Decision::ALLOW || decision.masking == MaskingAction::NONE) {
             continue;
         }
-
         const auto it = col_idx.find(decision.column_name);
         if (it == col_idx.end()) continue;
-        const size_t idx = it->second;
 
-        // Mask all rows in this column
-        for (auto& row : result.rows) {
-            if (idx < row.size()) {
-                row[idx] = mask_value(row[idx], decision.masking,
-                                       decision.prefix_len, decision.suffix_len);
+        tasks.push_back({it->second, decision.masking, decision.prefix_len, decision.suffix_len});
+        records.emplace_back(decision.column_name, decision.masking, decision.matched_policy);
+    }
+
+    if (tasks.empty()) return records;
+
+    const size_t num_rows = result.rows.size();
+    constexpr size_t kParallelThreshold = 1000;
+    const unsigned hw_threads = std::thread::hardware_concurrency();
+
+    // Lambda that masks a range of rows [start, end)
+    auto mask_range = [&](size_t start, size_t end) {
+        for (size_t r = start; r < end; ++r) {
+            auto& row = result.rows[r];
+            for (const auto& t : tasks) {
+                if (t.col_idx < row.size()) {
+                    row[t.col_idx] = mask_value(row[t.col_idx], t.action,
+                                                 t.prefix_len, t.suffix_len);
+                }
             }
         }
+    };
 
-        records.emplace_back(decision.column_name, decision.masking, decision.matched_policy);
+    if (num_rows >= kParallelThreshold && hw_threads > 1) {
+        // Parallel path: partition rows among worker threads
+        const unsigned num_workers = std::min(hw_threads, 4u);
+        const size_t chunk = (num_rows + num_workers - 1) / num_workers;
+
+        std::vector<std::future<void>> futures;
+        futures.reserve(num_workers);
+
+        for (unsigned w = 0; w < num_workers; ++w) {
+            const size_t start = w * chunk;
+            const size_t end = std::min(start + chunk, num_rows);
+            if (start >= end) break;
+            futures.push_back(std::async(std::launch::async, mask_range, start, end));
+        }
+        for (auto& f : futures) f.get();
+    } else {
+        // Sequential path
+        mask_range(0, num_rows);
     }
 
     return records;
