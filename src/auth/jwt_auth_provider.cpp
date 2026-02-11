@@ -1,5 +1,6 @@
 #include "auth/jwt_auth_provider.hpp"
 #include "server/http_constants.hpp"
+#include "core/utils.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -61,17 +62,12 @@ IAuthProvider::AuthResult JwtAuthProvider::authenticate(
 
     // Check expiration
     const std::string exp_str = extract_json_string(payload_json, "exp");
-    if (!exp_str.empty()) {
-        try {
-            const long long exp_time = std::stoll(exp_str);
-            const auto now = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            if (now > exp_time) {
-                result.error = "JWT expired";
-                return result;
-            }
-        } catch (...) {
-            // Non-numeric exp, skip check
+    if (const auto exp_time = utils::try_parse_int<long long>(exp_str)) {
+        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        if (now > *exp_time) {
+            result.error = "JWT expired";
+            return result;
         }
     }
 

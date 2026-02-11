@@ -18,13 +18,13 @@ PgConnection::~PgConnection() {
 
 DbResultSet PgConnection::execute(const std::string& sql) {
     if (!conn_) {
-        return {false, "Connection is null", {}, {}, {}, 0, false};
+        return {.success = false, .error_message = "Connection is null"};
     }
 
     PGresult* res = PQexec(conn_, sql.c_str());
 
     if (!res) {
-        return {false, PQerrorMessage(conn_), {}, {}, {}, 0, false};
+        return {.success = false, .error_message = PQerrorMessage(conn_)};
     }
 
     ExecStatusType status = PQresultStatus(res);
@@ -44,7 +44,7 @@ DbResultSet PgConnection::execute(const std::string& sql) {
     // Error case
     std::string error = PQerrorMessage(conn_);
     PQclear(res);
-    return {false, error, {}, {}, {}, 0, false};
+    return {.success = false, .error_message = std::move(error)};
 }
 
 bool PgConnection::is_healthy(const std::string& health_check_query) {
@@ -96,9 +96,7 @@ void PgConnection::close() {
 }
 
 DbResultSet PgConnection::process_tuples_result(PGresult* res) {
-    DbResultSet result;
-    result.success = true;
-    result.has_rows = true;
+    DbResultSet result{.success = true, .has_rows = true};
 
     int ncols = PQnfields(res);
     for (int i = 0; i < ncols; i++) {
@@ -128,16 +126,11 @@ DbResultSet PgConnection::process_tuples_result(PGresult* res) {
 }
 
 DbResultSet PgConnection::process_command_result(PGresult* res) {
-    DbResultSet result;
-    result.success = true;
-    result.has_rows = false;
-
     const char* affected = PQcmdTuples(res);
-    if (affected && std::strlen(affected) > 0) {
-        result.affected_rows = std::stoull(affected);
-    }
-
-    return result;
+    return {
+        .success = true,
+        .affected_rows = utils::parse_int<uint64_t>(affected),
+    };
 }
 
 // ============================================================================

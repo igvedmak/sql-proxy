@@ -155,9 +155,9 @@ std::optional<GraphQLQuery> GraphQLHandler::parse(const std::string& query) cons
                 }
 
                 if (key == "limit") {
-                    try { gql.limit = std::stoi(val); } catch (...) {}
+                    gql.limit = utils::parse_int<int>(val);
                 } else if (key == "offset") {
-                    try { gql.offset = std::stoi(val); } catch (...) {}
+                    gql.offset = utils::parse_int<int>(val);
                 } else if (key == "order_by") {
                     gql.order_by = val;
                 } else if (key == "order") {

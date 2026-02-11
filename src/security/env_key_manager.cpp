@@ -16,21 +16,10 @@ EnvKeyManager::EnvKeyManager(const std::string& env_var_name) {
     std::string hex(hex_key);
 
     // Hex decode
-    if (hex.size() < 2 || hex.size() % 2 != 0) {
-        utils::log::error(std::format("EnvKeyManager: '{}' must be hex-encoded (even length)", env_var_name));
+    key_.key_bytes = utils::hex_to_bytes(hex);
+    if (key_.key_bytes.empty()) {
+        utils::log::error(std::format("EnvKeyManager: '{}' must be valid hex-encoded key (even length)", env_var_name));
         return;
-    }
-
-    key_.key_bytes.reserve(hex.size() / 2);
-    for (size_t i = 0; i < hex.size(); i += 2) {
-        try {
-            const uint8_t byte = static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16));
-            key_.key_bytes.push_back(byte);
-        } catch (...) {
-            utils::log::error(std::format("EnvKeyManager: invalid hex at position {}", i));
-            key_.key_bytes.clear();
-            return;
-        }
     }
 
     if (key_.key_bytes.size() != 32) {

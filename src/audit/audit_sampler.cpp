@@ -36,7 +36,7 @@ bool AuditSampler::should_sample(
     }
 
     // Probabilistic/deterministic sampling
-    double rate = (stmt_type == StatementType::SELECT)
+    const double rate = (stmt_type == StatementType::SELECT)
         ? config_.select_sample_rate
         : config_.default_sample_rate;
 
@@ -54,7 +54,7 @@ bool AuditSampler::rate_check(double rate, uint64_t fingerprint_hash) const {
     if (config_.deterministic) {
         // Deterministic: hash mod 10000, compare against rate*10000
         // Same fingerprint always produces same decision
-        uint32_t bucket = static_cast<uint32_t>(fingerprint_hash % 10000);
+        const uint32_t bucket = static_cast<uint32_t>(fingerprint_hash % 10000);
         return bucket < static_cast<uint32_t>(rate * 10000);
     } else {
         // Probabilistic: thread-local RNG
@@ -65,9 +65,9 @@ bool AuditSampler::rate_check(double rate, uint64_t fingerprint_hash) const {
 }
 
 AuditSampler::Stats AuditSampler::get_stats() const {
-    uint64_t checked = total_checked_.load(std::memory_order_relaxed);
-    uint64_t sampled = total_sampled_.load(std::memory_order_relaxed);
-    return {checked, sampled, checked - sampled};
+    const uint64_t checked = total_checked_.load(std::memory_order_relaxed);
+    const uint64_t sampled = total_sampled_.load(std::memory_order_relaxed);
+    return {.total_checked = checked, .total_sampled = sampled, .total_dropped = checked - sampled};
 }
 
 } // namespace sqlproxy

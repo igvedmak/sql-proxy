@@ -272,13 +272,15 @@ HierarchicalRateLimiter::Stats HierarchicalRateLimiter::get_stats() const {
         udb = user_db_buckets_.size();
     }
     return Stats{
-        total_checks_.load(std::memory_order_relaxed),
-        global_rejects_.load(std::memory_order_relaxed),
-        user_rejects_.load(std::memory_order_relaxed),
-        database_rejects_.load(std::memory_order_relaxed),
-        user_database_rejects_.load(std::memory_order_relaxed),
-        buckets_evicted_.load(std::memory_order_relaxed),
-        ub, db, udb
+        .total_checks = total_checks_.load(std::memory_order_relaxed),
+        .global_rejects = global_rejects_.load(std::memory_order_relaxed),
+        .user_rejects = user_rejects_.load(std::memory_order_relaxed),
+        .database_rejects = database_rejects_.load(std::memory_order_relaxed),
+        .user_database_rejects = user_database_rejects_.load(std::memory_order_relaxed),
+        .buckets_evicted = buckets_evicted_.load(std::memory_order_relaxed),
+        .user_bucket_count = ub,
+        .db_bucket_count = db,
+        .user_db_bucket_count = udb,
     };
 }
 

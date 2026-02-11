@@ -1,7 +1,10 @@
 #pragma once
 
 #include <string>
+#include <string_view>
+#include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <random>
 #include <format>
 #include <sstream>
@@ -9,7 +12,9 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <type_traits>
+#include <vector>
 
 namespace sqlproxy::utils {
 
@@ -84,6 +89,62 @@ constexpr bool in_range(T value) {
         above = static_cast<Common>(value) > static_cast<Common>(Hi);
     }
     return !below && !above;
+}
+
+// ============================================================================
+// Numeric Parsing (std::from_chars — no exceptions, no locale, no allocations)
+// ============================================================================
+
+// Parse integer from string_view, returns default_val on failure
+template<typename T>
+    requires std::is_integral_v<T>
+[[nodiscard]] inline T parse_int(std::string_view sv, T default_val = T{}) {
+    T result{};
+    const auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), result);
+    return (ec == std::errc{}) ? result : default_val;
+}
+
+// Parse integer with explicit base (e.g. 16 for hex)
+template<typename T>
+    requires std::is_integral_v<T>
+[[nodiscard]] inline T parse_int(std::string_view sv, int base, T default_val = T{}) {
+    T result{};
+    const auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), result, base);
+    return (ec == std::errc{}) ? result : default_val;
+}
+
+// Parse integer from const char* (null-safe), returns default_val on failure
+template<typename T>
+    requires std::is_integral_v<T>
+[[nodiscard]] inline T parse_int(const char* str, T default_val = T{}) {
+    if (!str || !*str) return default_val;
+    return parse_int<T>(std::string_view(str), default_val);
+}
+
+// Parse integer, returns std::nullopt on failure (for cases where 0 is ambiguous)
+template<typename T>
+    requires std::is_integral_v<T>
+[[nodiscard]] inline std::optional<T> try_parse_int(std::string_view sv) {
+    T result{};
+    const auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), result);
+    if (ec != std::errc{}) return std::nullopt;
+    return result;
+}
+
+// Decode hex string → byte vector (returns empty on invalid input)
+[[nodiscard]] inline std::vector<uint8_t> hex_to_bytes(std::string_view hex) {
+    if (hex.size() < 2 || hex.size() % 2 != 0) return {};
+
+    std::vector<uint8_t> bytes;
+    bytes.reserve(hex.size() / 2);
+
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        unsigned int val{};
+        const auto [ptr, ec] = std::from_chars(hex.data() + i, hex.data() + i + 2, val, 16);
+        if (ec != std::errc{}) return {};
+        bytes.push_back(static_cast<uint8_t>(val));
+    }
+    return bytes;
 }
 
 // ============================================================================

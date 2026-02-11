@@ -83,11 +83,11 @@ ResultCache::Stats ResultCache::get_stats() const {
         evictions += shard->evictions.load(std::memory_order_relaxed);
     }
     return {
-        hits_.load(std::memory_order_relaxed),
-        misses_.load(std::memory_order_relaxed),
-        evictions,
-        invalidations_.load(std::memory_order_relaxed),
-        entries
+        .hits = hits_.load(std::memory_order_relaxed),
+        .misses = misses_.load(std::memory_order_relaxed),
+        .evictions = evictions,
+        .invalidations = invalidations_.load(std::memory_order_relaxed),
+        .current_entries = entries,
     };
 }
 

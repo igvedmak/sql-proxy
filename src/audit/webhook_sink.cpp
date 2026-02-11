@@ -37,7 +37,7 @@ WebhookSink::WebhookSink(const Config& config)
     // Check for explicit port
     const auto port_pos = host_.find(':');
     if (port_pos != std::string::npos) {
-        port_ = std::stoi(host_.substr(port_pos + 1));
+        port_ = utils::parse_int<int>(std::string_view(host_).substr(port_pos + 1), port_);
         host_ = host_.substr(0, port_pos);
     }
 }

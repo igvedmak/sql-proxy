@@ -257,7 +257,7 @@ void AlertEvaluator::send_webhook(const Alert& alert) {
 
         const auto port_pos = url.find(':');
         if (port_pos != std::string::npos) {
-            port = std::stoi(url.substr(port_pos + 1));
+            port = utils::parse_int<int>(std::string_view(url).substr(port_pos + 1), port);
             host = url.substr(0, port_pos);
         } else {
             host = url;

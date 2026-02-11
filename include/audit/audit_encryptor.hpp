@@ -41,8 +41,8 @@ public:
 
     [[nodiscard]] Stats get_stats() const {
         return {
-            records_encrypted_.load(std::memory_order_relaxed),
-            encryption_failures_.load(std::memory_order_relaxed)
+            .records_encrypted = records_encrypted_.load(std::memory_order_relaxed),
+            .encryption_failures = encryption_failures_.load(std::memory_order_relaxed),
         };
     }
 

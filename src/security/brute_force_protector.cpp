@@ -102,7 +102,7 @@ BruteForceProtector::BlockStatus BruteForceProtector::check_record(
     if (record.locked_until > now) {
         const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
             record.locked_until - now).count();
-        return {true, static_cast<uint32_t>(remaining), ""};
+        return {.blocked = true, .retry_after_seconds = static_cast<uint32_t>(remaining)};
     }
     return {};
 }

@@ -1,4 +1,5 @@
 #include "security/local_key_manager.hpp"
+#include "core/utils.hpp"
 
 #include <fstream>
 #include <mutex>
@@ -108,12 +109,8 @@ void LocalKeyManager::load_keys() {
         const std::string active_str = line.substr(second_colon + 1);
 
         // Decode hex
-        key.key_bytes.reserve(hex_key.size() / 2);
-        for (size_t i = 0; i + 1 < hex_key.size(); i += 2) {
-            const uint8_t byte = static_cast<uint8_t>(
-                std::stoi(hex_key.substr(i, 2), nullptr, 16));
-            key.key_bytes.push_back(byte);
-        }
+        key.key_bytes = utils::hex_to_bytes(hex_key);
+        if (key.key_bytes.empty()) continue;
 
         key.active = (active_str == "1" || active_str == "true");
 

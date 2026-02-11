@@ -110,9 +110,9 @@ void VaultKeyManager::refresh_cache() const {
             ++lv_pos;
             while (lv_pos < response.size() && response[lv_pos] == ' ') ++lv_pos;
             const auto end = response.find_first_of(",}", lv_pos);
-            const std::string version_str = response.substr(lv_pos, end - lv_pos);
-            try {
-                const int latest = std::stoi(version_str);
+            const std::string_view version_sv(response.data() + lv_pos, end - lv_pos);
+            if (const auto latest_opt = utils::try_parse_int<int>(version_sv)) {
+                const int latest = *latest_opt;
                 active_key_id_ = std::format("v{}", latest);
 
                 // Ensure all versions exist in cache
@@ -128,8 +128,8 @@ void VaultKeyManager::refresh_cache() const {
                         key_cache_[kid].active = (v == latest);
                     }
                 }
-            } catch (const std::exception& e) {
-                utils::log::error(std::format("Vault: failed to parse version '{}': {}", version_str, e.what()));
+            } else {
+                utils::log::error(std::format("Vault: failed to parse version '{}'", std::string(version_sv)));
             }
         }
     }

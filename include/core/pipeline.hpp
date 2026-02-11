@@ -69,8 +69,8 @@ public:
 
     [[nodiscard]] Stats get_stats() const {
         return {
-            total_requests_.load(std::memory_order_relaxed),
-            requests_blocked_.load(std::memory_order_relaxed)
+            .total_requests = total_requests_.load(std::memory_order_relaxed),
+            .requests_blocked = requests_blocked_.load(std::memory_order_relaxed),
         };
     }
 

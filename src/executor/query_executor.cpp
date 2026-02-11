@@ -206,11 +206,7 @@ QueryResult QueryExecutor::execute_dml(const std::string& sql) {
 
     // Get affected rows count
     const char* affected = PQcmdTuples(res);
-    if (affected && strlen(affected) > 0) {
-        result.affected_rows = std::stoull(affected);
-    } else {
-        result.affected_rows = 0;
-    }
+    result.affected_rows = utils::parse_int<uint64_t>(affected);
 
     PQclear(res);
 

@@ -367,17 +367,11 @@ public:
         ProxyConfig config;
 
         static LoadResult ok(ProxyConfig cfg) {
-            LoadResult result;
-            result.success = true;
-            result.config = std::move(cfg);
-            return result;
+            return {.success = true, .error_message = {}, .config = std::move(cfg)};
         }
 
         static LoadResult error(std::string message) {
-            LoadResult result;
-            result.success = false;
-            result.error_message = std::move(message);
-            return result;
+            return {.success = false, .error_message = std::move(message), .config = {}};
         }
     };
 

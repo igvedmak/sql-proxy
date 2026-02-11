@@ -14,47 +14,36 @@ MysqlConnection::~MysqlConnection() {
 }
 
 DbResultSet MysqlConnection::execute(const std::string& sql) {
-    DbResultSet result;
-
     if (!conn_) {
-        result.success = false;
-        result.error_message = "Connection is null";
-        return result;
+        return {.success = false, .error_message = "Connection is null"};
     }
 
     if (mysql_query(conn_, sql.c_str()) != 0) {
-        result.success = false;
-        result.error_message = mysql_error(conn_);
-        return result;
+        return {.success = false, .error_message = mysql_error(conn_)};
     }
 
     // Check if the query produced a result set
     MYSQL_RES* res = mysql_store_result(conn_);
     if (res) {
-        result = process_result_set(res);
+        const auto result = process_result_set(res);
         mysql_free_result(res);
-    } else {
-        // No result set: either DML/DDL or error
-        if (mysql_field_count(conn_) == 0) {
-            // DML/DDL - no result set expected
-            result = process_affected_rows();
-        } else {
-            // Error: expected result set but got none
-            result.success = false;
-            result.error_message = mysql_error(conn_);
-        }
+        return result;
     }
 
-    return result;
+    // No result set: either DML/DDL or error
+    if (mysql_field_count(conn_) == 0) {
+        return process_affected_rows();
+    }
+
+    // Error: expected result set but got none
+    return {.success = false, .error_message = mysql_error(conn_)};
 }
 
 DbResultSet MysqlConnection::process_result_set(MYSQL_RES* res) {
-    DbResultSet result;
-    result.success = true;
-    result.has_rows = true;
+    DbResultSet result{.success = true, .has_rows = true};
 
     // Extract column metadata
-    unsigned int num_fields = mysql_num_fields(res);
+    const unsigned int num_fields = mysql_num_fields(res);
     MYSQL_FIELD* fields = mysql_fetch_fields(res);
 
     result.column_names.reserve(num_fields);
@@ -90,11 +79,10 @@ DbResultSet MysqlConnection::process_result_set(MYSQL_RES* res) {
 }
 
 DbResultSet MysqlConnection::process_affected_rows() {
-    DbResultSet result;
-    result.success = true;
-    result.has_rows = false;
-    result.affected_rows = static_cast<uint64_t>(mysql_affected_rows(conn_));
-    return result;
+    return {
+        .success = true,
+        .affected_rows = static_cast<uint64_t>(mysql_affected_rows(conn_)),
+    };
 }
 
 bool MysqlConnection::is_healthy(const std::string& health_check_query) {
@@ -206,13 +194,13 @@ MysqlConnectionFactory::ConnParams MysqlConnectionFactory::parse_connection_stri
     }
 
     // Find @ separator between credentials and host
-    size_t at_pos = sv.find('@');
+    const size_t at_pos = sv.find('@');
     if (at_pos != std::string_view::npos) {
         std::string_view creds = sv.substr(0, at_pos);
         sv.remove_prefix(at_pos + 1);
 
         // Parse user:password
-        size_t colon_pos = creds.find(':');
+        const size_t colon_pos = creds.find(':');
         if (colon_pos != std::string_view::npos) {
             params.user = std::string(creds.substr(0, colon_pos));
             params.password = std::string(creds.substr(colon_pos + 1));
@@ -222,7 +210,7 @@ MysqlConnectionFactory::ConnParams MysqlConnectionFactory::parse_connection_stri
     }
 
     // Parse host:port/database
-    size_t slash_pos = sv.find('/');
+    const size_t slash_pos = sv.find('/');
     std::string_view host_port;
     if (slash_pos != std::string_view::npos) {
         host_port = sv.substr(0, slash_pos);
@@ -232,15 +220,10 @@ MysqlConnectionFactory::ConnParams MysqlConnectionFactory::parse_connection_stri
     }
 
     // Parse host:port
-    size_t colon_pos = host_port.find(':');
+    const size_t colon_pos = host_port.find(':');
     if (colon_pos != std::string_view::npos) {
         params.host = std::string(host_port.substr(0, colon_pos));
-        std::string port_str(host_port.substr(colon_pos + 1));
-        try {
-            params.port = static_cast<unsigned int>(std::stoi(port_str));
-        } catch (...) {
-            params.port = 3306;
-        }
+        params.port = utils::parse_int<unsigned int>(host_port.substr(colon_pos + 1), 3306u);
     } else {
         params.host = std::string(host_port);
     }

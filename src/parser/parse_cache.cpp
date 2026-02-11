@@ -50,24 +50,21 @@ void ParseCache::clear() {
 }
 
 ParseCache::Stats ParseCache::get_stats() const {
-    Stats stats;
-
     // Aggregate from all shards
     size_t total_entries = 0;
     size_t total_evictions = 0;
-
     for (const auto& shard : shards_) {
         total_entries += shard->size();
         total_evictions += shard->eviction_count();
     }
 
-    stats.total_entries = total_entries;
-    stats.hits = hits_.load(std::memory_order_relaxed);
-    stats.misses = misses_.load(std::memory_order_relaxed);
-    stats.evictions = total_evictions;
-    stats.ddl_invalidations = ddl_invalidations_.load(std::memory_order_relaxed);
-
-    return stats;
+    return {
+        .total_entries = total_entries,
+        .hits = hits_.load(std::memory_order_relaxed),
+        .misses = misses_.load(std::memory_order_relaxed),
+        .evictions = total_evictions,
+        .ddl_invalidations = ddl_invalidations_.load(std::memory_order_relaxed),
+    };
 }
 
 size_t ParseCache::invalidate_table(const std::string& table_name) {

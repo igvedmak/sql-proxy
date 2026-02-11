@@ -28,17 +28,11 @@ public:
         std::vector<Policy> policies;
 
         static LoadResult ok(std::vector<Policy> policies_vec) {
-            LoadResult result;
-            result.success = true;
-            result.policies = std::move(policies_vec);
-            return result;
+            return {.success = true, .error_message = {}, .policies = std::move(policies_vec)};
         }
 
         static LoadResult error(std::string message) {
-            LoadResult result;
-            result.success = false;
-            result.error_message = std::move(message);
-            return result;
+            return {.success = false, .error_message = std::move(message), .policies = {}};
         }
     };
 

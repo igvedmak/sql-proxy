@@ -56,7 +56,7 @@ void FileSink::check_rotation() {
     }
 
     if (config_.time_based_rotation) {
-        auto now = std::chrono::system_clock::now();
+        const auto now = std::chrono::system_clock::now();
         if (now - last_rotation_time_ >= config_.rotation_interval) {
             need_rotate = true;
         }
@@ -79,8 +79,8 @@ void FileSink::rotate_file() {
 
     // Shift existing rotated files: .N -> .N+1
     for (int i = config_.max_files - 1; i >= 1; --i) {
-        auto old_name = std::format("{}.{}", config_.output_file, i);
-        auto new_name = std::format("{}.{}", config_.output_file, i + 1);
+        const auto old_name = std::format("{}.{}", config_.output_file, i);
+        const auto new_name = std::format("{}.{}", config_.output_file, i + 1);
         std::filesystem::rename(old_name, new_name, ec);
         // Ignore errors for missing files
     }

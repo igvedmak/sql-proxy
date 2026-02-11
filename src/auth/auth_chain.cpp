@@ -23,11 +23,9 @@ IAuthProvider::AuthResult AuthChain::authenticate(
         }
     }
 
-    IAuthProvider::AuthResult failure;
-    failure.error = combined_errors.empty()
+    return {.error = combined_errors.empty()
         ? "No authentication provider succeeded"
-        : combined_errors;
-    return failure;
+        : combined_errors};
 }
 
 } // namespace sqlproxy
