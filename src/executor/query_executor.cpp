@@ -20,20 +20,20 @@ FailureCategory classify_db_error(const std::string& error_msg) {
     std::string lower = error_msg;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
 
-    // Infrastructure patterns (connection-level failures)
+    // Infrastructure patterns (connection-level failures — trips circuit breaker)
     static const std::vector<std::string> infra_patterns = {
         "connection refused", "could not connect", "server closed",
         "timeout", "host not found", "no route", "connection reset",
-        "broken pipe", "could not send", "could not receive",
-        "failed to acquire database connection"
+        "broken pipe", "could not send", "could not receive"
     };
     for (const auto& p : infra_patterns) {
         if (lower.find(p) != std::string::npos) return FailureCategory::INFRASTRUCTURE;
     }
 
-    // Transient patterns (retryable)
+    // Transient patterns (retryable — does NOT trip circuit breaker)
     static const std::vector<std::string> transient_patterns = {
-        "deadlock", "lock timeout", "serialization failure", "could not obtain lock"
+        "deadlock", "lock timeout", "serialization failure", "could not obtain lock",
+        "failed to acquire database connection"
     };
     for (const auto& p : transient_patterns) {
         if (lower.find(p) != std::string::npos) return FailureCategory::TRANSIENT;
