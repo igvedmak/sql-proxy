@@ -44,11 +44,8 @@ std::unique_ptr<PooledConnection> GenericConnectionPool::acquire(
         return nullptr;
     }
 
-    // Check circuit breaker
-    if (circuit_breaker_ && !circuit_breaker_->allow_request()) {
-        failed_acquires_.fetch_add(1, std::memory_order_relaxed);
-        return nullptr;
-    }
+    // Note: Circuit breaker is checked by QueryExecutor before calling acquire().
+    // Checking it here would double-count half_open_calls, preventing recovery.
 
     // Acquire semaphore slot (blocks if pool full)
     if (!semaphore_.try_acquire_for(timeout)) {
