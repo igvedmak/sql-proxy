@@ -43,6 +43,8 @@ Multi-layer request pipeline with short-circuit on failure:
 ```
 Client Request
      |
+0  DATA RESIDENCY ----- Enforce per-tenant region restrictions
+     |
 1  RATE LIMIT --------- Hierarchical 4-level token bucket (lock-free CAS)
      |
 2  PARSE + CACHE ------ SQL parsing (libpg_query) with sharded LRU cache
@@ -57,11 +59,15 @@ Client Request
      | ALLOW
 4b REWRITE ------------ Row-level security + enforce LIMIT
      |
-4c COST CHECK --------- EXPLAIN-based query cost estimation
+4c COST REWRITE ------- Schema-aware SELECT * expansion + default LIMIT
+     |
+4d COST CHECK --------- EXPLAIN-based query cost estimation
      |
 5  EXECUTE ------------ Connection pool + circuit breaker + retry
      |
-5b POST-PROCESS ------- Decrypt -> Column ACL -> Data masking
+5b COLUMN VERSIONING -- Track DML changes to sensitive columns
+     |
+5c POST-PROCESS ------- Decrypt -> Column ACL -> Data masking
      |
 6  CLASSIFY ----------- PII detection (4-strategy chain)
      |
@@ -180,11 +186,21 @@ Hierarchical 4-level token bucket -- **all levels must pass** for a request to s
 - Tenant provisioning API (CRUD at `/admin/tenants`)
 - Per-tenant connection pools with configurable limits
 - Per-tenant circuit breakers and rate limiting
+- Data residency enforcement (restrict tenants to allowed regions)
 
 **Query Intelligence**
 - Query explanation API (plain-English query summaries)
 - Automatic index recommendation from filter patterns
 - Query cost estimation (EXPLAIN-based rejection of expensive queries)
+- Cost-based query rewriting (SELECT * expansion, default LIMIT injection)
+
+**Data Governance**
+- Column-level data versioning (track who modified sensitive columns)
+- Synthetic data generation (PII-aware fake data from real schemas)
+
+**Protocol Support**
+- PostgreSQL wire protocol v3 with SCRAM-SHA-256
+- COPY protocol detection with policy enforcement
 
 **Resilience**
 - Hierarchical rate limiting (Global -> User -> DB -> User+DB)
@@ -239,6 +255,10 @@ Features with their own config section use `enabled = true/false`:
 | Binary RPC | `[binary_rpc]` | disabled |
 | Schema management | `[schema_management]` | disabled |
 | Multi-tenancy | `[tenants]` | disabled |
+| Data residency | `[data_residency]` | disabled |
+| Column versioning | `[column_versioning]` | disabled |
+| Synthetic data | `[synthetic_data]` | disabled |
+| Cost-based rewriting | `[cost_based_rewriting]` | disabled |
 
 ## Configuration
 
@@ -292,6 +312,9 @@ Authenticate with the `admin_token` from `config/proxy.toml`.
 | POST | `/admin/tenants` | Admin | Create a tenant |
 | GET | `/admin/tenants/:id` | Admin | Get tenant details |
 | DELETE | `/admin/tenants/:id` | Admin | Remove a tenant |
+| GET | `/admin/residency` | Admin | Data residency rules and regions |
+| GET | `/api/v1/column-history` | Admin | Column-level change history |
+| POST | `/api/v1/synthetic-data` | Admin | Generate synthetic data from schema |
 | GET | `/dashboard` | None | Admin dashboard UI |
 | GET | `/dashboard/api/stats` | Admin | Stats JSON snapshot |
 | GET | `/dashboard/api/metrics/stream` | Admin | SSE real-time stream |
