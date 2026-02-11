@@ -647,6 +647,11 @@ SecurityConfig ConfigLoader::extract_security(const toml::table& root) {
     cfg.anomaly_detection_enabled = s["anomaly_detection"].value_or(true);
     cfg.lineage_tracking_enabled = s["lineage_tracking"].value_or(true);
 
+    if (const auto* fw = s["firewall"].as_table()) {
+        cfg.firewall_enabled = (*fw)["enabled"].value_or(false);
+        cfg.firewall_mode = (*fw)["mode"].value_or("disabled"s);
+    }
+
     if (const auto* bf = s["brute_force"].as_table()) {
         cfg.brute_force_enabled = (*bf)["enabled"].value_or(false);
         cfg.brute_force_max_attempts = static_cast<uint32_t>((*bf)["max_attempts"].value_or(5));
@@ -804,6 +809,8 @@ WireProtocolConfigEntry ConfigLoader::extract_wire_protocol(const toml::table& r
     cfg.max_connections = static_cast<uint32_t>((*w)["max_connections"].value_or(100));
     cfg.thread_pool_size = static_cast<uint32_t>((*w)["thread_pool_size"].value_or(4));
     cfg.require_password = (*w)["require_password"].value_or(false);
+    cfg.prefer_scram = (*w)["prefer_scram"].value_or(false);
+    cfg.scram_iterations = static_cast<uint32_t>((*w)["scram_iterations"].value_or(4096));
 
     // TLS sub-section
     const auto* tls = (*w)["tls"].as_table();
@@ -1077,6 +1084,8 @@ RouteConfig ConfigLoader::extract_routes(const toml::table& root) {
     cfg.schema_reject      = r["schema_reject"].value_or(cfg.schema_reject);
     cfg.schema_drift       = r["schema_drift"].value_or(cfg.schema_drift);
     cfg.graphql            = r["graphql"].value_or(cfg.graphql);
+    cfg.firewall_mode      = r["firewall_mode"].value_or(cfg.firewall_mode);
+    cfg.firewall_allowlist = r["firewall_allowlist"].value_or(cfg.firewall_allowlist);
     return cfg;
 }
 

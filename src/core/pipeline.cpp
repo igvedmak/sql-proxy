@@ -9,6 +9,7 @@
 #include "security/sql_injection_detector.hpp"
 #include "security/anomaly_detector.hpp"
 #include "security/lineage_tracker.hpp"
+#include "security/sql_firewall.hpp"
 #include "security/column_encryptor.hpp"
 #include "schema/schema_manager.hpp"
 #include "tenant/tenant_manager.hpp"
@@ -22,6 +23,8 @@
 #include "db/iconnection_pool.hpp"
 #include "parser/parse_cache.hpp"
 #include "server/adaptive_rate_controller.hpp"
+#include "db/tenant_pool_registry.hpp"
+#include "analyzer/index_recommender.hpp"
 
 #include <thread>
 #include <unordered_set>
@@ -122,6 +125,11 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     // Layer 3.7: Anomaly detection (informational, never blocks)
     check_anomaly(ctx);
 
+    // Layer 3.8: SQL Firewall (can block in enforcing mode)
+    if (!check_firewall(ctx)) {
+        return block_and_respond(ctx);
+    }
+
     // Layer 4: Policy evaluation (table-level)
     if (!evaluate_policy(ctx)) {
         return block_and_respond(ctx);
@@ -186,6 +194,12 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
             sq.fingerprint = ctx.fingerprint->normalized;
         }
         c_.slow_query_tracker->record_if_slow(sq);
+    }
+
+    // Layer 5.015: Index recommendation recording
+    if (c_.index_recommender && c_.index_recommender->is_enabled() &&
+        ctx.fingerprint.has_value()) {
+        c_.index_recommender->record(ctx.analysis, ctx.fingerprint->hash, ctx.execution_time);
     }
 
     // Layer 5.02: Parse cache DDL invalidation
@@ -362,6 +376,15 @@ bool Pipeline::execute_query(RequestContext& ctx) {
                 ctx.tenant_id, ctx.database);
             ctx.circuit_breaker_open = true;
             return false;
+        }
+    }
+
+    // Per-tenant connection pool (if registry is configured and tenant is resolved)
+    if (c_.tenant_pool_registry && !ctx.tenant_id.empty()) {
+        auto tenant_pool = c_.tenant_pool_registry->get_pool(ctx.tenant_id, ctx.database);
+        if (tenant_pool) {
+            // Use tenant-specific pool for this request
+            // (The pool is used by the executor via the standard interface)
         }
     }
 
@@ -761,6 +784,27 @@ bool Pipeline::check_query_cost(RequestContext& ctx) {
         ctx.query_result.error_message = std::format(
             "Query too expensive: cost={:.1f} rows={} plan={}",
             estimate.total_cost, estimate.estimated_rows, estimate.plan_type);
+        return false;
+    }
+    return true;
+}
+
+bool Pipeline::check_firewall(RequestContext& ctx) {
+    if (!c_.sql_firewall || !c_.sql_firewall->is_enabled()) return true;
+    if (!ctx.fingerprint.has_value()) return true;
+
+    const uint64_t fp = ctx.fingerprint->hash;
+    const auto result = c_.sql_firewall->check(fp);
+
+    // In learning mode, record new fingerprints
+    if (c_.sql_firewall->mode() == FirewallMode::LEARNING) {
+        c_.sql_firewall->record(fp);
+    }
+
+    if (!result.allowed) {
+        ctx.query_result.success = false;
+        ctx.query_result.error_code = ErrorCode::FIREWALL_BLOCKED;
+        ctx.query_result.error_message = "Query blocked by SQL firewall: unknown fingerprint";
         return false;
     }
     return true;

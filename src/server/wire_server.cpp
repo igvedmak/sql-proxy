@@ -184,7 +184,7 @@ void WireServer::handle_connection(int client_fd, std::string remote_addr) {
 
     WireSession session(client_fd, std::move(remote_addr), pipeline_,
                         std::move(user_lookup), config_.require_password,
-                        ssl_ctx_);
+                        ssl_ctx_, config_.prefer_scram, config_.scram_iterations);
     session.run();
 }
 

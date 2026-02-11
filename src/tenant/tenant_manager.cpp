@@ -52,4 +52,38 @@ size_t TenantManager::tenant_count() const {
     return tenants_->size();
 }
 
+bool TenantManager::remove_tenant(const std::string& id) {
+    std::unique_lock lock(mutex_);
+    auto new_map = std::make_shared<std::unordered_map<std::string, std::shared_ptr<TenantContext>>>(*tenants_);
+    const bool erased = new_map->erase(id) > 0;
+    if (erased) {
+        tenants_ = std::move(new_map);
+    }
+    return erased;
+}
+
+std::vector<std::string> TenantManager::list_tenants() const {
+    std::shared_ptr<const std::unordered_map<std::string, std::shared_ptr<TenantContext>>> snapshot;
+    {
+        std::shared_lock lock(mutex_);
+        snapshot = tenants_;
+    }
+    std::vector<std::string> result;
+    result.reserve(snapshot->size());
+    for (const auto& [id, _] : *snapshot) {
+        result.push_back(id);
+    }
+    return result;
+}
+
+std::shared_ptr<TenantContext> TenantManager::get_tenant(const std::string& id) const {
+    std::shared_ptr<const std::unordered_map<std::string, std::shared_ptr<TenantContext>>> snapshot;
+    {
+        std::shared_lock lock(mutex_);
+        snapshot = tenants_;
+    }
+    auto it = snapshot->find(id);
+    return (it != snapshot->end()) ? it->second : nullptr;
+}
+
 } // namespace sqlproxy

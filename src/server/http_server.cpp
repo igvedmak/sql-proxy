@@ -28,6 +28,11 @@
 #include "plugin/plugin_loader.hpp"
 #include "auth/iauth_provider.hpp"
 #include "core/query_cost_estimator.hpp"
+#include "security/sql_firewall.hpp"
+#include "tenant/tenant_manager.hpp"
+#include "analyzer/query_explainer.hpp"
+#include "analyzer/sql_analyzer.hpp"
+#include "analyzer/index_recommender.hpp"
 
 // cpp-httplib is header-only — suppress its internal deprecation warnings
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -350,6 +355,35 @@ void HttpServer::register_admin_routes(httplib::Server& svr) {
             handle_plugin_reload(req, res);
         });
     }
+    if (sql_firewall_) {
+        svr.Get(routes_.firewall_mode, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_firewall_mode(req, res);
+        });
+        svr.Post(routes_.firewall_mode, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_firewall_mode_set(req, res);
+        });
+        svr.Get(routes_.firewall_allowlist, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_firewall_allowlist(req, res);
+        });
+    }
+    if (tenant_manager_) {
+        svr.Get(routes_.tenants, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_tenant_list(req, res);
+        });
+        svr.Post(routes_.tenants, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_tenant_create(req, res);
+        });
+        // cpp-httplib regex paths for /admin/tenants/:id
+        svr.Get(R"(/admin/tenants/(\w+))", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_tenant_get(req, res);
+        });
+        svr.Delete(R"(/admin/tenants/(\w+))", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_tenant_delete(req, res);
+        });
+    }
+    svr.Get(routes_.index_recommendations, [this](const httplib::Request& req, httplib::Response& res) {
+        handle_index_recommendations(req, res);
+    });
 }
 
 void HttpServer::register_compliance_routes(httplib::Server& svr) {
@@ -404,6 +438,9 @@ void HttpServer::register_optional_routes(httplib::Server& svr) {
     if (features_.dashboard && dashboard_handler_) {
         dashboard_handler_->register_routes(svr, admin_token_);
     }
+    svr.Post(routes_.query_explain, [this](const httplib::Request& req, httplib::Response& res) {
+        handle_query_explain(req, res);
+    });
 }
 
 // ============================================================================
@@ -1405,6 +1442,296 @@ void HttpServer::handle_plugin_reload(const httplib::Request& req, httplib::Resp
             std::format(R"({{"success":false,"error":"Failed to reload plugin: {}"}})", path),
             http::kJsonContentType);
     }
+}
+
+// ============================================================================
+// Handler: GET/POST /api/v1/firewall/mode, GET /api/v1/firewall/allowlist
+// ============================================================================
+
+void HttpServer::handle_firewall_mode(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+    res.set_content(
+        std::format(R"({{"mode":"{}","allowlist_size":{}}})",
+            firewall_mode_to_string(sql_firewall_->mode()),
+            sql_firewall_->allowlist_size()),
+        http::kJsonContentType);
+}
+
+void HttpServer::handle_firewall_mode_set(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto mode_sv = parse_json_field(req.body, "mode");
+    if (mode_sv.empty()) {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(R"({"success":false,"error":"Missing required field: mode"})", http::kJsonContentType);
+        return;
+    }
+
+    FirewallMode new_mode;
+    const std::string mode_str(mode_sv);
+    if (mode_str == "disabled") {
+        new_mode = FirewallMode::DISABLED;
+    } else if (mode_str == "learning") {
+        new_mode = FirewallMode::LEARNING;
+    } else if (mode_str == "enforcing") {
+        new_mode = FirewallMode::ENFORCING;
+    } else {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(
+            std::format(R"({{"success":false,"error":"Invalid mode: {}. Must be disabled|learning|enforcing"}})", mode_str),
+            http::kJsonContentType);
+        return;
+    }
+
+    sql_firewall_->set_mode(new_mode);
+    res.set_content(
+        std::format(R"({{"success":true,"mode":"{}","allowlist_size":{}}})",
+            firewall_mode_to_string(new_mode), sql_firewall_->allowlist_size()),
+        http::kJsonContentType);
+}
+
+void HttpServer::handle_firewall_allowlist(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto allowlist = sql_firewall_->get_allowlist();
+    std::string json = R"({"allowlist_size":)" + std::to_string(allowlist.size()) + R"(,"fingerprints":[)";
+    for (size_t i = 0; i < allowlist.size(); ++i) {
+        if (i > 0) json += ',';
+        json += std::to_string(allowlist[i]);
+    }
+    json += "]}";
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: Tenant CRUD endpoints
+// ============================================================================
+
+void HttpServer::handle_tenant_list(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+    const auto tenants = tenant_manager_->list_tenants();
+    std::string json = R"({"tenants":[)";
+    for (size_t i = 0; i < tenants.size(); ++i) {
+        if (i > 0) json += ',';
+        json += '"';
+        json += tenants[i];
+        json += '"';
+    }
+    json += std::format(R"(],"count":{}}})", tenants.size());
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_tenant_create(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+    const auto id_sv = parse_json_field(req.body, "tenant_id");
+    if (id_sv.empty()) {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(R"({"success":false,"error":"Missing required field: tenant_id"})", http::kJsonContentType);
+        return;
+    }
+    const std::string tenant_id(id_sv);
+
+    // Check if tenant already exists
+    if (tenant_manager_->get_tenant(tenant_id)) {
+        res.status = httplib::StatusCode::Conflict_409;
+        res.set_content(
+            std::format(R"({{"success":false,"error":"Tenant '{}' already exists"}})", tenant_id),
+            http::kJsonContentType);
+        return;
+    }
+
+    auto ctx = std::make_shared<TenantContext>();
+    ctx->tenant_id = tenant_id;
+    tenant_manager_->register_tenant(tenant_id, std::move(ctx));
+    res.status = httplib::StatusCode::Created_201;
+    res.set_content(
+        std::format(R"({{"success":true,"tenant_id":"{}"}})", tenant_id),
+        http::kJsonContentType);
+}
+
+void HttpServer::handle_tenant_get(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+    const auto& id = req.matches[1];
+    const auto ctx = tenant_manager_->get_tenant(id);
+    if (!ctx) {
+        res.status = httplib::StatusCode::NotFound_404;
+        res.set_content(
+            std::format(R"({{"success":false,"error":"Tenant '{}' not found"}})", std::string(id)),
+            http::kJsonContentType);
+        return;
+    }
+    res.set_content(
+        std::format(R"({{"tenant_id":"{}","has_policy_engine":{},"has_rate_limiter":{},"has_audit_emitter":{},"user_count":{}}})",
+            ctx->tenant_id,
+            ctx->policy_engine ? "true" : "false",
+            ctx->rate_limiter ? "true" : "false",
+            ctx->audit_emitter ? "true" : "false",
+            ctx->users.size()),
+        http::kJsonContentType);
+}
+
+void HttpServer::handle_tenant_delete(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+    const auto& id = req.matches[1];
+    if (tenant_manager_->remove_tenant(id)) {
+        res.set_content(
+            std::format(R"({{"success":true,"tenant_id":"{}"}})", std::string(id)),
+            http::kJsonContentType);
+    } else {
+        res.status = httplib::StatusCode::NotFound_404;
+        res.set_content(
+            std::format(R"({{"success":false,"error":"Tenant '{}' not found"}})", std::string(id)),
+            http::kJsonContentType);
+    }
+}
+
+// ============================================================================
+// Handler: POST /api/v1/query/explain
+// ============================================================================
+
+void HttpServer::handle_query_explain(const httplib::Request& req, httplib::Response& res) {
+    try {
+        auto sql_sv = parse_json_field(req.body, "sql");
+        if (sql_sv.empty()) {
+            res.status = httplib::StatusCode::BadRequest_400;
+            res.set_content(R"({"success":false,"error":"Missing required field: sql"})", http::kJsonContentType);
+            return;
+        }
+        std::string sql(sql_sv);
+
+        // Parse the SQL using the pipeline's parser
+        auto parser = pipeline_->get_parser();
+        if (!parser) {
+            res.status = httplib::StatusCode::ServiceUnavailable_503;
+            res.set_content(R"({"success":false,"error":"Parser not available"})", http::kJsonContentType);
+            return;
+        }
+
+        auto parse_result = parser->parse(sql);
+        if (!parse_result.success || !parse_result.statement_info) {
+            res.status = httplib::StatusCode::BadRequest_400;
+            res.set_content(
+                std::format(R"({{"success":false,"error":"Parse error: {}"}})",
+                    parse_result.error_message.empty() ? "Invalid SQL" : parse_result.error_message),
+                http::kJsonContentType);
+            return;
+        }
+
+        // Analyze the parsed query
+        auto analysis = SQLAnalyzer::analyze(parse_result.statement_info->parsed, nullptr);
+
+        // Generate explanation
+        auto explanation = QueryExplainer::explain(analysis);
+
+        // Build JSON response
+        std::string json;
+        json.reserve(1024);
+        json += R"({"success":true,"explanation":{)";
+
+        // Summary
+        json += std::format(R"("summary":"{}","statement_type":"{}")", explanation.summary, explanation.statement_type);
+
+        // Tables read
+        json += R"(,"tables_read":[)";
+        for (size_t i = 0; i < explanation.tables_read.size(); ++i) {
+            if (i > 0) json += ',';
+            json += std::format(R"("{}")", explanation.tables_read[i]);
+        }
+        json += ']';
+
+        // Tables written
+        json += R"(,"tables_written":[)";
+        for (size_t i = 0; i < explanation.tables_written.size(); ++i) {
+            if (i > 0) json += ',';
+            json += std::format(R"("{}")", explanation.tables_written[i]);
+        }
+        json += ']';
+
+        // Columns selected
+        json += R"(,"columns_selected":[)";
+        for (size_t i = 0; i < explanation.columns_selected.size(); ++i) {
+            if (i > 0) json += ',';
+            json += std::format(R"("{}")", explanation.columns_selected[i]);
+        }
+        json += ']';
+
+        // Columns filtered
+        json += R"(,"columns_filtered":[)";
+        for (size_t i = 0; i < explanation.columns_filtered.size(); ++i) {
+            if (i > 0) json += ',';
+            json += std::format(R"("{}")", explanation.columns_filtered[i]);
+        }
+        json += ']';
+
+        // Columns written
+        json += R"(,"columns_written":[)";
+        for (size_t i = 0; i < explanation.columns_written.size(); ++i) {
+            if (i > 0) json += ',';
+            json += std::format(R"("{}")", explanation.columns_written[i]);
+        }
+        json += ']';
+
+        // Characteristics
+        json += std::format(
+            R"(,"characteristics":{{"has_join":{},"has_subquery":{},"has_aggregation":{},"has_star_select":{})",
+            utils::booltostr(explanation.characteristics.has_join),
+            utils::booltostr(explanation.characteristics.has_subquery),
+            utils::booltostr(explanation.characteristics.has_aggregation),
+            utils::booltostr(explanation.characteristics.has_star_select));
+
+        if (explanation.characteristics.limit.has_value()) {
+            json += std::format(R"(,"limit":{})", explanation.characteristics.limit.value());
+        } else {
+            json += R"(,"limit":null)";
+        }
+        json += '}';  // close characteristics
+
+        json += "}}";  // close explanation + root
+
+        res.set_content(json, http::kJsonContentType);
+
+    } catch (const std::exception& e) {
+        res.status = httplib::StatusCode::InternalServerError_500;
+        res.set_content(
+            std::format(R"({{"success":false,"error":"{}"}})", e.what()),
+            http::kJsonContentType);
+    }
+}
+
+// ============================================================================
+// Handler: GET /api/v1/index-recommendations
+// ============================================================================
+
+void HttpServer::handle_index_recommendations(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto recommender = pipeline_->get_index_recommender();
+    if (!recommender || !recommender->is_enabled()) {
+        res.set_content(R"({"recommendations":[],"total":0,"enabled":false})", http::kJsonContentType);
+        return;
+    }
+
+    const auto recs = recommender->get_recommendations();
+    std::string json = R"({"recommendations":[)";
+    for (size_t i = 0; i < recs.size(); ++i) {
+        if (i > 0) json += ',';
+        const auto& r = recs[i];
+
+        // Build columns array
+        std::string cols_json = "[";
+        for (size_t j = 0; j < r.columns.size(); ++j) {
+            if (j > 0) cols_json += ',';
+            cols_json += std::format("\"{}\"", r.columns[j]);
+        }
+        cols_json += ']';
+
+        json += std::format(
+            R"({{"table":"{}","columns":{},"reason":"{}","occurrence_count":{},"avg_execution_time_us":{:.1f},"suggested_ddl":"{}"}})",
+            r.table, cols_json, r.reason, r.occurrence_count,
+            r.avg_execution_time_us, r.suggested_ddl);
+    }
+    json += std::format(R"(],"total":{},"enabled":true}})", recs.size());
+    res.set_content(json, http::kJsonContentType);
 }
 
 } // namespace sqlproxy

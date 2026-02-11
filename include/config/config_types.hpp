@@ -166,6 +166,19 @@ struct RouteConfig {
     std::string schema_reject   = "/api/v1/schema/reject";
     std::string schema_drift    = "/api/v1/schema/drift";
 
+    // Firewall
+    std::string firewall_mode      = "/api/v1/firewall/mode";
+    std::string firewall_allowlist = "/api/v1/firewall/allowlist";
+
+    // Tenant provisioning
+    std::string tenants            = "/admin/tenants";
+
+    // Query explanation
+    std::string query_explain      = "/api/v1/query/explain";
+
+    // Index recommendations
+    std::string index_recommendations = "/api/v1/index-recommendations";
+
     // Optional
     std::string graphql         = "/api/v1/graphql";
 
@@ -194,6 +207,7 @@ struct FeatureFlags {
     bool lineage_tracking = true;
     bool masking = true;
     bool dashboard = true;
+    bool sql_firewall = false;
 };
 
 } // namespace sqlproxy

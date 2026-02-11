@@ -121,6 +121,7 @@ Hierarchical 4-level token bucket -- **all levels must pass** for a request to s
 | PostgreSQL (testdb) | 2-10 | `databases.min/max_connections` |
 | Wire protocol | 100 max | `wire_protocol.max_connections` |
 | GraphQL | 50 max | `graphql.max_connections` |
+| Per-tenant pool | 10 default | `tenants.pools.max_connections` |
 
 ### Security Limits
 
@@ -157,6 +158,8 @@ Hierarchical 4-level token bucket -- **all levels must pass** for a request to s
 - Row-level security via query rewriting
 
 **Security**
+- SCRAM-SHA-256 authentication (RFC 5802) for wire protocol
+- SQL firewall mode (learning/enforcing) with fingerprint allowlisting
 - SQL injection detection (6 pattern checks, no regex)
 - Per-user behavioral anomaly detection
 - AES-256-GCM column encryption with key rotation
@@ -173,6 +176,16 @@ Hierarchical 4-level token bucket -- **all levels must pass** for a request to s
 - Admin dashboard with real-time SSE metrics stream
 - OpenAPI 3.0 spec + Swagger UI at `/api/docs`
 
+**Multi-Tenancy**
+- Tenant provisioning API (CRUD at `/admin/tenants`)
+- Per-tenant connection pools with configurable limits
+- Per-tenant circuit breakers and rate limiting
+
+**Query Intelligence**
+- Query explanation API (plain-English query summaries)
+- Automatic index recommendation from filter patterns
+- Query cost estimation (EXPLAIN-based rejection of expensive queries)
+
 **Resilience**
 - Hierarchical rate limiting (Global -> User -> DB -> User+DB)
 - Adaptive rate limiting (auto-adjust based on DB latency P95)
@@ -181,7 +194,6 @@ Hierarchical 4-level token bucket -- **all levels must pass** for a request to s
 - Configurable alerting rules with webhook/syslog sinks
 - Request timeout with query cancellation
 - Retry with exponential backoff for transient failures
-- Query cost estimation (EXPLAIN-based rejection of expensive queries)
 - Schema drift detection (background monitoring for unauthorized changes)
 
 **Compliance**
@@ -217,9 +229,12 @@ Features with their own config section use `enabled = true/false`:
 | Request prioritization | `[priority]` | enabled |
 | Brute force protection | `[security.brute_force]` | enabled |
 | Adaptive rate limiting | `[adaptive_rate_limiting]` | disabled |
+| SQL firewall | `[security.firewall]` | disabled |
+| Index recommender | `[index_recommender]` | disabled |
 | Column encryption | `[encryption]` | disabled |
 | Audit encryption | `[audit_encryption]` | disabled |
 | Wire protocol | `[wire_protocol]` | disabled |
+| SCRAM-SHA-256 auth | `[wire_protocol] prefer_scram` | disabled |
 | GraphQL | `[graphql]` | disabled |
 | Binary RPC | `[binary_rpc]` | disabled |
 | Schema management | `[schema_management]` | disabled |
@@ -268,6 +283,15 @@ Authenticate with the `admin_token` from `config/proxy.toml`.
 | GET | `/compliance/data-subject-access` | Admin | GDPR Article 15 export |
 | GET | `/schema/history` | Admin | Schema change history |
 | GET | `/schema/drift` | Admin | Schema drift report |
+| POST | `/api/v1/query/explain` | API key | Explain query in plain English |
+| GET | `/api/v1/index-recommendations` | Admin | Suggested indexes for slow queries |
+| GET | `/api/v1/firewall/mode` | Admin | SQL firewall mode and stats |
+| POST | `/api/v1/firewall/mode` | Admin | Set firewall mode (disabled/learning/enforcing) |
+| GET | `/api/v1/firewall/allowlist` | Admin | SQL firewall fingerprint allowlist |
+| GET | `/admin/tenants` | Admin | List all tenants |
+| POST | `/admin/tenants` | Admin | Create a tenant |
+| GET | `/admin/tenants/:id` | Admin | Get tenant details |
+| DELETE | `/admin/tenants/:id` | Admin | Remove a tenant |
 | GET | `/dashboard` | None | Admin dashboard UI |
 | GET | `/dashboard/api/stats` | Admin | Stats JSON snapshot |
 | GET | `/dashboard/api/metrics/stream` | Admin | SSE real-time stream |

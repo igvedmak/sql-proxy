@@ -134,6 +134,10 @@ struct SecurityConfig {
     bool anomaly_detection_enabled = true;
     bool lineage_tracking_enabled = true;
 
+    // SQL Firewall
+    bool firewall_enabled = false;
+    std::string firewall_mode = "disabled";
+
     // Brute force protection
     bool brute_force_enabled = false;
     uint32_t brute_force_max_attempts = 5;
@@ -225,6 +229,10 @@ struct WireProtocolConfigEntry {
     uint32_t max_connections = 100;
     uint32_t thread_pool_size = 4;
     bool require_password = false;
+
+    // SCRAM-SHA-256 authentication
+    bool prefer_scram = false;
+    uint32_t scram_iterations = 4096;
 
     // TLS
     struct Tls {

@@ -29,6 +29,9 @@ class IConnectionPool;
 class ParseCache;
 class QueryCostEstimator;
 class AdaptiveRateController;
+class SqlFirewall;
+class TenantPoolRegistry;
+class IndexRecommender;
 class Pipeline;
 
 /**
@@ -65,6 +68,9 @@ struct PipelineComponents {
     std::shared_ptr<ParseCache> parse_cache;
     std::shared_ptr<QueryCostEstimator> query_cost_estimator;
     std::shared_ptr<AdaptiveRateController> adaptive_rate_controller;
+    std::shared_ptr<SqlFirewall> sql_firewall;
+    std::shared_ptr<TenantPoolRegistry> tenant_pool_registry;
+    std::shared_ptr<IndexRecommender> index_recommender;
 
     // Feature flags (non-component toggles)
     bool masking_enabled = true;
@@ -110,6 +116,9 @@ public:
     PipelineBuilder& with_parse_cache(std::shared_ptr<ParseCache> p)                    { c_.parse_cache = std::move(p); return *this; }
     PipelineBuilder& with_query_cost_estimator(std::shared_ptr<QueryCostEstimator> p)   { c_.query_cost_estimator = std::move(p); return *this; }
     PipelineBuilder& with_adaptive_rate_controller(std::shared_ptr<AdaptiveRateController> p) { c_.adaptive_rate_controller = std::move(p); return *this; }
+    PipelineBuilder& with_sql_firewall(std::shared_ptr<SqlFirewall> p)                             { c_.sql_firewall = std::move(p); return *this; }
+    PipelineBuilder& with_tenant_pool_registry(std::shared_ptr<TenantPoolRegistry> p)              { c_.tenant_pool_registry = std::move(p); return *this; }
+    PipelineBuilder& with_index_recommender(std::shared_ptr<IndexRecommender> p)                   { c_.index_recommender = std::move(p); return *this; }
     PipelineBuilder& with_masking_enabled(bool enabled)                                       { c_.masking_enabled = enabled; return *this; }
 
     /**

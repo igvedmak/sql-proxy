@@ -62,6 +62,8 @@ public:
     std::shared_ptr<ParseCache> get_parse_cache() const { return c_.parse_cache; }
     std::shared_ptr<QueryCostEstimator> get_query_cost_estimator() const { return c_.query_cost_estimator; }
     std::shared_ptr<AdaptiveRateController> get_adaptive_rate_controller() const { return c_.adaptive_rate_controller; }
+    std::shared_ptr<ISqlParser> get_parser() const { return c_.parser; }
+    std::shared_ptr<IndexRecommender> get_index_recommender() const { return c_.index_recommender; }
 
     struct Stats {
         uint64_t total_requests;
@@ -93,6 +95,7 @@ private:
     void record_lineage(RequestContext& ctx);
     bool intercept_ddl(RequestContext& ctx);
     bool check_query_cost(RequestContext& ctx);
+    bool check_firewall(RequestContext& ctx);
 
     PipelineComponents c_;
     RetryConfig retry_config_;

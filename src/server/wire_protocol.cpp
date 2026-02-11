@@ -89,6 +89,31 @@ std::vector<uint8_t> WireWriter::auth_cleartext() {
     return build_message(wire::MSG_AUTH, body);
 }
 
+std::vector<uint8_t> WireWriter::auth_sasl(
+    const std::vector<std::string>& mechanisms) {
+    WireBuffer body;
+    body.write_int32(wire::AUTH_SASL);
+    for (const auto& mech : mechanisms) {
+        body.write_string(mech);  // null-terminated mechanism name
+    }
+    body.write_byte(0);  // terminating empty string
+    return build_message(wire::MSG_AUTH, body);
+}
+
+std::vector<uint8_t> WireWriter::auth_sasl_continue(std::string_view data) {
+    WireBuffer body;
+    body.write_int32(wire::AUTH_SASL_CONTINUE);
+    body.write_bytes(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    return build_message(wire::MSG_AUTH, body);
+}
+
+std::vector<uint8_t> WireWriter::auth_sasl_final(std::string_view data) {
+    WireBuffer body;
+    body.write_int32(wire::AUTH_SASL_FINAL);
+    body.write_bytes(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    return build_message(wire::MSG_AUTH, body);
+}
+
 std::vector<uint8_t> WireWriter::parameter_status(std::string_view key, std::string_view value) {
     WireBuffer body;
     body.write_string(key);

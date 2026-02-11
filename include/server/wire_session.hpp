@@ -10,6 +10,7 @@
 #include <vector>
 #include <functional>
 #include <openssl/ssl.h>
+#include <cstdint>
 
 namespace sqlproxy {
 
@@ -20,6 +21,10 @@ struct WireProtocolConfig {
     uint32_t max_connections = 100;
     uint32_t thread_pool_size = 4;
     bool require_password = false;
+
+    // SCRAM-SHA-256 authentication
+    bool prefer_scram = false;
+    uint32_t scram_iterations = 4096;
 
     // TLS configuration for wire protocol
     struct Tls {
@@ -37,6 +42,8 @@ public:
     enum class State {
         WAIT_STARTUP,
         WAIT_PASSWORD,
+        WAIT_SASL_INITIAL,
+        WAIT_SASL_RESPONSE,
         READY,
         CLOSED
     };
@@ -45,7 +52,9 @@ public:
                 std::shared_ptr<Pipeline> pipeline,
                 std::function<std::optional<UserInfo>(const std::string&)> user_lookup,
                 bool require_password = false,
-                SSL_CTX* ssl_ctx = nullptr);
+                SSL_CTX* ssl_ctx = nullptr,
+                bool prefer_scram = false,
+                uint32_t scram_iterations = 4096);
 
     // Run the session (blocking, called from worker thread)
     void run();
@@ -72,6 +81,8 @@ private:
     // State handlers
     void handle_startup(const std::vector<uint8_t>& payload);
     void handle_password(const WireFrame& frame);
+    void handle_sasl_initial(const WireFrame& frame);
+    void handle_sasl_response(const WireFrame& frame);
     void handle_query(const WireFrame& frame);
 
     // Send query result back through wire protocol
@@ -88,6 +99,17 @@ private:
     std::function<std::optional<UserInfo>(const std::string&)> user_lookup_;
     bool require_password_;
     std::string expected_password_;  // For cleartext auth
+
+    // SCRAM-SHA-256 support
+    bool prefer_scram_;
+    uint32_t scram_iterations_;
+    std::string scram_client_first_bare_;
+    std::string scram_server_first_;
+    std::string scram_combined_nonce_;
+    std::vector<uint8_t> scram_salt_;
+    std::vector<uint8_t> scram_stored_key_;
+    std::vector<uint8_t> scram_server_key_;
+    std::vector<uint8_t> scram_client_key_;
 
     // TLS support
     SSL_CTX* ssl_ctx_;  // Shared context (not owned)

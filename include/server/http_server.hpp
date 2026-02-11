@@ -31,6 +31,8 @@ class ShutdownCoordinator;
 class SchemaDriftDetector;
 class PluginRegistry;
 class IAuthProvider;
+class SqlFirewall;
+class TenantManager;
 
 /**
  * @brief User information for authentication
@@ -109,6 +111,12 @@ public:
     void set_auth_provider(std::shared_ptr<IAuthProvider> provider) {
         auth_provider_ = std::move(provider);
     }
+    void set_sql_firewall(std::shared_ptr<SqlFirewall> fw) {
+        sql_firewall_ = std::move(fw);
+    }
+    void set_tenant_manager(std::shared_ptr<TenantManager> tm) {
+        tenant_manager_ = std::move(tm);
+    }
 
 private:
     // ── Authentication ──────────────────────────────────────────────────
@@ -143,6 +151,15 @@ private:
     void handle_schema_drift(const httplib::Request& req, httplib::Response& res);
     void handle_graphql(const httplib::Request& req, httplib::Response& res);
     void handle_plugin_reload(const httplib::Request& req, httplib::Response& res);
+    void handle_firewall_mode(const httplib::Request& req, httplib::Response& res);
+    void handle_firewall_mode_set(const httplib::Request& req, httplib::Response& res);
+    void handle_firewall_allowlist(const httplib::Request& req, httplib::Response& res);
+    void handle_tenant_list(const httplib::Request& req, httplib::Response& res);
+    void handle_tenant_create(const httplib::Request& req, httplib::Response& res);
+    void handle_tenant_get(const httplib::Request& req, httplib::Response& res);
+    void handle_tenant_delete(const httplib::Request& req, httplib::Response& res);
+    void handle_query_explain(const httplib::Request& req, httplib::Response& res);
+    void handle_index_recommendations(const httplib::Request& req, httplib::Response& res);
 
     // ── Helpers ─────────────────────────────────────────────────────────
     std::string build_metrics_output();
@@ -185,6 +202,12 @@ private:
 
     // OIDC/OAuth2 auth provider (optional)
     std::shared_ptr<IAuthProvider> auth_provider_;
+
+    // SQL Firewall
+    std::shared_ptr<SqlFirewall> sql_firewall_;
+
+    // Tenant management
+    std::shared_ptr<TenantManager> tenant_manager_;
 };
 
 } // namespace sqlproxy

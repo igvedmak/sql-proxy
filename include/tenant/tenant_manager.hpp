@@ -5,6 +5,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace sqlproxy {
 
@@ -25,6 +26,10 @@ public:
     void reload_tenants(std::unordered_map<std::string, std::shared_ptr<TenantContext>> tenants);
 
     [[nodiscard]] size_t tenant_count() const;
+
+    bool remove_tenant(const std::string& id);
+    [[nodiscard]] std::vector<std::string> list_tenants() const;
+    [[nodiscard]] std::shared_ptr<TenantContext> get_tenant(const std::string& id) const;
 
     [[nodiscard]] const TenantConfig& config() const { return config_; }
 

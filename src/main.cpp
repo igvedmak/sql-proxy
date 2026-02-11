@@ -47,6 +47,9 @@
 #include "server/adaptive_rate_controller.hpp"
 #include "auth/auth_chain.hpp"
 #include "auth/oidc_auth_provider.hpp"
+#include "security/sql_firewall.hpp"
+#include "db/tenant_pool_registry.hpp"
+#include "analyzer/index_recommender.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -553,6 +556,19 @@ int main(int argc, char* argv[]) {
                 qc_cfg.max_cost, qc_cfg.max_estimated_rows));
         }
 
+        // Index Recommender
+        std::shared_ptr<IndexRecommender> index_recommender;
+        if (config_result.success) {  // Always create if config loaded
+            IndexRecommender::Config ir_cfg;
+            ir_cfg.enabled = config_result.config.slow_query.enabled; // Enable if slow query tracking is on
+            ir_cfg.min_occurrences = 3;
+            ir_cfg.max_recommendations = 50;
+            index_recommender = std::make_shared<IndexRecommender>(ir_cfg);
+            if (ir_cfg.enabled) {
+                utils::log::info("Index recommender: enabled");
+            }
+        }
+
         // Tier F: Schema Drift Detector
         if (config_result.success && config_result.config.schema_drift.enabled) {
             SchemaDriftDetector::Config sd_cfg;
@@ -605,6 +621,33 @@ int main(int argc, char* argv[]) {
                 arc_cfg.latency_target_ms, arc_cfg.throttle_threshold_ms, arc_cfg.adjustment_interval_seconds));
         }
 
+        // SQL Firewall
+        std::shared_ptr<SqlFirewall> sql_firewall;
+        if (config_result.success && config_result.config.security.firewall_enabled) {
+            SqlFirewall::Config fw_cfg;
+            fw_cfg.enabled = true;
+            const auto& fw_mode = config_result.config.security.firewall_mode;
+            if (fw_mode == "learning") {
+                fw_cfg.initial_mode = FirewallMode::LEARNING;
+            } else if (fw_mode == "enforcing") {
+                fw_cfg.initial_mode = FirewallMode::ENFORCING;
+            } else {
+                fw_cfg.initial_mode = FirewallMode::DISABLED;
+            }
+            sql_firewall = std::make_shared<SqlFirewall>(fw_cfg);
+            utils::log::info(std::format("SQL firewall: enabled (mode={})", fw_mode));
+        }
+
+        // Per-tenant connection pools
+        std::shared_ptr<TenantPoolRegistry> tenant_pool_registry;
+        if (config_result.success && config_result.config.tenants.enabled) {
+            TenantPoolRegistry::Config tpr_cfg;
+            tpr_cfg.default_max_connections = pool_config.max_connections;
+            tpr_cfg.default_min_connections = pool_config.min_connections;
+            tenant_pool_registry = std::make_shared<TenantPoolRegistry>(tpr_cfg);
+            utils::log::info("Per-tenant connection pool registry: enabled");
+        }
+
         // Create pipeline via builder (with Tier 5 + Tier B + Tier C + Tier F + Tier G components)
         auto pipeline = PipelineBuilder()
             .with_parser(parser)
@@ -629,6 +672,9 @@ int main(int argc, char* argv[]) {
             .with_parse_cache(parse_cache)
             .with_query_cost_estimator(query_cost_estimator)
             .with_adaptive_rate_controller(g_adaptive_rate_controller)
+            .with_sql_firewall(sql_firewall)
+            .with_tenant_pool_registry(tenant_pool_registry)
+            .with_index_recommender(index_recommender)
             .with_masking_enabled(config_result.config.masking_enabled)
             .build();
 
@@ -738,6 +784,16 @@ int main(int argc, char* argv[]) {
         // Plugin hot-reload support
         g_server->set_plugin_registry(plugin_registry);
 
+        // SQL Firewall
+        if (sql_firewall) {
+            g_server->set_sql_firewall(sql_firewall);
+        }
+
+        // Tenant provisioning API
+        if (tenant_manager) {
+            g_server->set_tenant_manager(tenant_manager);
+        }
+
         // Tier E: Brute force protection
         if (config_result.success && config_result.config.security.brute_force_enabled) {
             BruteForceProtector::Config bf_cfg;
@@ -774,6 +830,8 @@ int main(int argc, char* argv[]) {
             wire_config.max_connections = config_result.config.wire_protocol.max_connections;
             wire_config.thread_pool_size = config_result.config.wire_protocol.thread_pool_size;
             wire_config.require_password = config_result.config.wire_protocol.require_password;
+            wire_config.prefer_scram = config_result.config.wire_protocol.prefer_scram;
+            wire_config.scram_iterations = config_result.config.wire_protocol.scram_iterations;
             wire_config.tls.enabled = config_result.config.wire_protocol.tls.enabled;
             wire_config.tls.cert_file = config_result.config.wire_protocol.tls.cert_file;
             wire_config.tls.key_file = config_result.config.wire_protocol.tls.key_file;
@@ -781,8 +839,9 @@ int main(int argc, char* argv[]) {
             wire_config.tls.require_client_cert = config_result.config.wire_protocol.tls.require_client_cert;
             g_wire_server = std::make_shared<WireServer>(pipeline, wire_config, users);
             g_wire_server->start();
-            utils::log::info(std::format("Wire protocol: listening on {}:{}",
-                wire_config.host, wire_config.port));
+            utils::log::info(std::format("Wire protocol: listening on {}:{} (auth={})",
+                wire_config.host, wire_config.port,
+                wire_config.prefer_scram ? "SCRAM-SHA-256" : "cleartext"));
         }
 
         // Binary RPC Server

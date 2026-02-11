@@ -4,53 +4,7 @@ This document outlines potential features and improvements for the SQL Proxy sys
 
 ---
 
-## Security Enhancements
-
-### 1. SCRAM-SHA-256 Authentication
-**Problem:** Wire protocol only supports cleartext and MD5 auth. MD5 is deprecated in PostgreSQL 14+ and vulnerable.
-
-**Solution:**
-- Implement SCRAM-SHA-256 (RFC 5802) in WireSession
-- Support both SCRAM-SHA-256 and SCRAM-SHA-256-PLUS (channel binding)
-- Store password hashes using PBKDF2 iterations
-- Maintain backward compatibility with MD5 for legacy clients
-
-**Impact:** Secure authentication aligned with PostgreSQL standards
-
----
-
 ## Multi-Tenancy & Scale
-
-### 2. Per-Tenant Connection Pools
-**Problem:** One tenant can exhaust the shared connection pool (noisy neighbor problem).
-
-**Solution:**
-- Extend pool key from `database` to `tenant:database`
-- Each tenant gets isolated pool with configurable `max_connections`
-- Per-tenant pool stats in metrics
-- Total connections = sum of all tenant pools (size accordingly)
-- Requires more connections but prevents starvation
-
-**Impact:** Guaranteed per-tenant resource allocation
-
----
-
-### 3. Tenant Provisioning API
-**Problem:** Tenants are only configurable in TOML. No runtime management for SaaS onboarding.
-
-**Solution:**
-- New endpoints:
-  - `POST /admin/tenants` — create tenant with database, policies, rate limits
-  - `GET /admin/tenants/{id}` — tenant details
-  - `PUT /admin/tenants/{id}` — update tenant config
-  - `DELETE /admin/tenants/{id}` — remove tenant
-- Persist to TOML or database
-- Hot-reload tenant manager on change (RCU pattern)
-- Audit all tenant changes
-
-**Impact:** Self-service tenant onboarding without config file edits
-
----
 
 ### 4. Distributed Rate Limiting
 **Problem:** In-memory rate limiter is single-node. Multi-node deployments can't enforce global limits accurately.
@@ -110,26 +64,14 @@ Automatically optimize expensive queries: push down filters, add LIMIT, suggest 
 ### 8. Multi-Database Transactions
 Coordinate transactions across multiple databases with 2PC.
 
-### 9. Read Replica Routing
-Route SELECTs to replicas, writes to primary. Automatic failover detection.
-
 ### 10. Data Residency Enforcement
 Per-tenant data locality rules (EU data stays in EU region). Block cross-region queries.
-
-### 11. Automatic Index Recommendation
-Track slow queries, analyze patterns, recommend indexes to DBA.
-
-### 12. SQL Firewall Mode
-After learning period, block any new query fingerprint not in allowlist.
 
 ### 13. Column-Level Data Versioning
 Track changes to sensitive columns (who changed this salary value, when).
 
 ### 14. Synthetic Data Generation
 Generate fake data matching real schema for testing environments.
-
-### 15. Query Explanation API
-Given a query, explain in plain English what it does and what data it accesses.
 
 ### 16. LLM-Powered Features
 - AI policy generator (analyze unknown queries, auto-create policies)
@@ -145,7 +87,6 @@ Given a query, explain in plain English what it does and what data it accesses.
 - WebSocket streaming (#5)
 
 **P2 (Feature Expansion):**
-- Per-tenant connection pools (#2)
 - Distributed rate limiting (#4)
 - COPY protocol support (#6)
 

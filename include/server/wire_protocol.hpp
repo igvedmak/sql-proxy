@@ -38,6 +38,9 @@ constexpr char MSG_EMPTY_QUERY = 'I';
 constexpr int32_t AUTH_OK = 0;
 constexpr int32_t AUTH_CLEARTEXT = 3;
 constexpr int32_t AUTH_MD5 = 5;
+constexpr int32_t AUTH_SASL = 10;
+constexpr int32_t AUTH_SASL_CONTINUE = 11;
+constexpr int32_t AUTH_SASL_FINAL = 12;
 
 // Transaction states
 constexpr char TX_IDLE = 'I';
@@ -107,6 +110,16 @@ public:
 
     // Build AuthenticationCleartextPassword request
     [[nodiscard]] static std::vector<uint8_t> auth_cleartext();
+
+    // Build AuthenticationSASL message (list of mechanism names)
+    [[nodiscard]] static std::vector<uint8_t> auth_sasl(
+        const std::vector<std::string>& mechanisms);
+
+    // Build AuthenticationSASLContinue message (server challenge)
+    [[nodiscard]] static std::vector<uint8_t> auth_sasl_continue(std::string_view data);
+
+    // Build AuthenticationSASLFinal message (server signature)
+    [[nodiscard]] static std::vector<uint8_t> auth_sasl_final(std::string_view data);
 
     // Build ParameterStatus message (key=value)
     [[nodiscard]] static std::vector<uint8_t> parameter_status(
