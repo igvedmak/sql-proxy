@@ -86,8 +86,8 @@ TEST_CASE("TransactionCoordinator", "[transaction_coordinator]") {
     SECTION("Rollback after prepare") {
         TransactionCoordinator tc(enabled_config());
         auto xid = tc.begin_transaction("user1");
-        tc.enlist_participant(xid, "db1");
-        tc.prepare(xid);
+        (void)tc.enlist_participant(xid, "db1");
+        (void)tc.prepare(xid);
 
         REQUIRE(tc.rollback(xid));
         auto txn = tc.get_transaction(xid);
@@ -110,9 +110,9 @@ TEST_CASE("TransactionCoordinator", "[transaction_coordinator]") {
         // Cannot prepare without participants
         REQUIRE_FALSE(tc.prepare(xid));
 
-        tc.enlist_participant(xid, "db1");
-        tc.prepare(xid);
-        tc.commit(xid);
+        (void)tc.enlist_participant(xid, "db1");
+        (void)tc.prepare(xid);
+        (void)tc.commit(xid);
 
         // Cannot rollback from COMMITTED
         REQUIRE_FALSE(tc.rollback(xid));
@@ -159,7 +159,7 @@ TEST_CASE("TransactionCoordinator", "[transaction_coordinator]") {
         TransactionCoordinator tc(cfg);
 
         auto xid = tc.begin_transaction("user1");
-        tc.enlist_participant(xid, "db1");
+        (void)tc.enlist_participant(xid, "db1");
 
         // Wait for timeout
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -190,9 +190,9 @@ TEST_CASE("TransactionCoordinator", "[transaction_coordinator]") {
         TransactionCoordinator tc(enabled_config());
         auto xid1 = tc.begin_transaction("u1");
         auto xid2 = tc.begin_transaction("u2");
-        tc.enlist_participant(xid2, "db1");
-        tc.prepare(xid2);
-        tc.commit(xid2);
+        (void)tc.enlist_participant(xid2, "db1");
+        (void)tc.prepare(xid2);
+        (void)tc.commit(xid2);
 
         auto active = tc.active_transactions();
         REQUIRE(active.size() == 1); // Only xid1 is still active

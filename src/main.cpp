@@ -701,7 +701,12 @@ int main(int argc, char* argv[]) {
             sdg_cfg.enabled = true;
             sdg_cfg.max_rows = config_result.config.synthetic_data.max_rows;
             synthetic_data_generator = std::make_shared<SyntheticDataGenerator>(sdg_cfg);
-            schema_cache = std::make_shared<SchemaCache>();
+            if (!config_result.config.databases.empty()) {
+                schema_cache = std::make_shared<SchemaCache>(
+                    config_result.config.databases[0].connection_string);
+            } else {
+                schema_cache = std::make_shared<SchemaCache>();
+            }
             utils::log::info(std::format("Synthetic data: enabled (max_rows={})",
                 sdg_cfg.max_rows));
         }

@@ -19,14 +19,21 @@ The service will be available at http://localhost:8080
 **Run unit tests in Docker:**
 
 ```bash
-docker compose run --rm unit-tests
+docker compose run --rm --build unit-tests
 ```
 
 **Run E2E tests:**
 
 ```bash
 docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
-  --profile e2e up --build --abort-on-container-exit
+  --profile full --profile e2e up --build --abort-on-container-exit
+```
+
+**Run benchmarks:**
+
+```bash
+docker build --target benchmark-builder -t sql-proxy-bench .
+docker run --rm sql-proxy-bench /build/sql_proxy/build/sql_proxy_benchmarks
 ```
 
 ## Documentation

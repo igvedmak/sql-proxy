@@ -113,9 +113,9 @@ TEST_CASE("TenantPoolRegistry: get_stats returns correct counts",
     REQUIRE(stats0.total_tenants == 0);
 
     // Create pools for 2 tenants across 3 databases
-    registry.get_pool("acme", "db1");
-    registry.get_pool("acme", "db2");
-    registry.get_pool("globex", "db1");
+    (void)registry.get_pool("acme", "db1");
+    (void)registry.get_pool("acme", "db2");
+    (void)registry.get_pool("globex", "db1");
 
     auto stats1 = registry.get_stats();
     REQUIRE(stats1.total_pools == 3);

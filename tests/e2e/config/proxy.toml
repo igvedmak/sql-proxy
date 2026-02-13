@@ -522,16 +522,16 @@ cooldown_seconds = 300
 severity = "warning"
 
 # ============================================================================
-# Tier 5 features (disabled but present)
+# Tier 5+ features — ENABLED for E2E testing
 # ============================================================================
 
 [tenants]
-enabled = false
+enabled = true
 default_tenant = "default"
 header_name = "X-Tenant-Id"
 
 [schema_management]
-enabled = false
+enabled = true
 require_approval = false
 max_history_entries = 1000
 
@@ -541,13 +541,86 @@ host = "0.0.0.0"
 port = 5433
 
 [graphql]
-enabled = false
+enabled = true
 endpoint = "/api/v1/graphql"
+max_connections = 50
 
 [binary_rpc]
 enabled = false
 host = "0.0.0.0"
 port = 9090
+
+# ============================================================================
+# SQL Firewall — ENABLED in learning mode for E2E
+# ============================================================================
+
+[security.firewall]
+enabled = true
+initial_mode = "learning"
+
+# ============================================================================
+# Index Recommender — ENABLED for E2E
+# ============================================================================
+
+[index_recommender]
+enabled = true
+min_occurrences = 1
+max_recommendations = 50
+
+# ============================================================================
+# Data Residency — ENABLED for E2E
+# ============================================================================
+
+[data_residency]
+enabled = true
+default_region = "us-east"
+
+[[data_residency.rules]]
+tenant = "default"
+allowed_regions = ["us-east", "us-west", "eu-west"]
+
+# ============================================================================
+# Column Versioning — ENABLED for E2E
+# ============================================================================
+
+[column_versioning]
+enabled = true
+max_history_entries = 1000
+
+# ============================================================================
+# Synthetic Data — ENABLED for E2E
+# ============================================================================
+
+[synthetic_data]
+enabled = true
+
+# ============================================================================
+# Distributed Rate Limiting — ENABLED (single node) for E2E
+# ============================================================================
+
+[distributed_rate_limiting]
+enabled = true
+node_id = "e2e-node-1"
+total_nodes = 1
+sync_interval_ms = 5000
+
+# ============================================================================
+# Transactions — ENABLED for E2E
+# ============================================================================
+
+[transactions]
+enabled = true
+timeout_seconds = 30
+cleanup_interval_seconds = 10
+
+# ============================================================================
+# Cost-Based Rewriting — ENABLED for E2E
+# ============================================================================
+
+[cost_based_rewriting]
+enabled = true
+cost_threshold = 50000.0
+max_columns_for_star = 20
 
 # ============================================================================
 # Slow Query Tracking — ENABLED for E2E

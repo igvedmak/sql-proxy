@@ -49,7 +49,7 @@ TEST_CASE("CircuitBreaker: full cycle produces 3 events", "[circuit_breaker][eve
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     // OPEN -> HALF_OPEN (triggered by allow_request)
-    cb.allow_request();
+    (void)cb.allow_request();
     CHECK(cb.get_state() == CircuitState::HALF_OPEN);
 
     // HALF_OPEN -> CLOSED (success)
@@ -80,7 +80,7 @@ TEST_CASE("CircuitBreaker: HALF_OPEN->OPEN on failure during recovery", "[circui
 
     // Wait and transition to HALF_OPEN
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    cb.allow_request();
+    (void)cb.allow_request();
     CHECK(cb.get_state() == CircuitState::HALF_OPEN);
 
     // Fail during recovery -> back to OPEN
@@ -107,7 +107,7 @@ TEST_CASE("CircuitBreaker: event deque capped at 100", "[circuit_breaker][events
     for (int i = 0; i < 50; ++i) {
         cb.record_failure(FailureCategory::INFRASTRUCTURE);
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        cb.allow_request();
+        (void)cb.allow_request();
         cb.record_success();
     }
     // 50 cycles × 3 events = 150 total generated
@@ -131,7 +131,7 @@ TEST_CASE("CircuitBreaker: get_recent_events returns events in chronological ord
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     // OPEN -> HALF_OPEN
-    cb.allow_request();
+    (void)cb.allow_request();
 
     // HALF_OPEN -> CLOSED
     cb.record_success();

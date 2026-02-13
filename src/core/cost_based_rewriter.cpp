@@ -1,4 +1,5 @@
 #include "core/cost_based_rewriter.hpp"
+#include "core/utils.hpp"
 
 #include <algorithm>
 #include <format>
@@ -93,6 +94,10 @@ CostBasedRewriter::RewriteResult CostBasedRewriter::try_add_default_limit(
 
     // Don't add LIMIT to subquery-containing queries (complex to rewrite safely)
     if (analysis.has_subquery) return {};
+
+    // Don't add LIMIT if one already exists in the SQL (may have been added by
+    // an earlier rewrite stage like enforce_limit or RLS)
+    if (utils::to_lower(sql).contains(" limit ")) return {};
 
     // Add LIMIT 1000 to unbounded SELECT
     std::string new_sql = sql;

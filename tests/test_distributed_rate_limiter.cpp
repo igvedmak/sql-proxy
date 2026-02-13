@@ -85,9 +85,9 @@ TEST_CASE("DistributedRateLimiter", "[distributed_rate_limiter]") {
         DistributedRateLimiter drl(local, backend, cfg);
 
         // Generate some usage
-        drl.check("user1", "db1");
-        drl.check("user1", "db1");
-        drl.check("user1", "db1");
+        (void)drl.check("user1", "db1");
+        (void)drl.check("user1", "db1");
+        (void)drl.check("user1", "db1");
 
         // Start sync and wait for one cycle
         drl.start_sync();
@@ -122,7 +122,7 @@ TEST_CASE("DistributedRateLimiter", "[distributed_rate_limiter]") {
 
         DistributedRateLimiter drl(local, backend, cfg);
 
-        drl.check("user1", "db1");
+        (void)drl.check("user1", "db1");
         backend->report_usage("user1:db1", 5);
         REQUIRE(backend->get_global_usage("user1:db1") == 5);
 

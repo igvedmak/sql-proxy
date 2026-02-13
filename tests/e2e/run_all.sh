@@ -95,6 +95,21 @@ run_suite "test_tracing_spans.sh" "Tracing Spans"
 run_suite "test_adaptive_rate.sh" "Adaptive Rate Limiting"
 run_suite "test_priority.sh" "Request Prioritization"
 
+# --- Tier H suites (advanced features) ---
+echo ""
+echo -e "${CYAN}--- Tier H feature tests ---${NC}"
+run_suite "test_sql_firewall.sh" "SQL Firewall"
+run_suite "test_tenants.sh" "Tenant Management"
+run_suite "test_data_residency.sh" "Data Residency"
+run_suite "test_column_versioning.sh" "Column Versioning"
+run_suite "test_synthetic_data.sh" "Synthetic Data"
+run_suite "test_distributed_rate_limiting.sh" "Distributed Rate Limiting"
+run_suite "test_transactions.sh" "Multi-DB Transactions"
+run_suite "test_index_recommender.sh" "Index Recommender"
+run_suite "test_graphql.sh" "GraphQL"
+run_suite "test_schema_management.sh" "Schema Management"
+run_suite "test_cost_rewriting.sh" "Cost-Based Rewriting"
+
 # Final summary
 echo ""
 echo "================================================================"

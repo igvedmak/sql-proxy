@@ -88,27 +88,27 @@ docker run --rm sql-proxy-test /build/sql_proxy/build/sql_proxy_tests --reporter
 
 ### E2E Tests
 
-Run the full end-to-end test suite (95 tests across 16 suites) against a live proxy + PostgreSQL:
+Run the full end-to-end test suite (184 tests across 33 suites) against a live proxy + PostgreSQL:
 
 ```bash
-# With E2E config (all features enabled — brute force, slow query, IP allowlist):
+# With E2E config (all features enabled):
 docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
-  --profile e2e up --build --abort-on-container-exit
+  --profile full --profile e2e up --build --abort-on-container-exit
 
 # Or locally (proxy + postgres already running, uses default config):
 bash tests/e2e/run_all.sh
 ```
 
-Feature-gated tests (brute force, IP allowlist, slow query) auto-detect whether the feature is enabled and gracefully skip when not available.
+Feature-gated tests (brute force, IP allowlist, slow query, etc.) auto-detect whether the feature is enabled and gracefully skip when not available.
 
 To clean up E2E containers and volumes afterward:
 
 ```bash
 docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
-  --profile e2e down -v
+  --profile full --profile e2e down -v
 ```
 
-**Important:** Always include `--profile e2e` in the `down` command. Without it, the e2e-tests container retains a stale network reference and subsequent runs will fail.
+**Important:** Always include both `--profile full --profile e2e` in the `down` command. Without them, the e2e-tests container retains a stale network reference and subsequent runs will fail.
 
 ### Benchmarks
 
@@ -182,8 +182,11 @@ curl -X POST http://localhost:8080/policies/reload
 |--------|------|-------------|
 | `POST` | `/api/v1/query` | Execute SQL through the proxy pipeline |
 | `POST` | `/api/v1/query/dry-run` | Dry-run query evaluation (no execution) |
+| `POST` | `/api/v1/query/explain` | Explain query in plain English |
 | `GET` | `/health` | Health check (supports `?level=shallow\|deep\|readiness`) |
 | `GET` | `/metrics` | Prometheus-format metrics |
+| `GET` | `/openapi.json` | OpenAPI 3.0 spec |
+| `GET` | `/api/docs` | Swagger UI |
 | `POST` | `/policies/reload` | Hot-reload policies from config |
 
 ### Operations (Admin)
@@ -194,19 +197,55 @@ curl -X POST http://localhost:8080/policies/reload
 | `GET` | `/api/v1/slow-queries` | Recent slow queries (threshold + buffer) |
 | `GET` | `/api/v1/circuit-breakers` | Circuit breaker state + recent events (per-tenant if multi-tenant) |
 | `POST` | `/api/v1/plugins/reload` | Hot-reload .so plugins at runtime (admin) |
+| `GET` | `/api/v1/index-recommendations` | Suggested indexes for slow queries |
+
+### Security (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/firewall/mode` | SQL firewall mode and stats |
+| `POST` | `/api/v1/firewall/mode` | Set firewall mode (disabled/learning/enforcing) |
+| `GET` | `/api/v1/firewall/allowlist` | SQL firewall fingerprint allowlist |
+
+### Query Intelligence
+
+| Method | Path | Description |
+|--------|------|-------------|
 | `POST` | `/api/v1/graphql` | GraphQL-to-SQL queries + mutations (feature-gated) |
+| `GET` | `/api/v1/stream` | WebSocket upgrade (RFC 6455) for audit/query/metrics streaming |
+
+### Schema Management (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/schema/history` | Schema change history |
+| `GET` | `/api/v1/schema/pending` | Pending schema changes |
+| `POST` | `/api/v1/schema/approve` | Approve schema change |
+| `POST` | `/api/v1/schema/reject` | Reject schema change |
+| `GET` | `/api/v1/schema/drift` | Schema drift report |
+
+### Multi-Tenancy (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/tenants` | List all tenants |
+| `POST` | `/admin/tenants` | Create a tenant |
+| `GET` | `/admin/tenants/:id` | Get tenant details |
+| `DELETE` | `/admin/tenants/:id` | Remove a tenant |
+| `GET` | `/admin/residency` | Data residency rules and regions |
+
+### Data Governance (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/column-history` | Column-level change history |
+| `POST` | `/api/v1/synthetic-data` | Generate synthetic data from schema |
 
 ### Distributed Rate Limiting (Admin)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/distributed-rate-limits` | Distributed rate limiter stats (sync cycles, overrides) |
-
-### WebSocket Streaming
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/v1/stream` | WebSocket upgrade (RFC 6455) for audit/query/metrics streaming |
 
 ### Multi-Database Transactions
 
@@ -234,6 +273,7 @@ curl -X POST http://localhost:8080/policies/reload
 | `GET` | `/api/v1/compliance/pii-report` | PII access report (GDPR/SOC2) |
 | `GET` | `/api/v1/compliance/security-summary` | Security overview |
 | `GET` | `/api/v1/compliance/lineage` | Data lineage summaries |
+| `GET` | `/api/v1/compliance/data-subject-access` | GDPR Article 15 export |
 
 ### Admin Dashboard
 

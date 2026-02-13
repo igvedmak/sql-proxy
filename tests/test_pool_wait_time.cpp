@@ -44,9 +44,6 @@ TEST_CASE("PoolWaitTime: fast acquire populates sub-ms bucket", "[pool][metrics]
 
     auto stats = pool.get_stats();
     REQUIRE(stats.acquire_time_count == 1);
-    // With mock (no real I/O), acquire can complete in under 1μs → sum may be 0
-    CHECK(stats.acquire_time_sum_us >= 0);
-
     // With mock (no real I/O), acquire should be ≤100μs (bucket 0) or ≤500μs (bucket 1)
     uint64_t total_in_buckets = 0;
     for (auto b : stats.acquire_time_buckets) total_in_buckets += b;
@@ -68,8 +65,6 @@ TEST_CASE("PoolWaitTime: sum accumulates across multiple acquires", "[pool][metr
 
     auto stats = pool.get_stats();
     CHECK(stats.acquire_time_count == 5);
-    // With mock (no real I/O), acquire can complete in under 1μs → sum may be 0
-    CHECK(stats.acquire_time_sum_us >= 0);
 }
 
 TEST_CASE("PoolWaitTime: bucket counts sum equals total count", "[pool][metrics]") {
