@@ -2,39 +2,79 @@
 
 A high-performance C++23 SQL proxy service for PostgreSQL with SQL analysis, access control, SQL injection detection, PII classification, data masking, encryption, and audit logging.
 
+## Prerequisites
+
+- **Docker** >= 20.10 and **Docker Compose** v2 (`docker compose` — not the legacy `docker-compose`)
+- Ports **5432** (PostgreSQL) and **8080** (proxy HTTP) must be free
+
 ## Quick Start
 
-**Build and run with Docker (uses Ninja for fast builds):**
-
 ```bash
-# Core mode — exercise requirements only (SQL analysis, policies, users, execution, classification, audit)
-docker compose --profile core up
+git clone git@github.com:igvedmak/sql-proxy.git
+cd sql-proxy
 
-# Full mode — all features (rate limiting, RLS, masking, injection detection, tracing, etc.)
-docker compose --profile full up
+# Build and start (first build takes ~8-10 min, rebuilds ~1 min)
+docker compose --profile full up --build
 ```
 
-The service will be available at http://localhost:8080
-
-**Run unit tests in Docker:**
+This starts PostgreSQL + the proxy with all features enabled. Wait until you see the health check pass, then verify:
 
 ```bash
+# Health check
+curl http://localhost:8080/health
+
+# Run a query (uses the pre-configured analyst API key from config/proxy.toml)
+curl -X POST http://localhost:8080/api/v1/query \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer sk-analyst-key-67890' \
+  -d '{"database": "testdb", "sql": "SELECT id, name, email FROM customers LIMIT 5"}'
+```
+
+To stop and clean up:
+
+```bash
+docker compose --profile full down -v
+```
+
+### Other Profiles
+
+```bash
+# Core mode — only core features (SQL analysis, policies, users, execution, classification, audit)
+docker compose --profile core up --build
+```
+
+### Running Tests
+
+```bash
+# Unit tests (550 tests)
 docker compose run --rm --build unit-tests
-```
 
-**Run E2E tests:**
-
-```bash
+# E2E tests (184 tests across 33 suites — requires --profile full for the proxy)
 docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
   --profile full --profile e2e up --build --abort-on-container-exit
+
+# Clean up E2E containers afterward
+docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
+  --profile full --profile e2e down -v
 ```
 
-**Run benchmarks:**
+### Running Benchmarks
 
 ```bash
 docker build --target benchmark-builder -t sql-proxy-bench .
 docker run --rm sql-proxy-bench /build/sql_proxy/build/sql_proxy_benchmarks
 ```
+
+### Default Credentials
+
+| Item | Value | Where |
+|------|-------|-------|
+| PostgreSQL user | `postgres` / `postgres_password` | docker-compose.yml |
+| Proxy DB user | `proxy_user` / `secure_password` | config/proxy.toml |
+| Admin token | `aproxy.toml:9` | config/proxy.toml `[server] admin_token` |
+| Admin API key | `sk-admin-key-12345` | config/proxy.toml `[[users]]` |
+| Analyst API key | `sk-analyst-key-67890` | config/proxy.toml `[[users]]` |
+| Developer API key | `sk-developer-key-abcde` | config/proxy.toml `[[users]]` |
 
 ## Documentation
 
@@ -361,21 +401,6 @@ Authenticate with the `admin_token` from `config/proxy.toml`.
 | GET | `/dashboard/api/policies` | Admin | Policy listing |
 | GET | `/dashboard/api/users` | Admin | User listing |
 | GET | `/dashboard/api/alerts` | Admin | Active alerts |
-
-## Example Query
-
-```bash
-# With API key authentication
-curl -X POST http://localhost:8080/api/v1/query \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer sk-analyst-key-67890' \
-  -d '{"database": "testdb", "sql": "SELECT id, name, email FROM customers LIMIT 5"}'
-
-# With username in body (legacy)
-curl -X POST http://localhost:8080/api/v1/query \
-  -H 'Content-Type: application/json' \
-  -d '{"user": "analyst", "database": "testdb", "sql": "SELECT id, name, email FROM customers LIMIT 5"}'
-```
 
 ## Technology Stack
 
