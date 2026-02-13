@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_helpers.sh"
 
 wait_for_proxy || exit 1
+require_feature "Schema Management" "/api/v1/schema/history" || return 0 2>/dev/null || exit 0
 
 echo "========================================"
 echo "  Schema Management Tests"

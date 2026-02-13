@@ -17,21 +17,27 @@ run_test_header "Rate limit header present on response" \
     "-X POST $BASE_URL/api/v1/query -H 'Content-Type: application/json' -d '{\"user\":\"admin\",\"database\":\"testdb\",\"sql\":\"SELECT 1\"}'" \
     "X-RateLimit-Remaining"
 
-# Test 2: Burst of requests — analyst has low per-user-per-db limit (50 TPS, burst 10)
-# Send 15 rapid requests — some should get rate limited
+# Test 2: Burst of requests — analyst has low per-user-per-db limit (30 TPS, burst 10)
+# Send 20 requests in parallel to exhaust the burst capacity before refill
 echo -e "${BLUE}[TEST $((TOTAL+1))]${NC} Burst requests trigger rate limiting"
 TOTAL=$((TOTAL + 1))
 RATE_LIMITED=0
-for i in $(seq 1 15); do
-    response=$(curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/v1/query" \
+TMPDIR_RL=$(mktemp -d)
+for i in $(seq 1 20); do
+    curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/v1/query" \
         -H 'Content-Type: application/json' \
-        -d '{"user":"analyst","database":"testdb","sql":"SELECT 1 as test"}')
-    http_code=$(echo "$response" | tail -1)
+        -d '{"user":"analyst","database":"testdb","sql":"SELECT 1 as test"}' \
+        > "$TMPDIR_RL/resp_$i" 2>/dev/null &
+done
+wait
+for i in $(seq 1 20); do
+    http_code=$(tail -1 "$TMPDIR_RL/resp_$i" 2>/dev/null)
     if [ "$http_code" = "429" ]; then
         RATE_LIMITED=$((RATE_LIMITED + 1))
     fi
 done
-echo -e "  ${YELLOW}Rate limited requests:${NC} $RATE_LIMITED / 15"
+rm -rf "$TMPDIR_RL"
+echo -e "  ${YELLOW}Rate limited requests:${NC} $RATE_LIMITED / 20"
 if [ $RATE_LIMITED -gt 0 ]; then
     echo -e "  ${GREEN}PASS${NC} (at least 1 request was rate limited)"
     PASSED=$((PASSED + 1))

@@ -71,8 +71,8 @@ echo ""
 # Test 3: Wait for lockout to expire, then retry succeeds
 TOTAL=$((TOTAL + 1))
 echo -e "${BLUE}[TEST $TOTAL]${NC} Lockout expires after configured duration"
-echo -e "  ${YELLOW}Waiting 3s for lockout to expire...${NC}"
-sleep 3
+echo -e "  ${YELLOW}Waiting 11s for lockout to expire (max_lockout_seconds=10)...${NC}"
+sleep 11
 
 # After lockout expires, a valid key should work
 response=$(curl -s -w '\n%{http_code}' -X POST "$BASE_URL/api/v1/query" \

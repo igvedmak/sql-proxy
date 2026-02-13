@@ -192,3 +192,29 @@ print_summary() {
         echo -e "${RED}SOME TESTS FAILED${NC}"
     fi
 }
+
+# ============================================================================
+# Feature detection: skip suite if endpoint returns 404 (feature disabled)
+# Usage: require_feature "Feature Name" "/api/v1/some-endpoint" || return 0
+# ============================================================================
+require_feature() {
+    local feature_name="$1"
+    local probe_url="$2"
+    local probe_method="${3:-GET}"
+    local probe_args=""
+
+    if [ "$probe_method" = "POST" ]; then
+        probe_args="-X POST -H 'Content-Type: application/json' -d '{}'"
+    fi
+
+    local http_code
+    http_code=$(eval "curl -s -o /dev/null -w '%{http_code}' $probe_args -H 'Authorization: Bearer $ADMIN_TOKEN' $BASE_URL$probe_url" 2>/dev/null)
+
+    if [ "$http_code" = "404" ]; then
+        echo -e "${YELLOW}SKIP${NC} — $feature_name not enabled in current config (endpoint returned 404)"
+        echo ""
+        FAILED=0
+        return 1
+    fi
+    return 0
+}

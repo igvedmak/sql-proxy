@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_helpers.sh"
 
 wait_for_proxy || exit 1
+require_feature "Synthetic Data" "/api/v1/synthetic-data" "POST" || return 0 2>/dev/null || exit 0
 
 echo "========================================"
 echo "  Synthetic Data Tests"

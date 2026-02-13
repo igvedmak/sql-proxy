@@ -48,7 +48,10 @@ run_suite() {
 
     local status_icon="PASS"
     local status_color="$GREEN"
-    if [ $FAILED -gt 0 ]; then
+    if [ $TOTAL -eq 0 ]; then
+        status_icon="SKIP"
+        status_color="$YELLOW"
+    elif [ $FAILED -gt 0 ]; then
         status_icon="FAIL"
         status_color="$RED"
     fi
