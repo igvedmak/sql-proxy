@@ -394,6 +394,46 @@ struct ProxyConfig {
         size_t max_columns_for_star = 20;
     } cost_based_rewriting;
 
+    // Distributed Rate Limiting
+    struct DistributedRateLimitingConfig {
+        bool enabled = false;
+        std::string node_id = "node-1";
+        uint32_t cluster_size = 1;
+        uint32_t sync_interval_ms = 5000;
+        std::string backend_type = "memory";
+    } distributed_rate_limiting;
+
+    // WebSocket Streaming
+    struct WebSocketConfig {
+        bool enabled = false;
+        std::string endpoint = "/api/v1/stream";
+        uint32_t max_connections = 100;
+        uint32_t ping_interval_seconds = 30;
+        size_t max_frame_size = 65536;
+    } websocket;
+
+    // Multi-Database Transactions
+    struct TransactionConfig {
+        bool enabled = false;
+        uint32_t timeout_ms = 30000;
+        uint32_t max_active_transactions = 100;
+        uint32_t cleanup_interval_seconds = 60;
+    } transactions;
+
+    // LLM Features
+    struct LlmConfig {
+        bool enabled = false;
+        std::string endpoint = "https://api.openai.com";
+        std::string api_key;
+        std::string default_model = "gpt-4";
+        uint32_t timeout_ms = 30000;
+        uint32_t max_retries = 2;
+        uint32_t max_requests_per_minute = 60;
+        bool cache_enabled = true;
+        size_t cache_max_entries = 1000;
+        uint32_t cache_ttl_seconds = 3600;
+    } llm;
+
     // Route paths (config-driven URL patterns)
     RouteConfig routes;
 
@@ -482,6 +522,10 @@ private:
     static ProxyConfig::ColumnVersioningConfig extract_column_versioning(const toml::table& root);
     static ProxyConfig::SyntheticDataConfig extract_synthetic_data(const toml::table& root);
     static ProxyConfig::CostBasedRewritingConfig extract_cost_based_rewriting(const toml::table& root);
+    static ProxyConfig::DistributedRateLimitingConfig extract_distributed_rate_limiting(const toml::table& root);
+    static ProxyConfig::WebSocketConfig extract_websocket(const toml::table& root);
+    static ProxyConfig::TransactionConfig extract_transactions(const toml::table& root);
+    static ProxyConfig::LlmConfig extract_llm(const toml::table& root);
 
     // Route config extractor
     static RouteConfig extract_routes(const toml::table& root);

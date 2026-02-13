@@ -28,6 +28,8 @@
 #include "tenant/data_residency.hpp"
 #include "security/column_version_tracker.hpp"
 #include "core/cost_based_rewriter.hpp"
+#include "core/transaction_coordinator.hpp"
+#include "core/llm_client.hpp"
 
 #include <thread>
 #include <unordered_set>

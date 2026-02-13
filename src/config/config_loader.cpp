@@ -1095,6 +1095,58 @@ ProxyConfig::CostBasedRewritingConfig ConfigLoader::extract_cost_based_rewriting
     return cfg;
 }
 
+ProxyConfig::DistributedRateLimitingConfig ConfigLoader::extract_distributed_rate_limiting(const toml::table& root) {
+    ProxyConfig::DistributedRateLimitingConfig cfg;
+    const auto* sec = root["distributed_rate_limiting"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.node_id = (*sec)["node_id"].value_or(std::string("node-1"));
+    cfg.cluster_size = static_cast<uint32_t>((*sec)["cluster_size"].value_or(1));
+    cfg.sync_interval_ms = static_cast<uint32_t>((*sec)["sync_interval_ms"].value_or(5000));
+    cfg.backend_type = (*sec)["backend_type"].value_or(std::string("memory"));
+    return cfg;
+}
+
+ProxyConfig::WebSocketConfig ConfigLoader::extract_websocket(const toml::table& root) {
+    ProxyConfig::WebSocketConfig cfg;
+    const auto* sec = root["websocket"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.endpoint = (*sec)["endpoint"].value_or(std::string("/api/v1/stream"));
+    cfg.max_connections = static_cast<uint32_t>((*sec)["max_connections"].value_or(100));
+    cfg.ping_interval_seconds = static_cast<uint32_t>((*sec)["ping_interval_seconds"].value_or(30));
+    cfg.max_frame_size = static_cast<size_t>((*sec)["max_frame_size"].value_or(65536));
+    return cfg;
+}
+
+ProxyConfig::TransactionConfig ConfigLoader::extract_transactions(const toml::table& root) {
+    ProxyConfig::TransactionConfig cfg;
+    const auto* sec = root["transactions"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.timeout_ms = static_cast<uint32_t>((*sec)["timeout_ms"].value_or(30000));
+    cfg.max_active_transactions = static_cast<uint32_t>((*sec)["max_active_transactions"].value_or(100));
+    cfg.cleanup_interval_seconds = static_cast<uint32_t>((*sec)["cleanup_interval_seconds"].value_or(60));
+    return cfg;
+}
+
+ProxyConfig::LlmConfig ConfigLoader::extract_llm(const toml::table& root) {
+    ProxyConfig::LlmConfig cfg;
+    const auto* sec = root["llm"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.endpoint = (*sec)["endpoint"].value_or(std::string("https://api.openai.com"));
+    cfg.api_key = (*sec)["api_key"].value_or(std::string(""));
+    cfg.default_model = (*sec)["default_model"].value_or(std::string("gpt-4"));
+    cfg.timeout_ms = static_cast<uint32_t>((*sec)["timeout_ms"].value_or(30000));
+    cfg.max_retries = static_cast<uint32_t>((*sec)["max_retries"].value_or(2));
+    cfg.max_requests_per_minute = static_cast<uint32_t>((*sec)["max_requests_per_minute"].value_or(60));
+    cfg.cache_enabled = (*sec)["cache_enabled"].value_or(true);
+    cfg.cache_max_entries = static_cast<size_t>((*sec)["cache_max_entries"].value_or(1000));
+    cfg.cache_ttl_seconds = static_cast<uint32_t>((*sec)["cache_ttl_seconds"].value_or(3600));
+    return cfg;
+}
+
 RouteConfig ConfigLoader::extract_routes(const toml::table& root) {
     RouteConfig cfg;
     const auto* routes = root["routes"].as_table();
@@ -1181,6 +1233,10 @@ ProxyConfig ConfigLoader::extract_all_sections(const toml::table& tbl) {
     config.column_versioning = extract_column_versioning(tbl);
     config.synthetic_data = extract_synthetic_data(tbl);
     config.cost_based_rewriting = extract_cost_based_rewriting(tbl);
+    config.distributed_rate_limiting = extract_distributed_rate_limiting(tbl);
+    config.websocket = extract_websocket(tbl);
+    config.transactions = extract_transactions(tbl);
+    config.llm = extract_llm(tbl);
     config.routes = extract_routes(tbl);
     extract_features(tbl, config);
     return config;

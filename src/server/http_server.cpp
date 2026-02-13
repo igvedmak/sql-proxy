@@ -37,6 +37,10 @@
 #include "security/column_version_tracker.hpp"
 #include "analyzer/synthetic_data_generator.hpp"
 #include "analyzer/schema_cache.hpp"
+#include "server/distributed_rate_limiter.hpp"
+#include "server/websocket_handler.hpp"
+#include "core/transaction_coordinator.hpp"
+#include "core/llm_client.hpp"
 
 // cpp-httplib is header-only — suppress its internal deprecation warnings
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -458,6 +462,63 @@ void HttpServer::register_optional_routes(httplib::Server& svr) {
     if (features_.synthetic_data && synthetic_data_generator_) {
         svr.Post(routes_.synthetic_data, [this](const httplib::Request& req, httplib::Response& res) {
             handle_synthetic_data(req, res);
+        });
+    }
+
+    // Distributed rate limiting stats
+    if (features_.distributed_rate_limiting && distributed_rate_limiter_) {
+        svr.Get(routes_.distributed_rate_limits, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_distributed_rate_limits(req, res);
+        });
+    }
+
+    // WebSocket streaming
+    if (features_.websocket_streaming && websocket_handler_) {
+        svr.Get(routes_.websocket_stream, [this](const httplib::Request& /*req*/, httplib::Response& res) {
+            // Return WebSocket info/stats for non-upgrade requests
+            const auto stats = websocket_handler_->get_stats();
+            std::string json = std::format(
+                R"({{"enabled":true,"endpoint":"{}","connections_total":{},"active_connections":{},"messages_sent":{}}})",
+                routes_.websocket_stream,
+                stats.connections_total,
+                stats.active_connections,
+                stats.messages_sent);
+            res.set_content(json, "application/json");
+        });
+    }
+
+    // Transaction coordinator
+    if (features_.multi_db_transactions && transaction_coordinator_) {
+        svr.Post(routes_.transactions + "/begin", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_transaction_begin(req, res);
+        });
+        svr.Post(routes_.transactions + "/:xid/prepare", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_transaction_prepare(req, res);
+        });
+        svr.Post(routes_.transactions + "/:xid/commit", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_transaction_commit(req, res);
+        });
+        svr.Post(routes_.transactions + "/:xid/rollback", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_transaction_rollback(req, res);
+        });
+        svr.Get(routes_.transactions + "/:xid", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_transaction_status(req, res);
+        });
+    }
+
+    // LLM features
+    if (features_.llm_features && llm_client_) {
+        svr.Post(routes_.llm_policy_gen, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_llm_generate_policy(req, res);
+        });
+        svr.Post(routes_.llm_explain, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_llm_explain_anomaly(req, res);
+        });
+        svr.Post(routes_.llm_nl_policy, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_llm_nl_to_policy(req, res);
+        });
+        svr.Post(routes_.llm_classify, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_llm_classify_intent(req, res);
         });
     }
 }
@@ -1882,6 +1943,222 @@ void HttpServer::handle_synthetic_data(const httplib::Request& req, httplib::Res
         json += ']';
     }
     json += std::format(R"(],"count":{}}})", data.rows.size());
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: GET /api/v1/distributed-rate-limits
+// ============================================================================
+
+void HttpServer::handle_distributed_rate_limits(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    if (!distributed_rate_limiter_) {
+        res.status = 400;
+        res.set_content(R"({"error":"Distributed rate limiting is disabled"})", http::kJsonContentType);
+        return;
+    }
+
+    const auto stats = distributed_rate_limiter_->get_stats();
+    std::string json = std::format(
+        R"({{"enabled":true,"sync_cycles":{},"backend_errors":{},"total_checks":{},"global_overrides":{}}})",
+        stats.sync_cycles, stats.backend_errors, stats.total_checks, stats.global_overrides);
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handlers: Transaction Coordinator
+// ============================================================================
+
+void HttpServer::handle_transaction_begin(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const std::string user = req.has_param("user") ? req.get_param_value("user") : "anonymous";
+    const auto xid = transaction_coordinator_->begin_transaction(user);
+
+    if (xid.empty()) {
+        res.status = 429;
+        res.set_content(R"({"error":"Max active transactions reached"})", http::kJsonContentType);
+        return;
+    }
+
+    res.set_content(std::format(R"({{"xid":"{}"}})", xid), http::kJsonContentType);
+}
+
+void HttpServer::handle_transaction_prepare(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto& xid = req.path_params.at("xid");
+    if (transaction_coordinator_->prepare(xid)) {
+        res.set_content(std::format(R"({{"xid":"{}","state":"PREPARED"}})", xid), http::kJsonContentType);
+    } else {
+        res.status = 400;
+        res.set_content(std::format(R"({{"error":"Cannot prepare transaction {}","xid":"{}"}})", xid, xid), http::kJsonContentType);
+    }
+}
+
+void HttpServer::handle_transaction_commit(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto& xid = req.path_params.at("xid");
+    if (transaction_coordinator_->commit(xid)) {
+        res.set_content(std::format(R"({{"xid":"{}","state":"COMMITTED"}})", xid), http::kJsonContentType);
+    } else {
+        res.status = 400;
+        res.set_content(std::format(R"({{"error":"Cannot commit transaction {}","xid":"{}"}})", xid, xid), http::kJsonContentType);
+    }
+}
+
+void HttpServer::handle_transaction_rollback(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto& xid = req.path_params.at("xid");
+    if (transaction_coordinator_->rollback(xid)) {
+        res.set_content(std::format(R"({{"xid":"{}","state":"ABORTED"}})", xid), http::kJsonContentType);
+    } else {
+        res.status = 400;
+        res.set_content(std::format(R"({{"error":"Cannot rollback transaction {}","xid":"{}"}})", xid, xid), http::kJsonContentType);
+    }
+}
+
+void HttpServer::handle_transaction_status(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto& xid = req.path_params.at("xid");
+    const auto txn = transaction_coordinator_->get_transaction(xid);
+
+    if (!txn.has_value()) {
+        res.status = 404;
+        res.set_content(std::format(R"({{"error":"Transaction not found","xid":"{}"}})", xid), http::kJsonContentType);
+        return;
+    }
+
+    std::string participants = "[";
+    for (size_t i = 0; i < txn->participants.size(); ++i) {
+        if (i > 0) participants += ',';
+        participants += std::format(R"({{"database":"{}","state":"{}"}})",
+            txn->participants[i].database,
+            txn_state_to_string(txn->participants[i].local_state));
+    }
+    participants += ']';
+
+    std::string json = std::format(
+        R"({{"xid":"{}","user":"{}","state":"{}","participants":{}}})",
+        txn->xid, txn->user, txn_state_to_string(txn->state), participants);
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handlers: LLM Features
+// ============================================================================
+
+void HttpServer::handle_llm_generate_policy(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto& body = req.body;
+    // Extract "query" and "context" from JSON body
+    const auto query_pos = body.find("\"query\"");
+    const auto context_pos = body.find("\"context\"");
+
+    std::string query_sample = "SELECT * FROM unknown";
+    std::string context;
+
+    if (query_pos != std::string::npos) {
+        const auto colon = body.find(':', query_pos);
+        const auto quote_start = body.find('"', colon + 1);
+        const auto quote_end = body.find('"', quote_start + 1);
+        if (quote_start != std::string::npos && quote_end != std::string::npos) {
+            query_sample = body.substr(quote_start + 1, quote_end - quote_start - 1);
+        }
+    }
+    if (context_pos != std::string::npos) {
+        const auto colon = body.find(':', context_pos);
+        const auto quote_start = body.find('"', colon + 1);
+        const auto quote_end = body.find('"', quote_start + 1);
+        if (quote_start != std::string::npos && quote_end != std::string::npos) {
+            context = body.substr(quote_start + 1, quote_end - quote_start - 1);
+        }
+    }
+
+    const auto resp = llm_client_->generate_policy(query_sample, context);
+    std::string json = std::format(
+        R"({{"success":{},"content":"{}","model":"{}","from_cache":{}}})",
+        resp.success ? "true" : "false",
+        resp.success ? resp.content : resp.error,
+        resp.model_used,
+        resp.from_cache ? "true" : "false");
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_llm_explain_anomaly(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto& body = req.body;
+    const auto desc_pos = body.find("\"description\"");
+    std::string description = "Unknown anomaly";
+    if (desc_pos != std::string::npos) {
+        const auto colon = body.find(':', desc_pos);
+        const auto quote_start = body.find('"', colon + 1);
+        const auto quote_end = body.find('"', quote_start + 1);
+        if (quote_start != std::string::npos && quote_end != std::string::npos) {
+            description = body.substr(quote_start + 1, quote_end - quote_start - 1);
+        }
+    }
+
+    const auto resp = llm_client_->explain_anomaly(description);
+    std::string json = std::format(
+        R"({{"success":{},"content":"{}","from_cache":{}}})",
+        resp.success ? "true" : "false",
+        resp.success ? resp.content : resp.error,
+        resp.from_cache ? "true" : "false");
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_llm_nl_to_policy(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto& body = req.body;
+    const auto prompt_pos = body.find("\"prompt\"");
+    std::string prompt = "Block all access";
+    if (prompt_pos != std::string::npos) {
+        const auto colon = body.find(':', prompt_pos);
+        const auto quote_start = body.find('"', colon + 1);
+        const auto quote_end = body.find('"', quote_start + 1);
+        if (quote_start != std::string::npos && quote_end != std::string::npos) {
+            prompt = body.substr(quote_start + 1, quote_end - quote_start - 1);
+        }
+    }
+
+    const auto resp = llm_client_->nl_to_policy(prompt);
+    std::string json = std::format(
+        R"({{"success":{},"content":"{}","from_cache":{}}})",
+        resp.success ? "true" : "false",
+        resp.success ? resp.content : resp.error,
+        resp.from_cache ? "true" : "false");
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_llm_classify_intent(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto& body = req.body;
+    const auto sql_pos = body.find("\"sql\"");
+    std::string sql = "SELECT 1";
+    if (sql_pos != std::string::npos) {
+        const auto colon = body.find(':', sql_pos);
+        const auto quote_start = body.find('"', colon + 1);
+        const auto quote_end = body.find('"', quote_start + 1);
+        if (quote_start != std::string::npos && quote_end != std::string::npos) {
+            sql = body.substr(quote_start + 1, quote_end - quote_start - 1);
+        }
+    }
+
+    const auto resp = llm_client_->classify_intent(sql);
+    std::string json = std::format(
+        R"({{"success":{},"content":"{}","from_cache":{}}})",
+        resp.success ? "true" : "false",
+        resp.success ? resp.content : resp.error,
+        resp.from_cache ? "true" : "false");
     res.set_content(json, http::kJsonContentType);
 }
 

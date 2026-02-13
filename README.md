@@ -187,6 +187,7 @@ Hierarchical 4-level token bucket -- **all levels must pass** for a request to s
 - Per-tenant connection pools with configurable limits
 - Per-tenant circuit breakers and rate limiting
 - Data residency enforcement (restrict tenants to allowed regions)
+- Distributed rate limiting (multi-node budget division with backend sync)
 
 **Query Intelligence**
 - Query explanation API (plain-English query summaries)
@@ -201,6 +202,19 @@ Hierarchical 4-level token bucket -- **all levels must pass** for a request to s
 **Protocol Support**
 - PostgreSQL wire protocol v3 with SCRAM-SHA-256
 - COPY protocol detection with policy enforcement
+- WebSocket streaming (RFC 6455 handshake, frame encode/decode, audit/query/metrics channels)
+
+**Transactions**
+- Multi-database 2PC coordinator (begin/enlist/prepare/commit/rollback)
+- Automatic timeout and cleanup of stale transactions
+- Full state machine with valid transition enforcement
+
+**AI / LLM Integration**
+- AI policy generator (analyze queries, auto-create access policies)
+- AI anomaly explanation (explain why behavior is anomalous)
+- Natural language to policy (admin types intent, LLM generates TOML)
+- SQL intent classification (detect business-logic attacks beyond syntax)
+- Response caching and per-minute rate limiting for LLM API calls
 
 **Resilience**
 - Hierarchical rate limiting (Global -> User -> DB -> User+DB)
@@ -259,6 +273,10 @@ Features with their own config section use `enabled = true/false`:
 | Column versioning | `[column_versioning]` | disabled |
 | Synthetic data | `[synthetic_data]` | disabled |
 | Cost-based rewriting | `[cost_based_rewriting]` | disabled |
+| Distributed rate limiting | `[distributed_rate_limiting]` | disabled |
+| WebSocket streaming | `[websocket]` | disabled |
+| Multi-DB transactions | `[transactions]` | disabled |
+| LLM features | `[llm]` | disabled |
 
 ## Configuration
 
@@ -315,6 +333,17 @@ Authenticate with the `admin_token` from `config/proxy.toml`.
 | GET | `/admin/residency` | Admin | Data residency rules and regions |
 | GET | `/api/v1/column-history` | Admin | Column-level change history |
 | POST | `/api/v1/synthetic-data` | Admin | Generate synthetic data from schema |
+| GET | `/api/v1/distributed-rate-limits` | Admin | Distributed rate limiter stats |
+| POST | `/api/v1/transactions/begin` | API key | Begin a distributed transaction |
+| POST | `/api/v1/transactions/prepare` | API key | Prepare (phase 1) |
+| POST | `/api/v1/transactions/commit` | API key | Commit (phase 2) |
+| POST | `/api/v1/transactions/rollback` | API key | Rollback a transaction |
+| GET | `/api/v1/transactions/:xid` | API key | Get transaction status |
+| POST | `/api/v1/llm/generate-policy` | Admin | AI-generate access policy from query |
+| POST | `/api/v1/llm/explain-anomaly` | Admin | AI-explain anomalous behavior |
+| POST | `/api/v1/llm/nl-to-policy` | Admin | Natural language to TOML policy |
+| POST | `/api/v1/llm/classify-intent` | Admin | AI-classify SQL intent |
+| GET | `/api/v1/stream` | API key | WebSocket streaming endpoint |
 | GET | `/dashboard` | None | Admin dashboard UI |
 | GET | `/dashboard/api/stats` | Admin | Stats JSON snapshot |
 | GET | `/dashboard/api/metrics/stream` | Admin | SSE real-time stream |

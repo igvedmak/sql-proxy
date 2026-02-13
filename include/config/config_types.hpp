@@ -189,6 +189,21 @@ struct RouteConfig {
     // Synthetic data generation
     std::string synthetic_data    = "/api/v1/synthetic-data";
 
+    // Distributed rate limiting
+    std::string distributed_rate_limits = "/api/v1/distributed-rate-limits";
+
+    // WebSocket streaming
+    std::string websocket_stream = "/api/v1/stream";
+
+    // Transaction coordinator
+    std::string transactions     = "/api/v1/transactions";
+
+    // LLM features
+    std::string llm_policy_gen   = "/api/v1/llm/generate-policy";
+    std::string llm_explain      = "/api/v1/llm/explain-anomaly";
+    std::string llm_nl_policy    = "/api/v1/llm/nl-to-policy";
+    std::string llm_classify     = "/api/v1/llm/classify-intent";
+
     // Optional
     std::string graphql         = "/api/v1/graphql";
 
@@ -222,6 +237,10 @@ struct FeatureFlags {
     bool column_versioning = false;
     bool synthetic_data = false;
     bool cost_based_rewriting = false;
+    bool distributed_rate_limiting = false;
+    bool websocket_streaming = false;
+    bool multi_db_transactions = false;
+    bool llm_features = false;
 };
 
 } // namespace sqlproxy

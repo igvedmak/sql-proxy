@@ -35,6 +35,8 @@ class IndexRecommender;
 class DataResidencyEnforcer;
 class ColumnVersionTracker;
 class CostBasedRewriter;
+class TransactionCoordinator;
+class LlmClient;
 class Pipeline;
 
 /**
@@ -77,6 +79,8 @@ struct PipelineComponents {
     std::shared_ptr<DataResidencyEnforcer> data_residency_enforcer;
     std::shared_ptr<ColumnVersionTracker> column_version_tracker;
     std::shared_ptr<CostBasedRewriter> cost_based_rewriter;
+    std::shared_ptr<TransactionCoordinator> transaction_coordinator;
+    std::shared_ptr<LlmClient> llm_client;
 
     // Feature flags (non-component toggles)
     bool masking_enabled = true;
@@ -128,6 +132,8 @@ public:
     PipelineBuilder& with_data_residency_enforcer(std::shared_ptr<DataResidencyEnforcer> p)      { c_.data_residency_enforcer = std::move(p); return *this; }
     PipelineBuilder& with_column_version_tracker(std::shared_ptr<ColumnVersionTracker> p)        { c_.column_version_tracker = std::move(p); return *this; }
     PipelineBuilder& with_cost_based_rewriter(std::shared_ptr<CostBasedRewriter> p)              { c_.cost_based_rewriter = std::move(p); return *this; }
+    PipelineBuilder& with_transaction_coordinator(std::shared_ptr<TransactionCoordinator> p)   { c_.transaction_coordinator = std::move(p); return *this; }
+    PipelineBuilder& with_llm_client(std::shared_ptr<LlmClient> p)                            { c_.llm_client = std::move(p); return *this; }
     PipelineBuilder& with_masking_enabled(bool enabled)                                       { c_.masking_enabled = enabled; return *this; }
 
     /**

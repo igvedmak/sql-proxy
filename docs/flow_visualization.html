@@ -310,6 +310,10 @@
             <div class="label">GraphQL</div>
             <div class="value" style="font-size:13px">POST /api/v1/graphql (queries + mutations)</div>
           </div>
+          <div class="detail-card">
+            <div class="label">WebSocket</div>
+            <div class="value" style="font-size:13px">GET /api/v1/stream (RFC 6455)</div>
+          </div>
         </div>
       </div>
       <div class="detail-section">
@@ -842,6 +846,50 @@
           <li><code>Retry-After: N</code> (on 429)</li>
           <li><code>traceparent</code> (W3C distributed tracing)</li>
           <li><code>Content-Encoding: gzip</code> (if compression enabled and response exceeds min size)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">&#x25BC;</div>
+
+  <!-- ════════════════════════════════════════════════ -->
+  <!-- API-DRIVEN FEATURES (outside pipeline) -->
+  <!-- ════════════════════════════════════════════════ -->
+  <div class="block" id="blk-api-features">
+    <div class="block-header" onclick="toggle('blk-api-features')">
+      <div class="block-icon bg-yellow">&#x1F527;</div>
+      <div class="block-title">API-Driven Features (outside pipeline)</div>
+      <span class="block-badge bg-yellow">4 feature groups</span>
+      <span class="block-chevron">&#x25B6;</span>
+    </div>
+    <div class="block-detail">
+      <div class="detail-section">
+        <h4>These features have dedicated endpoints and are not part of the per-query pipeline flow</h4>
+      </div>
+      <div class="detail-section">
+        <h4>Distributed Rate Limiting</h4>
+        <p>Decorator around local <code>HierarchicalRateLimiter</code>. Each node gets 1/N of global budget. Background sync thread reports local usage to a shared backend (in-memory default, Redis-ready interface).</p>
+        <p style="margin-top:6px"><code>GET /api/v1/distributed-rate-limits</code> &mdash; sync cycles, backend errors, global overrides.</p>
+      </div>
+      <div class="detail-section">
+        <h4>WebSocket Streaming</h4>
+        <p>RFC 6455 WebSocket protocol. Handles upgrade handshake (SHA1 + base64 accept key), frame encode/decode with masking. Supports audit, query, and metrics streaming channels.</p>
+        <p style="margin-top:6px"><code>GET /api/v1/stream</code> &mdash; WebSocket upgrade endpoint.</p>
+      </div>
+      <div class="detail-section">
+        <h4>Multi-Database Transactions (2PC)</h4>
+        <p>Two-Phase Commit coordinator with 8-state machine: IDLE &rarr; ACTIVE &rarr; PREPARING &rarr; PREPARED &rarr; COMMITTING &rarr; COMMITTED (or &rarr; ABORTING &rarr; ABORTED). Background cleanup thread times out stale transactions.</p>
+        <p style="margin-top:6px">Endpoints: <code>begin</code>, <code>prepare</code>, <code>commit</code>, <code>rollback</code>, <code>status</code> at <code>/api/v1/transactions/</code></p>
+      </div>
+      <div class="detail-section">
+        <h4>LLM-Powered Features</h4>
+        <p>OpenAI-compatible API client with response caching (<code>shared_mutex</code> + hash map), per-minute rate limiting, and use-case-specific system prompts.</p>
+        <ul style="margin-top:6px">
+          <li><code>POST /api/v1/llm/generate-policy</code> &mdash; AI-generate access policy from query samples</li>
+          <li><code>POST /api/v1/llm/explain-anomaly</code> &mdash; AI-explain anomalous behavior</li>
+          <li><code>POST /api/v1/llm/nl-to-policy</code> &mdash; Natural language &rarr; TOML policy</li>
+          <li><code>POST /api/v1/llm/classify-intent</code> &mdash; AI SQL intent classification</li>
         </ul>
       </div>
     </div>

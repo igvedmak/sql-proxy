@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "db/tenant_pool_registry.hpp"
 #include "db/iconnection_pool.hpp"
+#include "db/pooled_connection.hpp"
 
 using namespace sqlproxy;
 

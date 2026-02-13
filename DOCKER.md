@@ -188,6 +188,37 @@ curl -X POST http://localhost:8080/policies/reload
 | `POST` | `/api/v1/plugins/reload` | Hot-reload .so plugins at runtime (admin) |
 | `POST` | `/api/v1/graphql` | GraphQL-to-SQL queries + mutations (feature-gated) |
 
+### Distributed Rate Limiting (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/distributed-rate-limits` | Distributed rate limiter stats (sync cycles, overrides) |
+
+### WebSocket Streaming
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/stream` | WebSocket upgrade (RFC 6455) for audit/query/metrics streaming |
+
+### Multi-Database Transactions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/transactions/begin` | Begin a distributed 2PC transaction |
+| `POST` | `/api/v1/transactions/prepare` | Prepare all participants (phase 1) |
+| `POST` | `/api/v1/transactions/commit` | Commit prepared transaction (phase 2) |
+| `POST` | `/api/v1/transactions/rollback` | Rollback a transaction |
+| `GET` | `/api/v1/transactions/:xid` | Get transaction status by XID |
+
+### LLM-Powered Features (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/llm/generate-policy` | AI-generate access policy from query samples |
+| `POST` | `/api/v1/llm/explain-anomaly` | AI-explain anomalous behavior |
+| `POST` | `/api/v1/llm/nl-to-policy` | Natural language to TOML policy |
+| `POST` | `/api/v1/llm/classify-intent` | AI-classify SQL intent |
+
 ### Compliance (Admin)
 
 | Method | Path | Description |
@@ -624,6 +655,103 @@ port = 8080
 ```
 
 Merge semantics: arrays concatenate (included + main), objects deep-merge (main wins for scalar conflicts). Relative paths resolve from the including file's directory. Circular includes are detected and rejected. Max include depth is 10.
+
+## Distributed Rate Limiting
+
+Multi-node rate limiting with backend sync. Each node gets 1/N of the global budget; a background thread reports local usage to a shared backend:
+
+```toml
+[distributed_rate_limiting]
+enabled = true
+node_id = "node-1"
+cluster_size = 3
+sync_interval_ms = 5000
+```
+
+View stats:
+```bash
+curl -H "Authorization: Bearer admin-secret-token" \
+  http://localhost:8080/api/v1/distributed-rate-limits
+```
+
+## WebSocket Streaming
+
+RFC 6455 WebSocket endpoint for real-time audit, query, and metrics streaming:
+
+```toml
+[websocket]
+enabled = true
+max_connections = 100
+max_frame_size = 65536
+```
+
+Connect via any WebSocket client to `ws://localhost:8080/api/v1/stream`.
+
+## Multi-Database Transactions
+
+Coordinate transactions across multiple databases using Two-Phase Commit (2PC):
+
+```toml
+[transactions]
+enabled = true
+timeout_ms = 30000
+max_active_transactions = 100
+cleanup_interval_seconds = 60
+```
+
+Example flow:
+```bash
+# Begin
+curl -X POST http://localhost:8080/api/v1/transactions/begin \
+  -H 'Content-Type: application/json' \
+  -d '{"user": "admin"}'
+
+# Enlist participants, then prepare + commit
+curl -X POST http://localhost:8080/api/v1/transactions/prepare \
+  -H 'Content-Type: application/json' \
+  -d '{"xid": "<xid-from-begin>"}'
+
+curl -X POST http://localhost:8080/api/v1/transactions/commit \
+  -H 'Content-Type: application/json' \
+  -d '{"xid": "<xid-from-begin>"}'
+```
+
+Stale transactions are automatically timed out and aborted by a background cleanup thread.
+
+## LLM-Powered Features
+
+AI-powered policy generation, anomaly explanation, natural language to policy, and SQL intent classification:
+
+```toml
+[llm]
+enabled = true
+endpoint = "https://api.openai.com/v1"
+api_key = "${LLM_API_KEY}"
+default_model = "gpt-4"
+timeout_ms = 30000
+max_retries = 3
+max_requests_per_minute = 60
+cache_enabled = true
+cache_max_entries = 1000
+cache_ttl_seconds = 3600
+```
+
+Example:
+```bash
+# Generate a policy from a query sample
+curl -X POST http://localhost:8080/api/v1/llm/generate-policy \
+  -H "Authorization: Bearer admin-secret-token" \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "SELECT salary FROM employees", "context": "HR analytics"}'
+
+# Explain an anomaly
+curl -X POST http://localhost:8080/api/v1/llm/explain-anomaly \
+  -H "Authorization: Bearer admin-secret-token" \
+  -H 'Content-Type: application/json' \
+  -d '{"description": "User accessed PII at 3am from unusual IP"}'
+```
+
+Responses are cached by use case + input hash. Rate limiting prevents runaway API costs.
 
 ## Production Deployment
 

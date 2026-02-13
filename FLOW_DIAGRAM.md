@@ -49,12 +49,32 @@
 │  │  GET  /dashboard/api/users   → User listing                          │   │
 │  │  GET  /dashboard/api/alerts  → Active/historical alerts              │   │
 │  │  GET  /dashboard/api/metrics/stream → SSE metrics stream             │   │
+│  │                                                                      │   │
+│  │ Distributed Rate Limiting:                                           │   │
+│  │  GET  /api/v1/distributed-rate-limits → Cluster rate limit stats     │   │
+│  │                                                                      │   │
+│  │ WebSocket Streaming:                                                 │   │
+│  │  GET  /api/v1/stream         → RFC 6455 WebSocket upgrade            │   │
+│  │                                                                      │   │
+│  │ Multi-Database Transactions:                                         │   │
+│  │  POST /api/v1/transactions/begin   → Begin 2PC transaction           │   │
+│  │  POST /api/v1/transactions/prepare → Phase 1: prepare                │   │
+│  │  POST /api/v1/transactions/commit  → Phase 2: commit                 │   │
+│  │  POST /api/v1/transactions/rollback→ Rollback                        │   │
+│  │  GET  /api/v1/transactions/:xid    → Transaction status              │   │
+│  │                                                                      │   │
+│  │ LLM-Powered Features:                                                │   │
+│  │  POST /api/v1/llm/generate-policy  → AI policy from query samples    │   │
+│  │  POST /api/v1/llm/explain-anomaly  → AI anomaly explanation          │   │
+│  │  POST /api/v1/llm/nl-to-policy    → Natural language → TOML policy   │   │
+│  │  POST /api/v1/llm/classify-intent → AI SQL intent classification     │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  Feature Flags (config-driven route gating):                                │
 │  ┌─ dry_run, openapi, swagger_ui, metrics, slow_query, schema_drift,       │
 │  │  classification, injection_detection, lineage_tracking, masking,         │
-│  └─ dashboard — each toggleable via [features] in TOML                     │
+│  │  dashboard, distributed_rate_limiting, websocket_streaming,              │
+│  └─ multi_db_transactions, llm_features — each toggleable via config       │
 │                                                                              │
 │  Request Validation:                                                         │
 │  ┌─ Graceful shutdown check ─────────── DRAINING → 503 Server shutting down │
@@ -1122,6 +1142,25 @@
 │  GET  /dashboard/api/users     → User listing (JSON)                         │
 │  GET  /dashboard/api/alerts    → Active + historical alerts (JSON)           │
 │  GET  /dashboard/api/metrics/stream → SSE, 2s interval, 10 min max          │
+│                                                                              │
+│  DISTRIBUTED RATE LIMITING (feature-gated, admin)                            │
+│  GET  /api/v1/distributed-rate-limits → sync cycles, overrides, errors       │
+│                                                                              │
+│  WEBSOCKET STREAMING (feature-gated)                                         │
+│  GET  /api/v1/stream           → RFC 6455 upgrade (audit/query/metrics)      │
+│                                                                              │
+│  MULTI-DATABASE TRANSACTIONS (feature-gated)                                 │
+│  POST /api/v1/transactions/begin    → Begin 2PC transaction                  │
+│  POST /api/v1/transactions/prepare  → Phase 1: prepare all participants      │
+│  POST /api/v1/transactions/commit   → Phase 2: commit                        │
+│  POST /api/v1/transactions/rollback → Rollback                               │
+│  GET  /api/v1/transactions/:xid     → Transaction status                     │
+│                                                                              │
+│  LLM-POWERED FEATURES (feature-gated, admin)                                 │
+│  POST /api/v1/llm/generate-policy   → AI-generate access policy              │
+│  POST /api/v1/llm/explain-anomaly   → AI anomaly explanation                 │
+│  POST /api/v1/llm/nl-to-policy      → Natural language → TOML policy         │
+│  POST /api/v1/llm/classify-intent   → AI SQL intent classification           │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1182,7 +1221,11 @@
 │        ├─ QueryCostEstimator (if query_cost.enabled)                         │
 │        ├─ SchemaDriftDetector → starts background thread                     │
 │        ├─ AuditEncryptor (if audit_encryption.enabled)                       │
-│        └─ AdaptiveRateController → starts background thread                  │
+│        ├─ AdaptiveRateController → starts background thread                  │
+│        ├─ DistributedRateLimiter (wraps local limiter, sync thread)          │
+│        ├─ TransactionCoordinator (2PC, cleanup thread)                       │
+│        ├─ LlmClient (OpenAI-compatible, cached + rate-limited)              │
+│        └─ WebSocketHandler (RFC 6455 framing)                                │
 │                                                                              │
 │  [8/9] Build Pipeline (via PipelineBuilder, all layers wired)                │
 │        ├─ 20+ components wired via builder pattern                           │
@@ -1205,7 +1248,8 @@
 │  │ 1. ShutdownCoordinator::initiate_shutdown() (stop accepting)        │     │
 │  │ 2. Stop background services:                                        │     │
 │  │    AdaptiveRateController, SchemaDriftDetector, AlertEvaluator,     │     │
-│  │    ConfigWatcher, WireServer, BinaryRpcServer                       │     │
+│  │    ConfigWatcher, WireServer, BinaryRpcServer,                      │     │
+│  │    DistributedRateLimiter (stop_sync), TransactionCoordinator       │     │
 │  │ 3. ShutdownCoordinator::wait_for_drain() (drain in-flight requests) │     │
 │  │ 4. HttpServer::stop()                                               │     │
 │  │ 5. exit(0)                                                          │     │
@@ -1282,8 +1326,19 @@
  │  Registry    │     └──────────────┘
  │ (per-tenant) │
  └──────────────┘     ┌──────────────┐
- └──────────────┘     │ OpenAPI +    │
-                      │ Swagger UI   │
+                      │ OpenAPI +    │
+ ┌──────────────┐     │ Swagger UI   │
+ │ Distributed  │     └──────────────┘
+ │ RateLimiter  │
+ │ (decorator)  │     ┌──────────────┐
+ └──────────────┘     │  LLM Client  │
+                      │ (OpenAI API) │
+ ┌──────────────┐     └──────────────┘
+ │ WebSocket    │
+ │  Handler     │     ┌──────────────┐
+ │ (RFC 6455)   │     │ Transaction  │
+ └──────────────┘     │ Coordinator  │
+                      │ (2PC)        │
                       └──────────────┘
 ```
 
@@ -1363,6 +1418,18 @@
 │  ┌─────────────────────────────────────────────────────────────┐             │
 │  │ Binary RPC Threads (if enabled, thread pool)                │             │
 │  │  Accept binary protocol connections → Pipeline::execute()   │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Distributed Rate Limiter Sync Thread (single, background)   │             │
+│  │  loop: wait(sync_interval_ms) → report local usage to       │             │
+│  │        backend → fetch global quotas                         │             │
+│  └─────────────────────────────────────────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────┐             │
+│  │ Transaction Coordinator Cleanup Thread (single, background) │             │
+│  │  loop: wait(cleanup_interval_s) → timeout stale              │             │
+│  │        transactions → auto-abort                             │             │
 │  └─────────────────────────────────────────────────────────────┘             │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```

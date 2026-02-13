@@ -67,6 +67,8 @@ public:
     std::shared_ptr<DataResidencyEnforcer> get_data_residency_enforcer() const { return c_.data_residency_enforcer; }
     std::shared_ptr<ColumnVersionTracker> get_column_version_tracker() const { return c_.column_version_tracker; }
     std::shared_ptr<CostBasedRewriter> get_cost_based_rewriter() const { return c_.cost_based_rewriter; }
+    std::shared_ptr<TransactionCoordinator> get_transaction_coordinator() const { return c_.transaction_coordinator; }
+    std::shared_ptr<LlmClient> get_llm_client() const { return c_.llm_client; }
 
     struct Stats {
         uint64_t total_requests;

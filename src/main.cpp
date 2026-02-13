@@ -55,6 +55,10 @@
 #include "analyzer/synthetic_data_generator.hpp"
 #include "core/cost_based_rewriter.hpp"
 #include "analyzer/schema_cache.hpp"
+#include "server/distributed_rate_limiter.hpp"
+#include "server/websocket_handler.hpp"
+#include "core/transaction_coordinator.hpp"
+#include "core/llm_client.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -80,6 +84,8 @@ std::shared_ptr<AlertEvaluator> g_alert_evaluator;
 std::shared_ptr<ShutdownCoordinator> g_shutdown;
 std::shared_ptr<SchemaDriftDetector> g_schema_drift_detector;
 std::shared_ptr<AdaptiveRateController> g_adaptive_rate_controller;
+std::shared_ptr<DistributedRateLimiter> g_distributed_rate_limiter;
+std::shared_ptr<TransactionCoordinator> g_transaction_coordinator;
 
 // =========================================================================
 // Explicit Backend Registration (ensures linker includes backend objects)
@@ -110,6 +116,12 @@ void signal_handler(int signal) {
     // Stop background services
     if (g_adaptive_rate_controller) {
         g_adaptive_rate_controller->stop();
+    }
+    if (g_distributed_rate_limiter) {
+        g_distributed_rate_limiter->stop_sync();
+    }
+    if (g_transaction_coordinator) {
+        g_transaction_coordinator->stop_cleanup();
     }
     if (g_schema_drift_detector) {
         g_schema_drift_detector->stop();
@@ -708,7 +720,59 @@ int main(int argc, char* argv[]) {
                 cbr_cfg.max_columns_for_star));
         }
 
-        // Create pipeline via builder (with Tier 5 + Tier B + Tier C + Tier F + Tier G components)
+        // Distributed rate limiting
+        std::shared_ptr<DistributedRateLimiter> distributed_rate_limiter;
+        if (config_result.success && config_result.config.distributed_rate_limiting.enabled) {
+            DistributedRateLimiter::Config drl_cfg;
+            drl_cfg.enabled = true;
+            drl_cfg.node_id = config_result.config.distributed_rate_limiting.node_id;
+            drl_cfg.cluster_size = config_result.config.distributed_rate_limiting.cluster_size;
+            drl_cfg.sync_interval_ms = config_result.config.distributed_rate_limiting.sync_interval_ms;
+            auto backend = std::make_shared<InMemoryDistributedBackend>(drl_cfg.cluster_size);
+            distributed_rate_limiter = std::make_shared<DistributedRateLimiter>(
+                active_rate_limiter, backend, drl_cfg);
+            distributed_rate_limiter->start_sync();
+            active_rate_limiter = distributed_rate_limiter;
+            g_distributed_rate_limiter = distributed_rate_limiter;
+            utils::log::info(std::format("Distributed rate limiting: enabled (node={}, cluster_size={}, sync={}ms)",
+                drl_cfg.node_id, drl_cfg.cluster_size, drl_cfg.sync_interval_ms));
+        }
+
+        // Transaction coordinator
+        std::shared_ptr<TransactionCoordinator> transaction_coordinator;
+        if (config_result.success && config_result.config.transactions.enabled) {
+            TransactionCoordinator::Config tc_cfg;
+            tc_cfg.enabled = true;
+            tc_cfg.timeout_ms = config_result.config.transactions.timeout_ms;
+            tc_cfg.max_active_transactions = config_result.config.transactions.max_active_transactions;
+            tc_cfg.cleanup_interval_seconds = config_result.config.transactions.cleanup_interval_seconds;
+            transaction_coordinator = std::make_shared<TransactionCoordinator>(tc_cfg);
+            transaction_coordinator->start_cleanup();
+            g_transaction_coordinator = transaction_coordinator;
+            utils::log::info(std::format("Transaction coordinator: enabled (timeout={}ms, max_active={})",
+                tc_cfg.timeout_ms, tc_cfg.max_active_transactions));
+        }
+
+        // LLM client
+        std::shared_ptr<LlmClient> llm_client;
+        if (config_result.success && config_result.config.llm.enabled) {
+            LlmClient::Config llm_cfg;
+            llm_cfg.enabled = true;
+            llm_cfg.endpoint = config_result.config.llm.endpoint;
+            llm_cfg.api_key = config_result.config.llm.api_key;
+            llm_cfg.default_model = config_result.config.llm.default_model;
+            llm_cfg.timeout_ms = config_result.config.llm.timeout_ms;
+            llm_cfg.max_retries = config_result.config.llm.max_retries;
+            llm_cfg.max_requests_per_minute = config_result.config.llm.max_requests_per_minute;
+            llm_cfg.cache_enabled = config_result.config.llm.cache_enabled;
+            llm_cfg.cache_max_entries = config_result.config.llm.cache_max_entries;
+            llm_cfg.cache_ttl_seconds = config_result.config.llm.cache_ttl_seconds;
+            llm_client = std::make_shared<LlmClient>(llm_cfg);
+            utils::log::info(std::format("LLM client: enabled (endpoint={}, model={})",
+                llm_cfg.endpoint, llm_cfg.default_model));
+        }
+
+        // Create pipeline via builder
         auto pipeline = PipelineBuilder()
             .with_parser(parser)
             .with_policy_engine(policy_engine)
@@ -738,6 +802,8 @@ int main(int argc, char* argv[]) {
             .with_data_residency_enforcer(data_residency_enforcer)
             .with_column_version_tracker(column_version_tracker)
             .with_cost_based_rewriter(cost_based_rewriter)
+            .with_transaction_coordinator(transaction_coordinator)
+            .with_llm_client(llm_client)
             .with_masking_enabled(config_result.config.masking_enabled)
             .build();
 
@@ -825,6 +891,10 @@ int main(int argc, char* argv[]) {
         features.column_versioning   = cfg.column_versioning.enabled;
         features.synthetic_data      = cfg.synthetic_data.enabled;
         features.cost_based_rewriting = cfg.cost_based_rewriting.enabled;
+        features.distributed_rate_limiting = cfg.distributed_rate_limiting.enabled;
+        features.websocket_streaming = cfg.websocket.enabled;
+        features.multi_db_transactions = cfg.transactions.enabled;
+        features.llm_features = cfg.llm.enabled;
 
         // Create HTTP server (with Tier 2 + Tier 5 + Tier B components)
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
@@ -873,6 +943,29 @@ int main(int argc, char* argv[]) {
             if (schema_cache) {
                 g_server->set_schema_cache(schema_cache);
             }
+        }
+        if (distributed_rate_limiter) {
+            g_server->set_distributed_rate_limiter(distributed_rate_limiter);
+        }
+        if (transaction_coordinator) {
+            g_server->set_transaction_coordinator(transaction_coordinator);
+        }
+        if (llm_client) {
+            g_server->set_llm_client(llm_client);
+        }
+
+        // WebSocket handler
+        if (config_result.success && config_result.config.websocket.enabled) {
+            WebSocketHandler::Config ws_cfg;
+            ws_cfg.enabled = true;
+            ws_cfg.endpoint = config_result.config.websocket.endpoint;
+            ws_cfg.max_connections = config_result.config.websocket.max_connections;
+            ws_cfg.ping_interval_seconds = config_result.config.websocket.ping_interval_seconds;
+            ws_cfg.max_frame_size = config_result.config.websocket.max_frame_size;
+            auto websocket_handler = std::make_shared<WebSocketHandler>(ws_cfg);
+            g_server->set_websocket_handler(websocket_handler);
+            utils::log::info(std::format("WebSocket streaming: enabled at {}",
+                ws_cfg.endpoint));
         }
 
         // Tier E: Brute force protection

@@ -37,6 +37,10 @@ class DataResidencyEnforcer;
 class ColumnVersionTracker;
 class SyntheticDataGenerator;
 class SchemaCache;
+class WebSocketHandler;
+class TransactionCoordinator;
+class LlmClient;
+class DistributedRateLimiter;
 
 /**
  * @brief User information for authentication
@@ -133,6 +137,18 @@ public:
     void set_schema_cache(std::shared_ptr<SchemaCache> sc) {
         schema_cache_ = std::move(sc);
     }
+    void set_websocket_handler(std::shared_ptr<WebSocketHandler> wh) {
+        websocket_handler_ = std::move(wh);
+    }
+    void set_transaction_coordinator(std::shared_ptr<TransactionCoordinator> tc) {
+        transaction_coordinator_ = std::move(tc);
+    }
+    void set_llm_client(std::shared_ptr<LlmClient> lc) {
+        llm_client_ = std::move(lc);
+    }
+    void set_distributed_rate_limiter(std::shared_ptr<DistributedRateLimiter> drl) {
+        distributed_rate_limiter_ = std::move(drl);
+    }
 
 private:
     // ── Authentication ──────────────────────────────────────────────────
@@ -179,6 +195,16 @@ private:
     void handle_residency(const httplib::Request& req, httplib::Response& res);
     void handle_column_history(const httplib::Request& req, httplib::Response& res);
     void handle_synthetic_data(const httplib::Request& req, httplib::Response& res);
+    void handle_distributed_rate_limits(const httplib::Request& req, httplib::Response& res);
+    void handle_transaction_begin(const httplib::Request& req, httplib::Response& res);
+    void handle_transaction_prepare(const httplib::Request& req, httplib::Response& res);
+    void handle_transaction_commit(const httplib::Request& req, httplib::Response& res);
+    void handle_transaction_rollback(const httplib::Request& req, httplib::Response& res);
+    void handle_transaction_status(const httplib::Request& req, httplib::Response& res);
+    void handle_llm_generate_policy(const httplib::Request& req, httplib::Response& res);
+    void handle_llm_explain_anomaly(const httplib::Request& req, httplib::Response& res);
+    void handle_llm_nl_to_policy(const httplib::Request& req, httplib::Response& res);
+    void handle_llm_classify_intent(const httplib::Request& req, httplib::Response& res);
 
     // ── Helpers ─────────────────────────────────────────────────────────
     std::string build_metrics_output();
@@ -233,6 +259,12 @@ private:
     std::shared_ptr<ColumnVersionTracker> column_version_tracker_;
     std::shared_ptr<SyntheticDataGenerator> synthetic_data_generator_;
     std::shared_ptr<SchemaCache> schema_cache_;
+
+    // Final features
+    std::shared_ptr<WebSocketHandler> websocket_handler_;
+    std::shared_ptr<TransactionCoordinator> transaction_coordinator_;
+    std::shared_ptr<LlmClient> llm_client_;
+    std::shared_ptr<DistributedRateLimiter> distributed_rate_limiter_;
 };
 
 } // namespace sqlproxy
