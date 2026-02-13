@@ -3,8 +3,11 @@
 #include "core/types.hpp"
 #include "db/iconnection_pool.hpp"
 #include <atomic>
+#include <chrono>
 #include <memory>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 
 namespace sqlproxy {
 
@@ -22,6 +25,7 @@ public:
         double max_cost{100000.0};
         uint64_t max_estimated_rows{1000000};
         bool log_estimates{false};
+        std::chrono::seconds cache_ttl{300};  // Cache EXPLAIN results for 5 minutes
     };
 
     struct CostEstimate {
@@ -39,9 +43,11 @@ public:
     /**
      * @brief Estimate query cost using EXPLAIN
      * @param sql The SQL query to estimate
+     * @param fingerprint_hash Optional query fingerprint for caching
      * @return Cost estimate with rejection flags
      */
-    [[nodiscard]] CostEstimate estimate(const std::string& sql) const;
+    [[nodiscard]] CostEstimate estimate(const std::string& sql,
+                                         uint64_t fingerprint_hash = 0) const;
 
     [[nodiscard]] bool is_enabled() const { return config_.enabled; }
     [[nodiscard]] uint64_t total_rejected() const { return rejected_.load(std::memory_order_relaxed); }
@@ -52,11 +58,22 @@ private:
     Config config_;
     mutable std::atomic<uint64_t> rejected_{0};
     mutable std::atomic<uint64_t> estimated_{0};
+    mutable std::atomic<uint64_t> cache_hits_{0};
 
     /**
      * @brief Parse EXPLAIN output for cost and rows
      */
     static CostEstimate parse_explain_output(const std::string& explain_text);
+
+    /**
+     * @brief EXPLAIN result cache (fingerprint → cached estimate)
+     */
+    struct CachedEstimate {
+        CostEstimate estimate;
+        std::chrono::steady_clock::time_point cached_at;
+    };
+    mutable std::unordered_map<uint64_t, CachedEstimate> estimate_cache_;
+    mutable std::shared_mutex cache_mutex_;
 };
 
 } // namespace sqlproxy

@@ -34,8 +34,6 @@ private:
         const std::string& signature) const;
 
     static std::string base64url_decode(const std::string& input);
-    static std::string extract_json_string(const std::string& json, const std::string& key);
-    static std::vector<std::string> extract_json_string_array(const std::string& json, const std::string& key);
 
     JwtConfig config_;
 };

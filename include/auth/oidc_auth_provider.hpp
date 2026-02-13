@@ -61,15 +61,6 @@ private:
     // Base64url decode
     [[nodiscard]] static std::string base64url_decode(const std::string& input);
 
-    // Extract simple JSON string value by key
-    [[nodiscard]] static std::string extract_json_string(const std::string& json, const std::string& key);
-
-    // Extract JSON string array
-    [[nodiscard]] static std::vector<std::string> extract_json_string_array(const std::string& json, const std::string& key);
-
-    // Extract integer from JSON
-    [[nodiscard]] static int64_t extract_json_int(const std::string& json, const std::string& key);
-
     // Fetch and parse JWKS from the configured URI
     bool fetch_jwks();
 

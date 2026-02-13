@@ -16,19 +16,18 @@ docker compose --profile full up
 
 The service will be available at http://localhost:8080
 
-**Run the stress test:**
+**Run unit tests in Docker:**
 
 ```bash
-# Default: 5 rounds (27 sequential requests each) + 150 parallel burst test
-./stress_test.sh
-
-# Custom rounds
-./stress_test.sh 10
+docker compose run --rm unit-tests
 ```
 
-## Demo
+**Run E2E tests:**
 
-<video src="demo.mp4" width="100%" autoplay loop muted playsinline></video>
+```bash
+docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
+  --profile e2e up --build --abort-on-container-exit
+```
 
 ## Documentation
 
@@ -307,25 +306,29 @@ Authenticate with the `admin_token` from `config/proxy.toml`.
 |--------|------|------|-------------|
 | POST | `/api/v1/query` | API key | Execute a SQL query |
 | POST | `/api/v1/query/dry-run` | API key | Validate without executing |
-| GET | `/health` | None | Health check |
+| POST | `/api/v1/query/explain` | API key | Explain query in plain English |
+| GET | `/health` | None | Health check (`?level=shallow\|deep\|readiness`) |
 | GET | `/metrics` | None | Prometheus metrics |
 | GET | `/openapi.json` | None | OpenAPI 3.0 spec |
 | GET | `/api/docs` | None | Swagger UI |
-| POST | `/admin/policies/reload` | Admin | Hot-reload policies |
-| POST | `/admin/config/validate` | Admin | Validate TOML config |
-| GET | `/admin/slow-queries` | Admin | Recent slow queries |
+| POST | `/policies/reload` | Admin | Hot-reload policies |
+| POST | `/api/v1/config/validate` | Admin | Validate TOML config |
+| GET | `/api/v1/slow-queries` | Admin | Recent slow queries |
 | GET | `/api/v1/circuit-breakers` | Admin | Circuit breaker states |
-| GET | `/compliance/pii-report` | Admin | PII classification report |
-| GET | `/compliance/security-summary` | Admin | Security event summary |
-| GET | `/compliance/lineage` | Admin | Data lineage graph |
-| GET | `/compliance/data-subject-access` | Admin | GDPR Article 15 export |
-| GET | `/schema/history` | Admin | Schema change history |
-| GET | `/schema/drift` | Admin | Schema drift report |
-| POST | `/api/v1/query/explain` | API key | Explain query in plain English |
+| POST | `/api/v1/plugins/reload` | Admin | Hot-reload .so plugins at runtime |
 | GET | `/api/v1/index-recommendations` | Admin | Suggested indexes for slow queries |
 | GET | `/api/v1/firewall/mode` | Admin | SQL firewall mode and stats |
 | POST | `/api/v1/firewall/mode` | Admin | Set firewall mode (disabled/learning/enforcing) |
 | GET | `/api/v1/firewall/allowlist` | Admin | SQL firewall fingerprint allowlist |
+| GET | `/api/v1/compliance/pii-report` | Admin | PII classification report |
+| GET | `/api/v1/compliance/security-summary` | Admin | Security event summary |
+| GET | `/api/v1/compliance/lineage` | Admin | Data lineage graph |
+| GET | `/api/v1/compliance/data-subject-access` | Admin | GDPR Article 15 export |
+| GET | `/api/v1/schema/history` | Admin | Schema change history |
+| GET | `/api/v1/schema/pending` | Admin | Pending schema changes |
+| POST | `/api/v1/schema/approve` | Admin | Approve schema change |
+| POST | `/api/v1/schema/reject` | Admin | Reject schema change |
+| GET | `/api/v1/schema/drift` | Admin | Schema drift report |
 | GET | `/admin/tenants` | Admin | List all tenants |
 | POST | `/admin/tenants` | Admin | Create a tenant |
 | GET | `/admin/tenants/:id` | Admin | Get tenant details |
@@ -334,16 +337,17 @@ Authenticate with the `admin_token` from `config/proxy.toml`.
 | GET | `/api/v1/column-history` | Admin | Column-level change history |
 | POST | `/api/v1/synthetic-data` | Admin | Generate synthetic data from schema |
 | GET | `/api/v1/distributed-rate-limits` | Admin | Distributed rate limiter stats |
+| GET | `/api/v1/stream` | API key | WebSocket streaming endpoint |
+| POST | `/api/v1/graphql` | API key | GraphQL queries and mutations |
 | POST | `/api/v1/transactions/begin` | API key | Begin a distributed transaction |
-| POST | `/api/v1/transactions/prepare` | API key | Prepare (phase 1) |
-| POST | `/api/v1/transactions/commit` | API key | Commit (phase 2) |
-| POST | `/api/v1/transactions/rollback` | API key | Rollback a transaction |
+| POST | `/api/v1/transactions/:xid/prepare` | API key | Prepare (phase 1) |
+| POST | `/api/v1/transactions/:xid/commit` | API key | Commit (phase 2) |
+| POST | `/api/v1/transactions/:xid/rollback` | API key | Rollback a transaction |
 | GET | `/api/v1/transactions/:xid` | API key | Get transaction status |
 | POST | `/api/v1/llm/generate-policy` | Admin | AI-generate access policy from query |
 | POST | `/api/v1/llm/explain-anomaly` | Admin | AI-explain anomalous behavior |
 | POST | `/api/v1/llm/nl-to-policy` | Admin | Natural language to TOML policy |
 | POST | `/api/v1/llm/classify-intent` | Admin | AI-classify SQL intent |
-| GET | `/api/v1/stream` | API key | WebSocket streaming endpoint |
 | GET | `/dashboard` | None | Admin dashboard UI |
 | GET | `/dashboard/api/stats` | Admin | Stats JSON snapshot |
 | GET | `/dashboard/api/metrics/stream` | Admin | SSE real-time stream |

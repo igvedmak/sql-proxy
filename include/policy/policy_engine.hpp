@@ -59,7 +59,7 @@ public:
      * @param analysis Analysis result from SQL analyzer
      * @return Policy evaluation result
      */
-    PolicyEvaluationResult evaluate(
+    [[nodiscard]] PolicyEvaluationResult evaluate(
         const std::string& user,
         const std::vector<std::string>& roles,
         const std::string& database,
@@ -74,7 +74,7 @@ public:
      * @param column_names Result column names
      * @return Per-column decisions (ALLOW/BLOCK + masking)
      */
-    std::vector<ColumnPolicyDecision> evaluate_columns(
+    [[nodiscard]] std::vector<ColumnPolicyDecision> evaluate_columns(
         const std::string& user,
         const std::vector<std::string>& roles,
         const std::string& database,

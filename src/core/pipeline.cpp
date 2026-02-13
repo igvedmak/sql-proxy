@@ -1,4 +1,5 @@
 #include "core/pipeline.hpp"
+#include "core/pipeline_stages.hpp"
 #include "core/masking.hpp"
 #include "core/query_rewriter.hpp"
 #include "core/query_cost_estimator.hpp"
@@ -37,7 +38,25 @@
 namespace sqlproxy {
 
 Pipeline::Pipeline(PipelineComponents components)
-    : c_(std::move(components)) {}
+    : c_(std::move(components)) {
+    build_stage_chain();
+}
+
+void Pipeline::build_stage_chain() {
+    pre_execute_stages_.emplace_back(std::make_unique<DataResidencyStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<RateLimitStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<ParseStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<AnalyzeStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<ResultCacheLookupStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<InjectionDetectionStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<AnomalyDetectionStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<FirewallStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<PolicyStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<DdlInterceptStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<RewriteStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<CostRewriteStage>(c_));
+    pre_execute_stages_.emplace_back(std::make_unique<CostCheckStage>(c_));
+}
 
 ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     RequestContext ctx;
@@ -84,81 +103,21 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
     total_requests_.fetch_add(1, std::memory_order_relaxed);
 
-    // Helper: emit audit and build response for blocked requests
-    auto block_and_respond = [this](RequestContext& c) {
-        requests_blocked_.fetch_add(1, std::memory_order_relaxed);
-        emit_audit(c);
-        return build_response(c);
-    };
-
-    // Layer 0.5: Data residency enforcement (before any processing)
-    if (!check_data_residency(ctx)) {
-        return block_and_respond(ctx);
-    }
-
-    // Layer 1: Rate limiting
-    if (!check_rate_limit(ctx)) {
-        return block_and_respond(ctx);
-    }
-
-    // Layer 2: Parse + Cache
-    if (!parse_query(ctx)) {
-        return block_and_respond(ctx);
-    }
-
-    // Layer 3: Analyze
-    if (!analyze_query(ctx)) {
-        return block_and_respond(ctx);
-    }
-
-    // Layer 2.5: Result cache lookup (only for SELECTs)
-    if (c_.result_cache && c_.result_cache->is_enabled() &&
-        ctx.analysis.statement_type == StatementType::SELECT &&
-        ctx.fingerprint.has_value()) {
-        const auto cached = c_.result_cache->get(
-            ctx.fingerprint->hash, ctx.user, ctx.database);
-        if (cached) {
-            ctx.query_result = std::move(*cached);
-            ctx.cache_hit = true;
+    // Run pre-execute stage chain (rate limit, parse, analyze, policy, etc.)
+    for (const auto& stage : pre_execute_stages_) {
+        const auto result = stage->process(ctx);
+        if (result == IPipelineStage::Result::BLOCK) {
+            requests_blocked_.fetch_add(1, std::memory_order_relaxed);
+            emit_audit(ctx);
+            return build_response(ctx);
+        }
+        if (result == IPipelineStage::Result::SHORT_CIRCUIT) {
+            // Cache hit path: classify, lineage, audit, then return
             classify_results(ctx);
             record_lineage(ctx);
             emit_audit(ctx);
             return build_response(ctx);
         }
-    }
-
-    // Layer 3.5: SQL injection detection (can block)
-    if (!check_injection(ctx)) {
-        return block_and_respond(ctx);
-    }
-
-    // Layer 3.7: Anomaly detection (informational, never blocks)
-    check_anomaly(ctx);
-
-    // Layer 3.8: SQL Firewall (can block in enforcing mode)
-    if (!check_firewall(ctx)) {
-        return block_and_respond(ctx);
-    }
-
-    // Layer 4: Policy evaluation (table-level)
-    if (!evaluate_policy(ctx)) {
-        return block_and_respond(ctx);
-    }
-
-    // Layer 4.1: Schema DDL interception (can block if approval required)
-    if (!intercept_ddl(ctx)) {
-        return block_and_respond(ctx);
-    }
-
-    // Layer 4.5: Query rewriting (RLS + enforce_limit)
-    rewrite_query(ctx);
-
-    // Layer 4.6: Cost-based query rewriting (SELECT * → columns, add LIMIT)
-    cost_based_rewrite(ctx);
-
-    // Layer 4.8: Query cost estimation (can block expensive queries)
-    if (!check_query_cost(ctx)) {
-        return block_and_respond(ctx);
     }
 
     // Dry-run mode: skip execution and everything after
@@ -228,13 +187,29 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         ctx.query_result.success &&
         ctx.analysis.statement_type == StatementType::SELECT &&
         ctx.fingerprint.has_value()) {
+        // Store table names for table-level invalidation
+        std::vector<std::string> tables;
+        tables.reserve(ctx.analysis.source_tables.size());
+        for (const auto& t : ctx.analysis.source_tables) {
+            tables.push_back(t.table);
+        }
         c_.result_cache->put(ctx.fingerprint->hash, ctx.user, ctx.database,
-                           ctx.query_result);
+                           ctx.query_result, std::move(tables));
     }
 
-    // Write-invalidation (clear cache for modified database)
+    // Write-invalidation: table-level if targets known, else database-level fallback
     if (c_.result_cache && stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kWrite | stmt_mask::kDDL)) {
-        c_.result_cache->invalidate(ctx.database);
+        if (!ctx.analysis.target_tables.empty()) {
+            std::vector<std::string> targets;
+            targets.reserve(ctx.analysis.target_tables.size());
+            for (const auto& t : ctx.analysis.target_tables) {
+                targets.push_back(t.table);
+            }
+            c_.result_cache->invalidate_tables(targets);
+        } else {
+            // Fallback: no target tables parsed, invalidate whole database
+            c_.result_cache->invalidate(ctx.database);
+        }
     }
 
     // Layer 5.1: Record DDL change (after successful execution)
@@ -274,103 +249,8 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
     return response;
 }
 
-bool Pipeline::check_rate_limit(RequestContext& ctx) {
-    ScopedSpan span(ctx, "sql_proxy.rate_limit");
-    const auto result = c_.rate_limiter->check(ctx.user, ctx.database);
-    ctx.rate_limit_result = result;  // Always store for response headers
-    if (!result.allowed) {
-        ctx.rate_limited = true;
-        ctx.query_result.success = false;
-        ctx.query_result.error_code = ErrorCode::RATE_LIMITED;
-
-        // Optimized string concatenation
-        std::string msg;
-        msg.reserve(16 + result.level.size() + 6);  // "Rate limited at " + level + " level"
-        msg = "Rate limited at ";
-        msg += result.level;
-        msg += " level";
-        ctx.query_result.error_message = std::move(msg);
-
-        return false;
-    }
-    return true;
-}
-
-bool Pipeline::parse_query(RequestContext& ctx) {
-    ScopedSpan span(ctx, "sql_proxy.parse");
-    utils::Timer timer;
-
-    // Resolve parser via router (per-database), fallback to default
-    ISqlParser* active_parser = c_.parser.get();
-    if (c_.router) {
-        const auto routed = c_.router->get_parser(ctx.database);
-        if (routed) active_parser = routed.get();
-    }
-
-    const auto parse_result = active_parser->parse(ctx.sql);
-    ctx.parse_time = timer.elapsed_us();
-
-    if (!parse_result.success) {
-        ctx.query_result.success = false;
-        ctx.query_result.error_code = ErrorCode::PARSE_ERROR;
-        ctx.query_result.error_message = parse_result.error_message;
-        return false;
-    }
-
-    ctx.statement_info = parse_result.statement_info;
-    ctx.fingerprint = ctx.statement_info->fingerprint;
-    return true;
-}
-
-bool Pipeline::analyze_query(RequestContext& ctx) {
-    if (!ctx.statement_info) {
-        return false;
-    }
-
-    ctx.analysis = SQLAnalyzer::analyze(
-        ctx.statement_info->parsed,
-        nullptr
-    );
-
-    return true;
-}
-
-bool Pipeline::evaluate_policy(RequestContext& ctx) {
-    ScopedSpan span(ctx, "sql_proxy.policy");
-    utils::Timer timer;
-
-    ctx.policy_result = c_.policy_engine->evaluate(
-        ctx.user,
-        ctx.roles,
-        ctx.database,
-        ctx.analysis
-    );
-
-    ctx.policy_time = timer.elapsed_us();
-
-    if (ctx.policy_result.decision != Decision::ALLOW) {
-        ctx.query_result.success = false;
-        ctx.query_result.error_code = ErrorCode::ACCESS_DENIED;
-        ctx.query_result.error_message = ctx.policy_result.reason;
-        return false;
-    }
-
-    return true;
-}
-
-void Pipeline::rewrite_query(RequestContext& ctx) {
-    if (!c_.rewriter) return;
-
-    std::string rewritten = c_.rewriter->rewrite(
-        ctx.sql, ctx.user, ctx.roles, ctx.database,
-        ctx.analysis, ctx.user_attributes);
-
-    if (!rewritten.empty()) {
-        ctx.original_sql = ctx.sql;
-        ctx.sql = std::move(rewritten);
-        ctx.sql_rewritten = true;
-    }
-}
+// Pre-execute stage methods (check_rate_limit, parse_query, analyze_query,
+// evaluate_policy, rewrite_query) are now in pipeline_stages.cpp
 
 bool Pipeline::execute_query(RequestContext& ctx) {
     ScopedSpan span(ctx, "sql_proxy.execute");
@@ -680,48 +560,7 @@ ProxyResponse Pipeline::build_response(const RequestContext& ctx) {
     return response;
 }
 
-bool Pipeline::check_injection(RequestContext& ctx) {
-    if (!c_.injection_detector) return true;
-
-    utils::Timer timer;
-
-    std::string normalized;
-    if (ctx.fingerprint.has_value()) {
-        normalized = ctx.fingerprint->normalized;
-    }
-
-    ctx.injection_result = c_.injection_detector->analyze(
-        ctx.sql, normalized, ctx.statement_info->parsed);
-
-    ctx.injection_check_time = timer.elapsed_us();
-
-    if (ctx.injection_result.should_block) {
-        ctx.query_result.success = false;
-        ctx.query_result.error_code = ErrorCode::SQLI_BLOCKED;
-        ctx.query_result.error_message = ctx.injection_result.description;
-        return false;
-    }
-    return true;
-}
-
-void Pipeline::check_anomaly(RequestContext& ctx) {
-    if (!c_.anomaly_detector) return;
-
-    // Collect table names from analysis
-    std::vector<std::string> tables;
-    tables.reserve(ctx.analysis.source_tables.size());
-    for (const auto& t : ctx.analysis.source_tables) {
-        tables.push_back(t.table);
-    }
-
-    const uint64_t fp_hash = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
-
-    // Check for anomalies (read-only scoring)
-    ctx.anomaly_result = c_.anomaly_detector->check(ctx.user, tables, fp_hash);
-
-    // Record this query in the user's profile (updates state)
-    c_.anomaly_detector->record(ctx.user, tables, fp_hash);
-}
+// check_injection, check_anomaly are now in pipeline_stages.cpp
 
 void Pipeline::decrypt_columns(RequestContext& ctx) {
     if (!c_.column_encryptor || !c_.column_encryptor->is_enabled()) return;
@@ -767,78 +606,8 @@ void Pipeline::record_lineage(RequestContext& ctx) {
     }
 }
 
-bool Pipeline::intercept_ddl(RequestContext& ctx) {
-    if (!c_.schema_manager) return true;
-    if (!ctx.statement_info) return true;
-
-    // Only intercept DDL statements
-    if (!stmt_mask::test(ctx.analysis.statement_type, stmt_mask::kDDL)) return true;
-
-    const bool allowed = c_.schema_manager->intercept_ddl(
-        ctx.user, ctx.database, ctx.sql, ctx.analysis.statement_type);
-
-    if (!allowed) {
-        ctx.ddl_requires_approval = true;
-        ctx.query_result.success = false;
-        ctx.query_result.error_code = ErrorCode::ACCESS_DENIED;
-        ctx.query_result.error_message = "DDL requires approval — submitted for review";
-        return false;
-    }
-    return true;
-}
-
-bool Pipeline::check_query_cost(RequestContext& ctx) {
-    if (!c_.query_cost_estimator || !c_.query_cost_estimator->is_enabled()) return true;
-
-    // Only check cost for SELECT statements
-    if (ctx.analysis.statement_type != StatementType::SELECT) return true;
-
-    const auto estimate = c_.query_cost_estimator->estimate(ctx.sql);
-    if (estimate.is_rejected()) {
-        ctx.query_result.success = false;
-        ctx.query_result.error_code = ErrorCode::QUERY_TOO_EXPENSIVE;
-        ctx.query_result.error_message = std::format(
-            "Query too expensive: cost={:.1f} rows={} plan={}",
-            estimate.total_cost, estimate.estimated_rows, estimate.plan_type);
-        return false;
-    }
-    return true;
-}
-
-bool Pipeline::check_firewall(RequestContext& ctx) {
-    if (!c_.sql_firewall || !c_.sql_firewall->is_enabled()) return true;
-    if (!ctx.fingerprint.has_value()) return true;
-
-    const uint64_t fp = ctx.fingerprint->hash;
-    const auto result = c_.sql_firewall->check(fp);
-
-    // In learning mode, record new fingerprints
-    if (c_.sql_firewall->mode() == FirewallMode::LEARNING) {
-        c_.sql_firewall->record(fp);
-    }
-
-    if (!result.allowed) {
-        ctx.query_result.success = false;
-        ctx.query_result.error_code = ErrorCode::FIREWALL_BLOCKED;
-        ctx.query_result.error_message = "Query blocked by SQL firewall: unknown fingerprint";
-        return false;
-    }
-    return true;
-}
-
-bool Pipeline::check_data_residency(RequestContext& ctx) {
-    if (!c_.data_residency_enforcer || !c_.data_residency_enforcer->is_enabled()) return true;
-    if (ctx.tenant_id.empty()) return true;
-
-    const auto result = c_.data_residency_enforcer->check(ctx.tenant_id, ctx.database);
-    if (!result.allowed) {
-        ctx.query_result.success = false;
-        ctx.query_result.error_code = ErrorCode::RESIDENCY_BLOCKED;
-        ctx.query_result.error_message = result.reason;
-        return false;
-    }
-    return true;
-}
+// intercept_ddl, check_query_cost, check_firewall, check_data_residency
+// are now in pipeline_stages.cpp
 
 void Pipeline::record_column_versions(RequestContext& ctx) {
     if (!c_.column_version_tracker || !c_.column_version_tracker->is_enabled()) return;
@@ -872,17 +641,6 @@ void Pipeline::record_column_versions(RequestContext& ctx) {
     }
 }
 
-void Pipeline::cost_based_rewrite(RequestContext& ctx) {
-    if (!c_.cost_based_rewriter || !c_.cost_based_rewriter->is_enabled()) return;
-
-    const auto result = c_.cost_based_rewriter->rewrite_if_expensive(ctx.sql, ctx.analysis);
-    if (result.rewritten) {
-        if (!ctx.sql_rewritten) {
-            ctx.original_sql = ctx.sql;
-        }
-        ctx.sql = result.new_sql;
-        ctx.sql_rewritten = true;
-    }
-}
+// cost_based_rewrite is now in pipeline_stages.cpp
 
 } // namespace sqlproxy

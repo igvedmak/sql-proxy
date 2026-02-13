@@ -107,15 +107,15 @@ services:
     profiles:
       - test
 
-  # E2E tests (run with: docker compose --profile e2e up --abort-on-container-exit)
+  # E2E tests (run with: docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml --profile e2e up --build --abort-on-container-exit)
   e2e-tests:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: sql_proxy_e2e_tests
-    entrypoint: ["/bin/bash", "/app/test_suite.sh"]
+    entrypoint: ["/bin/bash", "/app/tests/e2e/run_all.sh"]
     volumes:
-      - ./test_suite.sh:/app/test_suite.sh:ro
+      - ./tests/e2e:/app/tests/e2e:ro
     environment:
       BASE_URL: "http://proxy:8080"
     depends_on:

@@ -34,10 +34,14 @@ public:
 
     /// Insert result into cache (only for SELECT, size checked).
     void put(uint64_t fingerprint_hash, const std::string& user,
-             const std::string& database, const QueryResult& result);
+             const std::string& database, const QueryResult& result,
+             std::vector<std::string> tables = {});
 
     /// Invalidate all entries matching a database (called on writes).
     void invalidate(const std::string& database);
+
+    /// Invalidate entries that reference any of the given tables.
+    void invalidate_tables(const std::vector<std::string>& tables);
 
     [[nodiscard]] bool is_enabled() const { return config_.enabled; }
 
@@ -53,9 +57,11 @@ public:
 private:
     struct CacheEntry {
         std::string key;
-        std::string database;     // For invalidation
+        std::string database;                // For database-level invalidation
+        std::vector<std::string> tables;     // For table-level invalidation
         QueryResult result;
         std::chrono::steady_clock::time_point expires_at;
+        uint64_t db_generation = 0;          // Generation at insert time (for O(1) invalidation)
     };
 
     class Shard {
@@ -64,8 +70,10 @@ private:
 
         std::optional<QueryResult> get(const std::string& key);
         void put(const std::string& key, const std::string& database,
-                 QueryResult result, std::chrono::steady_clock::time_point expires_at);
+                 std::vector<std::string> tables, QueryResult result,
+                 std::chrono::steady_clock::time_point expires_at);
         size_t invalidate(const std::string& database);
+        size_t invalidate_tables(const std::vector<std::string>& tables);
         size_t size() const;
 
         std::atomic<uint64_t> evictions{0};
@@ -75,6 +83,7 @@ private:
         size_t max_entries_;
         std::list<CacheEntry> lru_list_;
         std::unordered_map<std::string, std::list<CacheEntry>::iterator> map_;
+        std::unordered_map<std::string, uint64_t> db_generations_;  // For O(1) invalidation
     };
 
     static std::string make_key(uint64_t hash, const std::string& user,

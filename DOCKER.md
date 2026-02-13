@@ -36,7 +36,9 @@ Uses `config/proxy.toml` — complete config with all tiers enabled.
 Build the Docker image without starting:
 
 ```bash
-docker compose build
+docker compose --profile full build
+# or for core mode:
+docker compose --profile core build
 ```
 
 This will:
@@ -44,6 +46,8 @@ This will:
 - Build libpg_query from source
 - Compile the SQL Proxy service
 - Create a minimal runtime image (~200MB)
+
+> **Note:** All services use Docker Compose profiles. Plain `docker compose build` without a profile only sees the `postgres` service (a pre-built image). Always specify `--profile`.
 
 ## Stop the Service
 
@@ -65,11 +69,13 @@ docker compose --profile full down -v
 
 ### Unit Tests
 
-Build the test image and run all unit tests:
+Build and run all unit tests:
 
 ```bash
-docker compose run --rm unit-tests
+docker compose run --rm --build unit-tests
 ```
+
+The `--build` flag ensures the image reflects your latest code changes. Without it, Docker Compose may use a stale cached image.
 
 Or build directly with the test-builder stage:
 
@@ -77,6 +83,8 @@ Or build directly with the test-builder stage:
 docker build --target test-builder -t sql-proxy-test .
 docker run --rm sql-proxy-test /build/sql_proxy/build/sql_proxy_tests --reporter compact
 ```
+
+> **Note:** The `test-builder` Dockerfile stage runs the full test suite during `docker build`. If the build succeeds, all tests passed.
 
 ### E2E Tests
 
@@ -116,7 +124,7 @@ docker run --rm sql-proxy-bench /build/sql_proxy/build/sql_proxy_benchmarks
 If the proxy and database are already running:
 
 ```bash
-./test_suite.sh
+bash tests/e2e/run_all.sh
 ```
 
 ### After Schema Changes
@@ -138,7 +146,7 @@ docker exec -i sql_proxy_postgres psql -U postgres -d testdb -c \
 ## Rebuild After Code Changes
 
 ```bash
-docker compose build
+docker compose --profile full build
 docker compose --profile full up -d   # or --profile core
 ```
 
@@ -205,9 +213,9 @@ curl -X POST http://localhost:8080/policies/reload
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/transactions/begin` | Begin a distributed 2PC transaction |
-| `POST` | `/api/v1/transactions/prepare` | Prepare all participants (phase 1) |
-| `POST` | `/api/v1/transactions/commit` | Commit prepared transaction (phase 2) |
-| `POST` | `/api/v1/transactions/rollback` | Rollback a transaction |
+| `POST` | `/api/v1/transactions/:xid/prepare` | Prepare all participants (phase 1) |
+| `POST` | `/api/v1/transactions/:xid/commit` | Commit prepared transaction (phase 2) |
+| `POST` | `/api/v1/transactions/:xid/rollback` | Rollback a transaction |
 | `GET` | `/api/v1/transactions/:xid` | Get transaction status by XID |
 
 ### LLM-Powered Features (Admin)
@@ -478,20 +486,22 @@ curl -X POST http://localhost:8080/api/v1/query \
 Check that Docker has internet access for downloading dependencies (FetchContent pulls from GitHub).
 
 ### Container exits immediately
-Check logs: `docker compose logs proxy`
+Check logs: `docker compose --profile full logs proxy` (or `--profile core logs proxy-core`)
 
 ### Cannot connect to PostgreSQL
-Ensure PostgreSQL container is healthy: `docker compose ps`
+Ensure PostgreSQL container is healthy: `docker compose --profile full ps`
 
 ### E2E tests fail with "column does not exist"
-The database schema is out of date. Recreate volumes: `docker compose down -v && docker compose up -d`
+The database schema is out of date. Recreate volumes: `docker compose --profile full down -v && docker compose --profile full up -d`
 
 ### E2E tests fail with "network not found"
 The e2e-tests container has a stale network reference. Clean up with the profile flag and prune:
 
 ```bash
-docker compose --profile e2e down -v && docker network prune -f
-docker compose --profile e2e up --abort-on-container-exit
+docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
+  --profile e2e down -v && docker network prune -f
+docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml \
+  --profile e2e up --build --abort-on-container-exit
 ```
 
 ### Unit tests fail to build
@@ -701,19 +711,17 @@ cleanup_interval_seconds = 60
 
 Example flow:
 ```bash
-# Begin
+# Begin — returns a transaction ID (xid)
 curl -X POST http://localhost:8080/api/v1/transactions/begin \
   -H 'Content-Type: application/json' \
   -d '{"user": "admin"}'
 
-# Enlist participants, then prepare + commit
-curl -X POST http://localhost:8080/api/v1/transactions/prepare \
-  -H 'Content-Type: application/json' \
-  -d '{"xid": "<xid-from-begin>"}'
+# Enlist participants, then prepare + commit (xid in URL path)
+curl -X POST http://localhost:8080/api/v1/transactions/<xid>/prepare \
+  -H 'Content-Type: application/json'
 
-curl -X POST http://localhost:8080/api/v1/transactions/commit \
-  -H 'Content-Type: application/json' \
-  -d '{"xid": "<xid-from-begin>"}'
+curl -X POST http://localhost:8080/api/v1/transactions/<xid>/commit \
+  -H 'Content-Type: application/json'
 ```
 
 Stale transactions are automatically timed out and aborted by a background cleanup thread.

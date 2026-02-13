@@ -3,6 +3,8 @@
 #include "core/types.hpp"
 #include "analyzer/sql_analyzer.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <shared_mutex>
 #include <string>
@@ -46,7 +48,8 @@ public:
         const std::vector<std::string>& roles,
         const std::string& database,
         const AnalysisResult& analysis,
-        const std::unordered_map<std::string, std::string>& user_attributes) const;
+        const std::unordered_map<std::string, std::string>& user_attributes,
+        uint64_t fingerprint_hash = 0) const;
 
 private:
     struct RuleStore {
@@ -69,8 +72,21 @@ private:
         const std::string& user,
         const std::vector<std::string>& user_roles);
 
+    // Rewrite result cache: avoids re-running rules for identical queries
+    struct CachedRewrite {
+        std::string rewritten_sql;  // Empty means "no rewrite needed"
+        std::chrono::steady_clock::time_point cached_at;
+    };
+
+    static std::string make_cache_key(uint64_t fingerprint_hash,
+                                       const std::string& user,
+                                       const std::string& database);
+
     std::shared_ptr<RuleStore> store_;
     mutable std::shared_mutex mutex_;
+    mutable std::unordered_map<std::string, CachedRewrite> rewrite_cache_;
+    mutable std::shared_mutex cache_mutex_;
+    std::atomic<uint64_t> rules_version_{0};
 };
 
 } // namespace sqlproxy

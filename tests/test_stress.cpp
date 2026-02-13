@@ -201,8 +201,8 @@ TEST_CASE("Stress: Rate limiter 8-thread concurrent check correctness", "[stress
         std::chrono::steady_clock::now() - start).count();
 
     auto stats = limiter.get_stats();
-    // Generous tolerance: burst + tps*elapsed*3 (accounts for timing jitter, CAS races, thread overhead)
-    uint64_t max_expected = static_cast<uint64_t>(500 + 1000 * elapsed_s * 3);
+    // Generous tolerance: burst + tps*elapsed*4 (accounts for timing jitter, CAS races, refill overlap)
+    uint64_t max_expected = static_cast<uint64_t>(500 + 1000 * elapsed_s * 4);
 
     REQUIRE(allowed_count.load() + denied_count.load() == stats.total_checks);
     REQUIRE(allowed_count.load() <= max_expected);

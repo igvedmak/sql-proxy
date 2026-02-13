@@ -70,7 +70,7 @@ TEST_CASE("CostBasedRewriter - restrict star select with schema", "[cost_rewrite
     table->columns.emplace_back("email", "text");
     table->columns.emplace_back("phone", "text");
     table->columns.emplace_back("address", "text");
-    (*schema)["wide_table"] = table;
+    (*schema)["public.wide_table"] = table;
 
     // Use loader to populate cache
     cache->set_loader([&schema](const std::string&) -> SchemaMap {

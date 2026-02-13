@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -42,13 +43,13 @@ private:
     struct FilterPattern {
         std::string table;
         std::vector<std::string> columns;
-        uint32_t count = 0;
-        double total_time_us = 0.0;
+        std::atomic<uint32_t> count{0};       // Lock-free update under shared_lock
+        std::atomic<int64_t> total_time_us{0}; // Lock-free update under shared_lock
     };
 
     Config config_;
-    // key: "table:col1,col2" -> FilterPattern
-    std::unordered_map<std::string, FilterPattern> patterns_;
+    // key: "table:col1,col2" -> FilterPattern (shared_ptr for lock-free counter updates)
+    std::unordered_map<std::string, std::shared_ptr<FilterPattern>> patterns_;
     mutable std::shared_mutex mutex_;
 };
 

@@ -56,7 +56,8 @@ std::optional<QueryResult> ResultCache::get(
 }
 
 void ResultCache::put(uint64_t fingerprint_hash, const std::string& user,
-                      const std::string& database, const QueryResult& result) {
+                      const std::string& database, const QueryResult& result,
+                      std::vector<std::string> tables) {
     // Skip oversized results
     if (estimate_result_size(result) > config_.max_result_size_bytes) {
         return;
@@ -65,12 +66,20 @@ void ResultCache::put(uint64_t fingerprint_hash, const std::string& user,
     const auto key = make_key(fingerprint_hash, user, database);
     const auto expires = std::chrono::steady_clock::now() + config_.ttl;
     auto& shard = *shards_[select_shard(key)];
-    shard.put(key, database, result, expires);
+    shard.put(key, database, std::move(tables), result, expires);
 }
 
 void ResultCache::invalidate(const std::string& database) {
     for (auto& shard : shards_) {
         shard->invalidate(database);
+    }
+    invalidations_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ResultCache::invalidate_tables(const std::vector<std::string>& tables) {
+    if (tables.empty()) return;
+    for (auto& shard : shards_) {
+        shard->invalidate_tables(tables);
     }
     invalidations_.fetch_add(1, std::memory_order_relaxed);
 }
@@ -102,6 +111,14 @@ std::optional<QueryResult> ResultCache::Shard::get(const std::string& key) {
 
     auto& entry = *it->second;
 
+    // Generation check: entry is stale if database was invalidated after insertion
+    auto gen_it = db_generations_.find(entry.database);
+    if (gen_it != db_generations_.end() && entry.db_generation < gen_it->second) {
+        lru_list_.erase(it->second);
+        map_.erase(it);
+        return std::nullopt;
+    }
+
     // TTL check
     if (std::chrono::steady_clock::now() >= entry.expires_at) {
         lru_list_.erase(it->second);
@@ -116,14 +133,20 @@ std::optional<QueryResult> ResultCache::Shard::get(const std::string& key) {
 
 void ResultCache::Shard::put(
     const std::string& key, const std::string& database,
-    QueryResult result, std::chrono::steady_clock::time_point expires_at) {
+    std::vector<std::string> tables, QueryResult result,
+    std::chrono::steady_clock::time_point expires_at) {
     std::lock_guard lock(mutex_);
 
     // If key exists, update it
     auto it = map_.find(key);
     if (it != map_.end()) {
+        uint64_t gen = 0;
+        auto gen_it = db_generations_.find(database);
+        if (gen_it != db_generations_.end()) gen = gen_it->second;
+        it->second->tables = std::move(tables);
         it->second->result = std::move(result);
         it->second->expires_at = expires_at;
+        it->second->db_generation = gen;
         lru_list_.splice(lru_list_.begin(), lru_list_, it->second);
         return;
     }
@@ -136,16 +159,36 @@ void ResultCache::Shard::put(
         evictions.fetch_add(1, std::memory_order_relaxed);
     }
 
-    // Insert new entry at front
-    lru_list_.emplace_front(key, database, std::move(result), expires_at);
+    // Insert new entry at front with current database generation
+    uint64_t gen = 0;
+    auto gen_it = db_generations_.find(database);
+    if (gen_it != db_generations_.end()) gen = gen_it->second;
+    lru_list_.emplace_front(CacheEntry{key, database, std::move(tables), std::move(result), expires_at, gen});
     map_[key] = lru_list_.begin();
 }
 
 size_t ResultCache::Shard::invalidate(const std::string& database) {
     std::lock_guard lock(mutex_);
+    // O(1) generation bump — stale entries are lazily evicted on get()
+    db_generations_[database]++;
+    return 0;  // Actual removal happens lazily
+}
+
+size_t ResultCache::Shard::invalidate_tables(const std::vector<std::string>& tables) {
+    std::lock_guard lock(mutex_);
     size_t removed = 0;
     for (auto it = lru_list_.begin(); it != lru_list_.end(); ) {
-        if (it->database == database) {
+        bool hit = false;
+        for (const auto& cached_table : it->tables) {
+            for (const auto& target : tables) {
+                if (cached_table == target) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) break;
+        }
+        if (hit) {
             map_.erase(it->key);
             it = lru_list_.erase(it);
             ++removed;

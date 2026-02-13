@@ -1,4 +1,5 @@
 #include "auth/jwt_auth_provider.hpp"
+#include "core/json.hpp"
 #include "server/http_constants.hpp"
 #include "core/utils.hpp"
 
@@ -60,12 +61,21 @@ IAuthProvider::AuthResult JwtAuthProvider::authenticate(
         return result;
     }
 
+    // Parse JSON payload using Glaze
+    JsonValue claims;
+    try {
+        claims = JsonValue::parse(payload_json);
+    } catch (const JsonValue::parse_error&) {
+        result.error = "Invalid JWT: malformed JSON payload";
+        return result;
+    }
+
     // Check expiration
-    const std::string exp_str = extract_json_string(payload_json, "exp");
-    if (const auto exp_time = utils::try_parse_int<long long>(exp_str)) {
+    if (claims.contains("exp") && claims["exp"].is_number()) {
+        const auto exp_time = claims["exp"].get<long long>();
         const auto now = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        if (now > *exp_time) {
+        if (now > exp_time) {
             result.error = "JWT expired";
             return result;
         }
@@ -73,7 +83,7 @@ IAuthProvider::AuthResult JwtAuthProvider::authenticate(
 
     // Verify issuer
     if (!config_.issuer.empty()) {
-        const std::string iss = extract_json_string(payload_json, "iss");
+        const std::string iss = claims.value("iss", std::string{});
         if (iss != config_.issuer) {
             result.error = std::format("JWT issuer mismatch: expected={}, got={}", config_.issuer, iss);
             return result;
@@ -82,7 +92,7 @@ IAuthProvider::AuthResult JwtAuthProvider::authenticate(
 
     // Verify audience
     if (!config_.audience.empty()) {
-        const std::string aud = extract_json_string(payload_json, "aud");
+        const std::string aud = claims.value("aud", std::string{});
         if (aud != config_.audience) {
             result.error = std::format("JWT audience mismatch: expected={}, got={}", config_.audience, aud);
             return result;
@@ -90,14 +100,21 @@ IAuthProvider::AuthResult JwtAuthProvider::authenticate(
     }
 
     // Extract user from 'sub' claim
-    result.user = extract_json_string(payload_json, "sub");
+    result.user = claims.value("sub", std::string{});
     if (result.user.empty()) {
         result.error = "JWT missing 'sub' claim";
         return result;
     }
 
     // Extract roles
-    result.roles = extract_json_string_array(payload_json, config_.roles_claim);
+    const auto roles_node = claims[config_.roles_claim];
+    if (roles_node.is_array()) {
+        for (const auto& role : roles_node) {
+            if (role.is_string()) {
+                result.roles.push_back(role.get<std::string>());
+            }
+        }
+    }
     if (result.roles.empty()) {
         result.roles.push_back("user");  // Default role
     }
@@ -166,66 +183,6 @@ std::string JwtAuthProvider::base64url_decode(const std::string& input) {
 
     decoded.resize(out_len + tmp_len);
     return decoded;
-}
-
-std::string JwtAuthProvider::extract_json_string(const std::string& json, const std::string& key) {
-    // Simple JSON string extraction (no dependency on JSON library)
-    const std::string search = std::format("\"{}\"", key);
-    auto pos = json.find(search);
-    if (pos == std::string::npos) return "";
-
-    pos += search.size();
-    // Skip whitespace and colon
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == ':')) ++pos;
-
-    if (pos >= json.size()) return "";
-
-    // Handle numeric values (for "exp" claim)
-    if (json[pos] != '"') {
-        const size_t end = json.find_first_of(",}", pos);
-        if (end == std::string::npos) return "";
-        std::string value = json.substr(pos, end - pos);
-        // Trim whitespace
-        while (!value.empty() && value.back() == ' ') value.pop_back();
-        return value;
-    }
-
-    // String value
-    ++pos;  // Skip opening quote
-    const size_t end = json.find('"', pos);
-    if (end == std::string::npos) return "";
-
-    return json.substr(pos, end - pos);
-}
-
-std::vector<std::string> JwtAuthProvider::extract_json_string_array(
-    const std::string& json, const std::string& key) {
-
-    std::vector<std::string> result;
-    const std::string search = std::format("\"{}\"", key);
-    auto pos = json.find(search);
-    if (pos == std::string::npos) return result;
-
-    pos += search.size();
-    while (pos < json.size() && json[pos] != '[') ++pos;
-    if (pos >= json.size()) return result;
-
-    ++pos;  // Skip '['
-    while (pos < json.size() && json[pos] != ']') {
-        while (pos < json.size() && (json[pos] == ' ' || json[pos] == ',')) ++pos;
-        if (pos >= json.size() || json[pos] == ']') break;
-
-        if (json[pos] == '"') {
-            ++pos;
-            const size_t end = json.find('"', pos);
-            if (end == std::string::npos) break;
-            result.push_back(json.substr(pos, end - pos));
-            pos = end + 1;
-        } else {
-            ++pos;
-        }
-    }
-    return result;
 }
 
 } // namespace sqlproxy

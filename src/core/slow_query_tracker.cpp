@@ -13,7 +13,7 @@ bool SlowQueryTracker::record_if_slow(const SlowQueryRecord& record) {
 
     total_slow_queries_.fetch_add(1, std::memory_order_relaxed);
 
-    std::lock_guard lock(mutex_);
+    std::unique_lock lock(mutex_);
     records_.push_back(record);
     while (records_.size() > config_.max_entries) {
         records_.pop_front();
@@ -23,7 +23,7 @@ bool SlowQueryTracker::record_if_slow(const SlowQueryRecord& record) {
 }
 
 std::vector<SlowQueryRecord> SlowQueryTracker::get_recent(size_t limit) const {
-    std::lock_guard lock(mutex_);
+    std::shared_lock lock(mutex_);
 
     if (limit == 0 || limit >= records_.size()) {
         return {records_.begin(), records_.end()};

@@ -4,12 +4,14 @@
 #include "core/types.hpp"
 #include "core/request_context.hpp"
 #include "core/pipeline_builder.hpp"
+#include "core/pipeline_stage.hpp"
 #include "db/isql_parser.hpp"
 #include "db/iquery_executor.hpp"
 #include "policy/policy_engine.hpp"
 #include "server/irate_limiter.hpp"
 #include <atomic>
 #include <memory>
+#include <vector>
 
 namespace sqlproxy {
 
@@ -83,29 +85,32 @@ public:
     }
 
 private:
-    bool check_rate_limit(RequestContext& ctx);
-    bool parse_query(RequestContext& ctx);
-    bool analyze_query(RequestContext& ctx);
-    bool evaluate_policy(RequestContext& ctx);
-    bool execute_query(RequestContext& ctx);
+    // Pre-execute stages are handled by the stage chain (pre_execute_stages_)
+    // Post-execute methods remain as private helpers
+    [[nodiscard]] bool execute_query(RequestContext& ctx);
     void classify_results(RequestContext& ctx);
     void emit_audit(const RequestContext& ctx);
-    void rewrite_query(RequestContext& ctx);
     void apply_column_policies(RequestContext& ctx);
     void apply_masking(RequestContext& ctx);
-    ProxyResponse build_response(const RequestContext& ctx);
-    bool check_injection(RequestContext& ctx);
-    void check_anomaly(RequestContext& ctx);
+    [[nodiscard]] ProxyResponse build_response(const RequestContext& ctx);
     void decrypt_columns(RequestContext& ctx);
     void record_lineage(RequestContext& ctx);
-    bool intercept_ddl(RequestContext& ctx);
-    bool check_query_cost(RequestContext& ctx);
-    bool check_firewall(RequestContext& ctx);
-    bool check_data_residency(RequestContext& ctx);
     void record_column_versions(RequestContext& ctx);
-    void cost_based_rewrite(RequestContext& ctx);
+
+    /**
+     * @brief Build pre-execute stage chain from components
+     */
+    void build_stage_chain();
 
     PipelineComponents c_;
+
+    /**
+     * @brief Ordered chain of pre-execute stages
+     *
+     * Each stage returns CONTINUE, BLOCK, or SHORT_CIRCUIT.
+     * Stages are built once in constructor and executed in order.
+     */
+    std::vector<std::unique_ptr<IPipelineStage>> pre_execute_stages_;
     RetryConfig retry_config_;
 
     mutable std::atomic<uint64_t> total_requests_{0};

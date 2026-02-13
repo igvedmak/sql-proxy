@@ -11,14 +11,28 @@ QueryCostEstimator::QueryCostEstimator(
     std::shared_ptr<IConnectionPool> pool, Config config)
     : pool_(std::move(pool)), config_(std::move(config)) {}
 
-QueryCostEstimator::CostEstimate QueryCostEstimator::estimate(const std::string& sql) const {
+QueryCostEstimator::CostEstimate QueryCostEstimator::estimate(
+    const std::string& sql, uint64_t fingerprint_hash) const {
     CostEstimate result;
 
     if (!config_.enabled || !pool_) return result;
 
     estimated_.fetch_add(1, std::memory_order_relaxed);
 
-    // Run EXPLAIN (not EXPLAIN ANALYZE — we don't execute the query)
+    // Fast path: check cache by fingerprint (shared lock)
+    if (fingerprint_hash != 0) {
+        std::shared_lock lock(cache_mutex_);
+        const auto it = estimate_cache_.find(fingerprint_hash);
+        if (it != estimate_cache_.end()) {
+            const auto age = std::chrono::steady_clock::now() - it->second.cached_at;
+            if (age < config_.cache_ttl) {
+                cache_hits_.fetch_add(1, std::memory_order_relaxed);
+                return it->second.estimate;
+            }
+        }
+    }
+
+    // Slow path: run EXPLAIN (not EXPLAIN ANALYZE — we don't execute the query)
     const std::string explain_sql = "EXPLAIN " + sql;
 
     const auto conn_handle = pool_->acquire(std::chrono::milliseconds{3000});
@@ -57,6 +71,12 @@ QueryCostEstimator::CostEstimate QueryCostEstimator::estimate(const std::string&
         utils::log::info(std::format("EXPLAIN: cost={:.2f} rows={} plan={} rejected={}",
             result.total_cost, result.estimated_rows, result.plan_type,
             result.is_rejected() ? "yes" : "no"));
+    }
+
+    // Cache the result by fingerprint
+    if (fingerprint_hash != 0) {
+        std::unique_lock lock(cache_mutex_);
+        estimate_cache_[fingerprint_hash] = {result, std::chrono::steady_clock::now()};
     }
 
     return result;

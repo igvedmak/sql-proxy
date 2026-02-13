@@ -1096,3 +1096,540 @@ static void BM_QueryRewriter_NoMatch(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_QueryRewriter_NoMatch);
+
+// ============================================================================
+// Category K: Admission Controller Benchmarks
+// ============================================================================
+
+#include "server/admission_controller.hpp"
+
+// K1: try_admit + release cycle (happy path, low utilization)
+static void BM_AdmissionController_AdmitRelease(benchmark::State& state) {
+    AdmissionController::Config cfg;
+    cfg.max_concurrent = 10000;
+    AdmissionController ac(cfg);
+    for (auto _ : state) {
+        bool admitted = ac.try_admit(PriorityLevel::NORMAL);
+        benchmark::DoNotOptimize(admitted);
+        if (admitted) ac.release();
+    }
+}
+BENCHMARK(BM_AdmissionController_AdmitRelease);
+
+// K2: try_admit under contention (multi-threaded)
+static void BM_AdmissionController_Throughput(benchmark::State& state) {
+    static AdmissionController::Config cfg;
+    static bool cfg_init = [&] { cfg.max_concurrent = 10000; return true; }();
+    (void)cfg_init;
+    static AdmissionController ac(cfg);
+    for (auto _ : state) {
+        bool admitted = ac.try_admit(PriorityLevel::NORMAL);
+        benchmark::DoNotOptimize(admitted);
+        if (admitted) ac.release();
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_AdmissionController_Throughput)->Threads(1)->Threads(2)->Threads(4)->Threads(8);
+
+// K3: try_admit rejection (high utilization)
+static void BM_AdmissionController_Reject(benchmark::State& state) {
+    AdmissionController::Config cfg;
+    cfg.max_concurrent = 10;
+    AdmissionController ac(cfg);
+    // Fill to capacity
+    for (uint32_t i = 0; i < cfg.max_concurrent; ++i) {
+        [[maybe_unused]] bool ok = ac.try_admit(PriorityLevel::HIGH);
+    }
+    for (auto _ : state) {
+        bool admitted = ac.try_admit(PriorityLevel::BACKGROUND);
+        benchmark::DoNotOptimize(admitted);
+    }
+}
+BENCHMARK(BM_AdmissionController_Reject);
+
+// ============================================================================
+// Category L: SQL Firewall Benchmarks
+// ============================================================================
+
+#include "security/sql_firewall.hpp"
+
+// L1: Firewall check — known fingerprint (learning mode)
+static void BM_SqlFirewall_CheckKnown(benchmark::State& state) {
+    SqlFirewall::Config cfg;
+    cfg.enabled = true;
+    cfg.initial_mode = FirewallMode::ENFORCING;
+    SqlFirewall fw(cfg);
+    // Pre-populate allowlist
+    for (uint64_t i = 0; i < 1000; ++i) {
+        fw.record(i);
+    }
+    for (auto _ : state) {
+        auto r = fw.check(500);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_SqlFirewall_CheckKnown);
+
+// L2: Firewall check — unknown fingerprint (enforcing mode, rejected)
+static void BM_SqlFirewall_CheckUnknown(benchmark::State& state) {
+    SqlFirewall::Config cfg;
+    cfg.enabled = true;
+    cfg.initial_mode = FirewallMode::ENFORCING;
+    SqlFirewall fw(cfg);
+    fw.record(1);
+    for (auto _ : state) {
+        auto r = fw.check(99999);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_SqlFirewall_CheckUnknown);
+
+// L3: Firewall record (learning mode)
+static void BM_SqlFirewall_Record(benchmark::State& state) {
+    SqlFirewall::Config cfg;
+    cfg.enabled = true;
+    cfg.initial_mode = FirewallMode::LEARNING;
+    SqlFirewall fw(cfg);
+    uint64_t fp = 0;
+    for (auto _ : state) {
+        fw.record(fp++);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_SqlFirewall_Record);
+
+// L4: Firewall throughput under contention (enforcing mode)
+static void BM_SqlFirewall_Throughput(benchmark::State& state) {
+    static SqlFirewall::Config cfg;
+    static bool cfg_init = [&] {
+        cfg.enabled = true;
+        cfg.initial_mode = FirewallMode::ENFORCING;
+        return true;
+    }();
+    (void)cfg_init;
+    static SqlFirewall fw(cfg);
+    static std::once_flag populate;
+    std::call_once(populate, [] {
+        for (uint64_t i = 0; i < 1000; ++i) fw.record(i);
+    });
+    uint64_t fp = static_cast<uint64_t>(state.thread_index()) * 100;
+    for (auto _ : state) {
+        auto r = fw.check(fp % 1000);
+        benchmark::DoNotOptimize(r);
+        ++fp;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_SqlFirewall_Throughput)->Threads(1)->Threads(2)->Threads(4)->Threads(8);
+
+// ============================================================================
+// Category M: Brute Force Protector Benchmarks
+// ============================================================================
+
+#include "security/brute_force_protector.hpp"
+
+// M1: is_blocked — clean IP (no history)
+static void BM_BruteForce_CheckClean(benchmark::State& state) {
+    BruteForceProtector::Config cfg;
+    cfg.enabled = true;
+    cfg.max_attempts = 20;
+    BruteForceProtector protector(cfg);
+    for (auto _ : state) {
+        auto r = protector.is_blocked("192.168.1.1", "admin");
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_BruteForce_CheckClean);
+
+// M2: is_blocked — IP with failure history (not yet locked)
+static void BM_BruteForce_CheckWithHistory(benchmark::State& state) {
+    BruteForceProtector::Config cfg;
+    cfg.enabled = true;
+    cfg.max_attempts = 20;
+    BruteForceProtector protector(cfg);
+    // Record some failures (below threshold)
+    for (int i = 0; i < 10; ++i) {
+        protector.record_failure("192.168.1.1", "admin");
+    }
+    for (auto _ : state) {
+        auto r = protector.is_blocked("192.168.1.1", "admin");
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_BruteForce_CheckWithHistory);
+
+// M3: record_failure
+static void BM_BruteForce_RecordFailure(benchmark::State& state) {
+    BruteForceProtector::Config cfg;
+    cfg.enabled = true;
+    cfg.max_attempts = 1000000;  // High threshold so we don't trigger lockout
+    BruteForceProtector protector(cfg);
+    int i = 0;
+    for (auto _ : state) {
+        protector.record_failure("192.168.1." + std::to_string(i % 256),
+                                 "user_" + std::to_string(i % 100));
+        ++i;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BruteForce_RecordFailure);
+
+// ============================================================================
+// Category N: Column Encryption Benchmarks
+// ============================================================================
+
+#include "security/column_encryptor.hpp"
+#include "security/local_key_manager.hpp"
+
+// N1: encrypt single value (AES-256-GCM)
+static void BM_ColumnEncryptor_Encrypt(benchmark::State& state) {
+    auto km = std::make_shared<LocalKeyManager>();
+    km->generate_and_add_key();
+    ColumnEncryptor::Config cfg;
+    cfg.enabled = true;
+    ColumnEncryptor enc(km, cfg);
+
+    const std::string value = "alice@example.com";
+    for (auto _ : state) {
+        auto r = enc.encrypt(value);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_ColumnEncryptor_Encrypt);
+
+// N2: decrypt single value
+static void BM_ColumnEncryptor_Decrypt(benchmark::State& state) {
+    auto km = std::make_shared<LocalKeyManager>();
+    km->generate_and_add_key();
+    ColumnEncryptor::Config cfg;
+    cfg.enabled = true;
+    ColumnEncryptor enc(km, cfg);
+
+    const std::string ciphertext = enc.encrypt("alice@example.com");
+    for (auto _ : state) {
+        auto r = enc.decrypt(ciphertext);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_ColumnEncryptor_Decrypt);
+
+// N3: encrypt scaling with value size
+static void BM_ColumnEncryptor_EncryptSize(benchmark::State& state) {
+    auto km = std::make_shared<LocalKeyManager>();
+    km->generate_and_add_key();
+    ColumnEncryptor::Config cfg;
+    cfg.enabled = true;
+    ColumnEncryptor enc(km, cfg);
+
+    const auto size = static_cast<size_t>(state.range(0));
+    std::string value(size, 'A');
+    for (auto _ : state) {
+        auto r = enc.encrypt(value);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetLabel("bytes=" + std::to_string(size));
+}
+BENCHMARK(BM_ColumnEncryptor_EncryptSize)->Arg(16)->Arg(64)->Arg(256)->Arg(1024)->Arg(4096);
+
+// ============================================================================
+// Category O: Lineage Tracker Benchmarks
+// ============================================================================
+
+#include "security/lineage_tracker.hpp"
+
+// O1: record single event
+static void BM_LineageTracker_Record(benchmark::State& state) {
+    LineageTracker::Config cfg;
+    cfg.enabled = true;
+    cfg.max_events = 1000000;
+    LineageTracker tracker(cfg);
+
+    LineageEvent event;
+    event.user = "analyst";
+    event.database = "testdb";
+    event.table = "customers";
+    event.column = "email";
+    event.classification = "PII.Email";
+    event.access_type = "SELECT";
+    for (auto _ : state) {
+        tracker.record(event);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_LineageTracker_Record);
+
+// O2: record under contention
+static void BM_LineageTracker_Throughput(benchmark::State& state) {
+    static LineageTracker::Config cfg;
+    static bool cfg_init = [&] { cfg.enabled = true; cfg.max_events = 1000000; return true; }();
+    (void)cfg_init;
+    static LineageTracker tracker(cfg);
+
+    LineageEvent event;
+    event.user = "user_" + std::to_string(state.thread_index());
+    event.database = "testdb";
+    event.table = "customers";
+    event.column = "email";
+    event.classification = "PII.Email";
+    event.access_type = "SELECT";
+    for (auto _ : state) {
+        tracker.record(event);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_LineageTracker_Throughput)->Threads(1)->Threads(2)->Threads(4)->Threads(8);
+
+// ============================================================================
+// Category P: Trace Context Benchmarks
+// ============================================================================
+
+#include "tracing/trace_context.hpp"
+
+// P1: Generate fresh trace context
+static void BM_TraceContext_Generate(benchmark::State& state) {
+    for (auto _ : state) {
+        auto ctx = TraceContext::generate();
+        benchmark::DoNotOptimize(ctx);
+    }
+}
+BENCHMARK(BM_TraceContext_Generate);
+
+// P2: Parse traceparent header
+static void BM_TraceContext_Parse(benchmark::State& state) {
+    const std::string header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    for (auto _ : state) {
+        auto ctx = TraceContext::parse_traceparent(header);
+        benchmark::DoNotOptimize(ctx);
+    }
+}
+BENCHMARK(BM_TraceContext_Parse);
+
+// P3: Serialize to traceparent
+static void BM_TraceContext_Serialize(benchmark::State& state) {
+    auto ctx = TraceContext::generate();
+    for (auto _ : state) {
+        auto s = ctx.to_traceparent();
+        benchmark::DoNotOptimize(s);
+    }
+}
+BENCHMARK(BM_TraceContext_Serialize);
+
+// P4: Generate span ID
+static void BM_TraceContext_GenerateSpanId(benchmark::State& state) {
+    for (auto _ : state) {
+        auto id = TraceContext::generate_span_id();
+        benchmark::DoNotOptimize(id);
+    }
+}
+BENCHMARK(BM_TraceContext_GenerateSpanId);
+
+// ============================================================================
+// Category Q: Cost-Based Rewriter Benchmarks
+// ============================================================================
+
+#include "core/cost_based_rewriter.hpp"
+#include "analyzer/schema_cache.hpp"
+
+// Q1: Rewrite SELECT * (star expansion)
+static void BM_CostBasedRewriter_StarExpand(benchmark::State& state) {
+    CostBasedRewriter::Config cfg;
+    cfg.enabled = true;
+    cfg.max_columns_for_star = 50;
+    CostBasedRewriter rewriter(cfg);
+
+    // Set up schema cache with a table
+    auto schema_cache = std::make_shared<SchemaCache>();
+    schema_cache->set_loader([](const std::string&) -> SchemaMap {
+        SchemaMap sm;
+        auto tm = std::make_shared<TableMetadata>();
+        tm->name = "users";
+        for (int i = 0; i < 10; ++i) {
+            ColumnMetadata cm("col_" + std::to_string(i), "text");
+            tm->columns.push_back(cm);
+        }
+        sm["public.users"] = tm;
+        return sm;
+    });
+    schema_cache->reload("");
+    rewriter.set_schema_cache(schema_cache);
+
+    AnalysisResult analysis;
+    analysis.statement_type = StatementType::SELECT;
+    analysis.is_star_select = true;
+    TableRef ref;
+    ref.schema = "public";
+    ref.table = "users";
+    analysis.source_tables.push_back(ref);
+
+    const std::string sql = "SELECT * FROM users WHERE id = 1";
+    for (auto _ : state) {
+        auto r = rewriter.rewrite_if_expensive(sql, analysis);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_CostBasedRewriter_StarExpand);
+
+// Q2: Rewrite no-match (passthrough)
+static void BM_CostBasedRewriter_NoMatch(benchmark::State& state) {
+    CostBasedRewriter::Config cfg;
+    cfg.enabled = true;
+    CostBasedRewriter rewriter(cfg);
+
+    AnalysisResult analysis;
+    analysis.statement_type = StatementType::SELECT;
+    analysis.is_star_select = false;
+    analysis.limit_value = 10;
+
+    const std::string sql = "SELECT id, name FROM users WHERE id = 1 LIMIT 10";
+    for (auto _ : state) {
+        auto r = rewriter.rewrite_if_expensive(sql, analysis);
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_CostBasedRewriter_NoMatch);
+
+// ============================================================================
+// Category R: Replica Routing Benchmarks
+// ============================================================================
+
+#include "executor/replica_routing_executor.hpp"
+
+// R1: Route SELECT to replica (round-robin)
+static void BM_ReplicaRouter_SelectRoute(benchmark::State& state) {
+    auto primary = std::make_shared<MockExecutor>();
+    auto router = std::make_shared<ReplicaRoutingExecutor>(primary);
+
+    // Add 3 replicas
+    for (int i = 0; i < 3; ++i) {
+        router->add_replica(std::make_shared<MockExecutor>());
+    }
+
+    for (auto _ : state) {
+        auto r = router->execute("SELECT * FROM users WHERE id = 1", StatementType::SELECT);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ReplicaRouter_SelectRoute);
+
+// R2: Route write to primary
+static void BM_ReplicaRouter_WriteRoute(benchmark::State& state) {
+    auto primary = std::make_shared<MockExecutor>();
+    auto router = std::make_shared<ReplicaRoutingExecutor>(primary);
+    for (int i = 0; i < 3; ++i) {
+        router->add_replica(std::make_shared<MockExecutor>());
+    }
+
+    for (auto _ : state) {
+        auto r = router->execute("INSERT INTO users (name) VALUES ('x')", StatementType::INSERT);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ReplicaRouter_WriteRoute);
+
+// R3: Replica routing throughput under contention
+static void BM_ReplicaRouter_Throughput(benchmark::State& state) {
+    static std::shared_ptr<ReplicaRoutingExecutor> router;
+    static std::once_flag init;
+    std::call_once(init, [] {
+        auto primary = std::make_shared<MockExecutor>();
+        router = std::make_shared<ReplicaRoutingExecutor>(primary);
+        for (int i = 0; i < 4; ++i) {
+            router->add_replica(std::make_shared<MockExecutor>());
+        }
+    });
+    for (auto _ : state) {
+        auto r = router->execute("SELECT 1", StatementType::SELECT);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ReplicaRouter_Throughput)->Threads(1)->Threads(2)->Threads(4)->Threads(8);
+
+// ============================================================================
+// Category S: Index Recommender Benchmarks (verifies lock fix)
+// ============================================================================
+
+#include "analyzer/index_recommender.hpp"
+
+// S1: record — existing pattern (shared_lock fast path)
+static void BM_IndexRecommender_RecordExisting(benchmark::State& state) {
+    IndexRecommender::Config cfg;
+    cfg.enabled = true;
+    IndexRecommender recommender(cfg);
+
+    // Pre-populate with a pattern
+    AnalysisResult analysis;
+    analysis.statement_type = StatementType::SELECT;
+    TableRef ref;
+    ref.table = "users";
+    analysis.source_tables.push_back(ref);
+    ColumnRef fc("email");
+    analysis.filter_columns.push_back(fc);
+
+    recommender.record(analysis, 12345, std::chrono::microseconds(100));
+
+    for (auto _ : state) {
+        recommender.record(analysis, 12345, std::chrono::microseconds(100));
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_IndexRecommender_RecordExisting);
+
+// S2: record — existing pattern, multi-threaded (tests shared_lock contention)
+static void BM_IndexRecommender_Throughput(benchmark::State& state) {
+    static IndexRecommender::Config cfg;
+    static bool cfg_init = [&] { cfg.enabled = true; return true; }();
+    (void)cfg_init;
+    static IndexRecommender recommender(cfg);
+    static std::once_flag warmup;
+
+    AnalysisResult analysis;
+    analysis.statement_type = StatementType::SELECT;
+    TableRef ref;
+    ref.table = "users";
+    analysis.source_tables.push_back(ref);
+    ColumnRef fc("email");
+    analysis.filter_columns.push_back(fc);
+
+    std::call_once(warmup, [&] {
+        recommender.record(analysis, 12345, std::chrono::microseconds(100));
+    });
+
+    for (auto _ : state) {
+        recommender.record(analysis, 12345, std::chrono::microseconds(50));
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_IndexRecommender_Throughput)->Threads(1)->Threads(2)->Threads(4)->Threads(8);
+
+// S3: get_recommendations
+static void BM_IndexRecommender_GetRecommendations(benchmark::State& state) {
+    IndexRecommender::Config cfg;
+    cfg.enabled = true;
+    cfg.min_occurrences = 1;
+    IndexRecommender recommender(cfg);
+
+    // Populate 50 patterns
+    for (int i = 0; i < 50; ++i) {
+        AnalysisResult analysis;
+        analysis.statement_type = StatementType::SELECT;
+        TableRef ref;
+        ref.table = "table_" + std::to_string(i);
+        analysis.source_tables.push_back(ref);
+        ColumnRef fc("col_" + std::to_string(i));
+        analysis.filter_columns.push_back(fc);
+
+        for (int j = 0; j < 10; ++j) {
+            recommender.record(analysis, static_cast<uint64_t>(i),
+                               std::chrono::microseconds(100 + j * 10));
+        }
+    }
+
+    for (auto _ : state) {
+        auto r = recommender.get_recommendations();
+        benchmark::DoNotOptimize(r);
+    }
+}
+BENCHMARK(BM_IndexRecommender_GetRecommendations);

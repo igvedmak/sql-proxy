@@ -139,13 +139,14 @@ void signal_handler(int signal) {
         g_binary_rpc_server->stop();
     }
 
-    // Wait for in-flight requests to drain
+    // Wait for in-flight requests to drain (respects shutdown_timeout config)
+    bool drained = true;
     if (g_shutdown) {
-        bool drained = g_shutdown->wait_for_drain();
+        drained = g_shutdown->wait_for_drain();
         if (drained) {
             utils::log::info("All in-flight requests drained");
         } else {
-            utils::log::warn(std::format("Shutdown timeout: {} requests still in flight",
+            utils::log::warn(std::format("Forced shutdown: {} requests still in flight",
                 g_shutdown->in_flight_count()));
         }
     }
@@ -153,7 +154,7 @@ void signal_handler(int signal) {
     if (g_server) {
         g_server->stop();
     }
-    exit(0);
+    exit(drained ? 0 : 1);
 }
 
 int main(int argc, char* argv[]) {

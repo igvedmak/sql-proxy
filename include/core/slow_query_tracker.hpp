@@ -4,7 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
-#include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -58,7 +58,7 @@ public:
 
 private:
     Config config_;
-    mutable std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     std::deque<SlowQueryRecord> records_;
     std::atomic<uint64_t> total_slow_queries_{0};
 };

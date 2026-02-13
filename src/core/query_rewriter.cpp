@@ -22,6 +22,26 @@ void QueryRewriter::reload_rules(
     const std::vector<RlsRule>& rls_rules,
     const std::vector<RewriteRule>& rewrite_rules) {
     load_rules(rls_rules, rewrite_rules);
+    // Clear rewrite cache on rule change
+    {
+        std::unique_lock lock(cache_mutex_);
+        rewrite_cache_.clear();
+    }
+    rules_version_.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::string QueryRewriter::make_cache_key(
+    uint64_t fingerprint_hash, const std::string& user,
+    const std::string& database) {
+    std::string key;
+    // fingerprint_hash as string is ~20 chars max
+    key.reserve(20 + 1 + user.size() + 1 + database.size());
+    key += std::to_string(fingerprint_hash);
+    key += ':';
+    key += user;
+    key += ':';
+    key += database;
+    return key;
 }
 
 std::string QueryRewriter::rewrite(
@@ -30,7 +50,8 @@ std::string QueryRewriter::rewrite(
     const std::vector<std::string>& roles,
     const std::string& database,
     const AnalysisResult& analysis,
-    const std::unordered_map<std::string, std::string>& user_attributes) const {
+    const std::unordered_map<std::string, std::string>& user_attributes,
+    uint64_t fingerprint_hash) const {
 
     std::shared_ptr<RuleStore> store;
     {
@@ -39,6 +60,19 @@ std::string QueryRewriter::rewrite(
     }
 
     if (!store) return {};
+
+    // Cache lookup (only when fingerprint is available)
+    std::string cache_key;
+    if (fingerprint_hash != 0) {
+        cache_key = make_cache_key(fingerprint_hash, user, database);
+        {
+            std::shared_lock lock(cache_mutex_);
+            const auto it = rewrite_cache_.find(cache_key);
+            if (it != rewrite_cache_.end()) {
+                return it->second.rewritten_sql;
+            }
+        }
+    }
 
     std::string result = sql;
     bool modified = false;
@@ -88,7 +122,16 @@ std::string QueryRewriter::rewrite(
         }
     }
 
-    return modified ? result : std::string{};
+    const std::string final_result = modified ? result : std::string{};
+
+    // Store in cache
+    if (fingerprint_hash != 0) {
+        std::unique_lock lock(cache_mutex_);
+        rewrite_cache_[std::move(cache_key)] = CachedRewrite{
+            final_result, std::chrono::steady_clock::now()};
+    }
+
+    return final_result;
 }
 
 std::string QueryRewriter::expand_template(

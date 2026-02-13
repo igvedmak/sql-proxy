@@ -31,38 +31,48 @@ bool TokenBucket::try_acquire(uint32_t tokens) {
 }
 
 bool TokenBucket::try_acquire_at(int64_t now_ns, uint32_t tokens) {
-    // Retry limit prevents infinite spin under extreme contention
-    static constexpr int kMaxRetries = 8;
-
-    for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
-        uint32_t current_tokens = tokens_.load(std::memory_order_acquire);
-        const int64_t last_refill = last_refill_ns_.load(std::memory_order_acquire);
-
-        // Refill tokens based on elapsed time using integer arithmetic
-        // (avoids double division: ~3ns → ~1ns per refill calculation)
+    // Phase 1: Refill — at most one thread wins per time period via CAS on last_refill_ns_
+    // This prevents the phantom-refill bug where multiple threads each add the same
+    // refill tokens because they all read a stale last_refill timestamp.
+    {
+        int64_t last_refill = last_refill_ns_.load(std::memory_order_acquire);
         const int64_t elapsed_ns = now_ns - last_refill;
+        if (elapsed_ns > 0) {
+            // tokens_to_add = elapsed_ns * tokens_per_second / 1e9
+            // Safe for int64_t: even 1 hour * 50K tps = 1.8e17, well within 9.2e18 limit
+            const int64_t raw_tokens = elapsed_ns * static_cast<int64_t>(tokens_per_second_) / 1'000'000'000LL;
+            if (raw_tokens > 0) {
+                // Claim this refill period — only one thread succeeds
+                if (last_refill_ns_.compare_exchange_strong(last_refill, now_ns,
+                                                             std::memory_order_acq_rel,
+                                                             std::memory_order_acquire)) {
+                    const uint32_t add = static_cast<uint32_t>(
+                        std::min(raw_tokens, static_cast<int64_t>(burst_capacity_)));
 
-        // tokens_to_add = elapsed_ns * tokens_per_second / 1e9
-        // Safe for int64_t: even 1 hour * 50K tps = 1.8e17, well within 9.2e18 limit
-        const int64_t raw_tokens = elapsed_ns * static_cast<int64_t>(tokens_per_second_) / 1'000'000'000LL;
-        const uint32_t tokens_to_add = static_cast<uint32_t>(
-            std::min(raw_tokens, static_cast<int64_t>(burst_capacity_)));
-        const uint32_t new_tokens = std::min(current_tokens + tokens_to_add, burst_capacity_);
+                    // CAS loop to add refill tokens with burst cap
+                    uint32_t old_val = tokens_.load(std::memory_order_relaxed);
+                    uint32_t new_val;
+                    do {
+                        new_val = std::min(old_val + add, burst_capacity_);
+                    } while (!tokens_.compare_exchange_weak(old_val, new_val,
+                                                             std::memory_order_release,
+                                                             std::memory_order_relaxed));
+                }
+            }
+        }
+    }
 
-        // Check if enough tokens available
-        if (new_tokens < tokens) {
+    // Phase 2: Consume — CAS loop to atomically deduct tokens
+    static constexpr int kMaxRetries = 8;
+    for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
+        uint32_t current = tokens_.load(std::memory_order_acquire);
+        if (current < tokens) {
             return false; // Rate limited
         }
 
-        // Try to consume tokens (CAS on token count)
-        const uint32_t tokens_after_consume = new_tokens - tokens;
-
-        if (tokens_.compare_exchange_weak(current_tokens, tokens_after_consume,
+        if (tokens_.compare_exchange_weak(current, current - tokens,
                                           std::memory_order_release,
                                           std::memory_order_acquire)) {
-            // Update last refill timestamp (best-effort; concurrent updates are harmless
-            // since the next CAS iteration will re-read and recalculate)
-            last_refill_ns_.store(now_ns, std::memory_order_release);
             return true; // Successfully acquired tokens
         }
 

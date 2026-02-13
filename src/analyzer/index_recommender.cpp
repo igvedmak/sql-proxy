@@ -40,27 +40,29 @@ void IndexRecommender::record(const AnalysisResult& analysis, uint64_t /*fingerp
             key += cols[i];
         }
 
-        const double time_us = static_cast<double>(exec_time.count());
+        const int64_t time_us = exec_time.count();
 
-        // Fast path: shared lock to check if pattern exists
+        // Fast path: shared lock — update existing pattern with atomics (no unique lock)
         {
             std::shared_lock lock(mutex_);
             auto it = patterns_.find(key);
             if (it != patterns_.end()) {
-                // Pattern exists - but we need a unique lock to update
-                // Fall through to unique lock path
+                it->second->count.fetch_add(1, std::memory_order_relaxed);
+                it->second->total_time_us.fetch_add(time_us, std::memory_order_relaxed);
+                continue;
             }
         }
 
-        // Slow path: unique lock to insert/update
+        // Slow path: unique lock to insert new pattern (first occurrence only)
         std::unique_lock lock(mutex_);
-        auto [it, inserted] = patterns_.try_emplace(key, FilterPattern{});
+        auto [it, inserted] = patterns_.try_emplace(key, nullptr);
         if (inserted) {
-            it->second.table = table;
-            it->second.columns = cols;
+            it->second = std::make_shared<FilterPattern>();
+            it->second->table = table;
+            it->second->columns = cols;
         }
-        it->second.count++;
-        it->second.total_time_us += time_us;
+        it->second->count.fetch_add(1, std::memory_order_relaxed);
+        it->second->total_time_us.fetch_add(time_us, std::memory_order_relaxed);
     }
 }
 
@@ -71,30 +73,32 @@ std::vector<IndexRecommender::Recommendation> IndexRecommender::get_recommendati
     results.reserve(patterns_.size());
 
     for (const auto& [key, pattern] : patterns_) {
-        if (pattern.count < config_.min_occurrences) continue;
+        const auto count = pattern->count.load(std::memory_order_relaxed);
+        if (count < config_.min_occurrences) continue;
 
         Recommendation rec;
-        rec.table = pattern.table;
-        rec.columns = pattern.columns;
-        rec.occurrence_count = pattern.count;
-        rec.avg_execution_time_us = pattern.total_time_us / pattern.count;
+        rec.table = pattern->table;
+        rec.columns = pattern->columns;
+        rec.occurrence_count = count;
+        rec.avg_execution_time_us = static_cast<double>(
+            pattern->total_time_us.load(std::memory_order_relaxed)) / count;
 
         // Build reason
         rec.reason = std::format("Filtered {} times with avg {:.0f}us execution time",
-                                 pattern.count, rec.avg_execution_time_us);
+                                 count, rec.avg_execution_time_us);
 
         // Build suggested DDL: CREATE INDEX idx_tablename_col1_col2 ON tablename(col1, col2)
-        std::string idx_name = "idx_" + pattern.table;
+        std::string idx_name = "idx_" + pattern->table;
         std::string col_list;
-        for (size_t i = 0; i < pattern.columns.size(); ++i) {
+        for (size_t i = 0; i < pattern->columns.size(); ++i) {
             idx_name += '_';
-            idx_name += pattern.columns[i];
+            idx_name += pattern->columns[i];
             if (i > 0) col_list += ", ";
-            col_list += pattern.columns[i];
+            col_list += pattern->columns[i];
         }
 
         rec.suggested_ddl = std::format("CREATE INDEX {} ON {}({})",
-                                        idx_name, pattern.table, col_list);
+                                        idx_name, pattern->table, col_list);
 
         results.push_back(std::move(rec));
     }

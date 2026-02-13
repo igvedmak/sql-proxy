@@ -15,23 +15,23 @@ std::shared_ptr<CircuitBreaker> CircuitBreakerRegistry::get_breaker(const std::s
         }
     }
 
+    // Pre-compute config BEFORE taking breakers_mutex_ unique lock
+    // (eliminates nested config_mutex_ inside breakers_mutex_)
+    CircuitBreaker::Config cfg = default_config_;
+    const auto colon = key.find(':');
+    if (colon != std::string::npos) {
+        const std::string tenant_id = key.substr(0, colon);
+        std::shared_lock cfg_lock(config_mutex_);
+        const auto cfg_it = tenant_configs_.find(tenant_id);
+        if (cfg_it != tenant_configs_.end()) {
+            cfg = cfg_it->second;
+        }
+    }
+
     // Slow path: unique lock + try_emplace
     std::unique_lock lock(breakers_mutex_);
     auto [it, inserted] = breakers_.try_emplace(key, nullptr);
     if (inserted) {
-        // Determine config: check for tenant-specific override
-        // Extract tenant_id from key (format: "tenant_id:database" or just "database")
-        CircuitBreaker::Config cfg = default_config_;
-        const auto colon = key.find(':');
-        if (colon != std::string::npos) {
-            const std::string tenant_id = key.substr(0, colon);
-            std::shared_lock cfg_lock(config_mutex_);
-            const auto cfg_it = tenant_configs_.find(tenant_id);
-            if (cfg_it != tenant_configs_.end()) {
-                cfg = cfg_it->second;
-            }
-        }
-
         it->second = std::make_shared<CircuitBreaker>(key, cfg);
     }
     return it->second;

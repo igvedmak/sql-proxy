@@ -88,12 +88,18 @@ std::optional<CopyStatement> parse_copy_statement(const std::string& sql) {
     // Check for WITH options (FORMAT)
     pos = skip_ws(sql, pos);
     while (pos < sql.size()) {
+        pos = skip_ws(sql, pos);
+        // Skip parentheses and semicolons
+        if (pos < sql.size() && (sql[pos] == '(' || sql[pos] == ')' || sql[pos] == ';')) {
+            ++pos;
+            continue;
+        }
         const std::string opt = read_word(sql, pos);
         if (opt.empty()) break;
-        if (iequals(opt, "WITH") || iequals(opt, "(")) continue;
+        if (iequals(opt, "WITH")) continue;
         if (iequals(opt, "FORMAT")) {
             std::string fmt = read_word(sql, pos);
-            if (iequals(fmt, "BINARY") || iequals(fmt, "binary")) {
+            if (iequals(fmt, "BINARY")) {
                 stmt.format = 1;
             }
         }

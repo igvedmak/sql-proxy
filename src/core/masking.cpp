@@ -4,7 +4,7 @@
 
 #include <algorithm>
 #include <format>
-#include <future>
+#include <latch>
 #include <thread>
 
 namespace sqlproxy {
@@ -127,19 +127,30 @@ std::vector<MaskingRecord> MaskingEngine::apply(
 
     if (num_rows >= kParallelThreshold && hw_threads > 1) {
         // Parallel path: partition rows among worker threads
+        // Uses std::jthread + std::latch instead of std::async to avoid
+        // spawning a new OS thread pool per invocation.
         const unsigned num_workers = std::min(hw_threads, 4u);
         const size_t chunk = (num_rows + num_workers - 1) / num_workers;
 
-        std::vector<std::future<void>> futures;
-        futures.reserve(num_workers);
+        unsigned actual_workers = 0;
+        for (unsigned w = 0; w < num_workers; ++w) {
+            if (w * chunk < num_rows) ++actual_workers;
+        }
+
+        std::latch done(actual_workers);
+        std::vector<std::jthread> threads;
+        threads.reserve(actual_workers);
 
         for (unsigned w = 0; w < num_workers; ++w) {
             const size_t start = w * chunk;
             const size_t end = std::min(start + chunk, num_rows);
             if (start >= end) break;
-            futures.push_back(std::async(std::launch::async, mask_range, start, end));
+            threads.emplace_back([&, start, end] {
+                mask_range(start, end);
+                done.count_down();
+            });
         }
-        for (auto& f : futures) f.get();
+        done.wait();
     } else {
         // Sequential path
         mask_range(0, num_rows);

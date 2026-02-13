@@ -73,7 +73,7 @@ public:
      * @brief Check if request can proceed
      * @return true if allowed, false if circuit open
      */
-    bool allow_request();
+    [[nodiscard]] bool allow_request();
 
     /**
      * @brief Record successful operation

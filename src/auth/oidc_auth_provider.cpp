@@ -1,4 +1,5 @@
 #include "auth/oidc_auth_provider.hpp"
+#include "core/json.hpp"
 #include "core/utils.hpp"
 
 #include <openssl/evp.h>
@@ -128,7 +129,7 @@ std::string https_get(const std::string& url) {
     return body;
 }
 
-// Parse a JWK key from the keys array (very simplified JSON parsing)
+// JWK entry parsed from JWKS
 struct JwkEntry {
     std::string kid;
     std::string kty;    // "RSA" or "EC"
@@ -140,64 +141,36 @@ struct JwkEntry {
     std::string x, y, crv;
 };
 
-std::string extract_field(const std::string& obj, const std::string& key) {
-    const std::string needle = "\"" + key + "\"";
-    auto pos = obj.find(needle);
-    if (pos == std::string::npos) return {};
-    pos = obj.find('"', pos + needle.size());
-    if (pos == std::string::npos) return {};
-    ++pos;
-    // Find value start (skip colon, whitespace)
-    // Actually we're already past the key's closing quote. Need to find the colon then value.
-    // Simpler: find ": after key
-    const auto colon_pos = obj.find(':', pos - 1);
-    if (colon_pos == std::string::npos) return {};
-    auto val_start = obj.find('"', colon_pos);
-    if (val_start == std::string::npos) return {};
-    ++val_start;
-    const auto val_end = obj.find('"', val_start);
-    if (val_end == std::string::npos) return {};
-    return obj.substr(val_start, val_end - val_start);
-}
-
-std::vector<JwkEntry> parse_jwks(const std::string& json) {
+std::vector<JwkEntry> parse_jwks(const std::string& json_str) {
     std::vector<JwkEntry> keys;
 
-    // Find "keys" array
-    const auto keys_pos = json.find("\"keys\"");
-    if (keys_pos == std::string::npos) return keys;
+    JsonValue doc;
+    try {
+        doc = JsonValue::parse(json_str);
+    } catch (const JsonValue::parse_error&) {
+        return keys;
+    }
 
-    const auto arr_start = json.find('[', keys_pos);
-    if (arr_start == std::string::npos) return keys;
+    const auto keys_arr = doc["keys"];
+    if (!keys_arr.is_array()) return keys;
 
-    // Find each key object { ... }
-    size_t pos = arr_start + 1;
-    while (pos < json.size()) {
-        const auto obj_start = json.find('{', pos);
-        if (obj_start == std::string::npos) break;
-
-        // Find matching closing brace (simple: no nested objects in JWK)
-        const auto obj_end = json.find('}', obj_start);
-        if (obj_end == std::string::npos) break;
-
-        const std::string obj = json.substr(obj_start, obj_end - obj_start + 1);
+    for (const auto& k : keys_arr) {
+        if (!k.is_object()) continue;
 
         JwkEntry entry;
-        entry.kid = extract_field(obj, "kid");
-        entry.kty = extract_field(obj, "kty");
-        entry.alg = extract_field(obj, "alg");
-        entry.use = extract_field(obj, "use");
-        entry.n = extract_field(obj, "n");
-        entry.e = extract_field(obj, "e");
-        entry.x = extract_field(obj, "x");
-        entry.y = extract_field(obj, "y");
-        entry.crv = extract_field(obj, "crv");
+        entry.kid = k.value("kid", std::string{});
+        entry.kty = k.value("kty", std::string{});
+        entry.alg = k.value("alg", std::string{});
+        entry.use = k.value("use", std::string{});
+        entry.n   = k.value("n",   std::string{});
+        entry.e   = k.value("e",   std::string{});
+        entry.x   = k.value("x",   std::string{});
+        entry.y   = k.value("y",   std::string{});
+        entry.crv = k.value("crv", std::string{});
 
         if (!entry.kid.empty() && !entry.kty.empty()) {
             keys.emplace_back(std::move(entry));
         }
-
-        pos = obj_end + 1;
     }
 
     return keys;
@@ -246,9 +219,18 @@ IAuthProvider::AuthResult OidcAuthProvider::authenticate(
         return {.error = "Invalid JWT format"};
     }
 
+    // Parse header and payload JSON using Glaze
+    JsonValue header_claims, payload_claims;
+    try {
+        header_claims = JsonValue::parse(parts.header_json);
+        payload_claims = JsonValue::parse(parts.payload_json);
+    } catch (const JsonValue::parse_error&) {
+        return {.error = "Invalid JWT: malformed JSON"};
+    }
+
     // Extract algorithm and kid from header
-    const std::string alg = extract_json_string(parts.header_json, "alg");
-    const std::string kid = extract_json_string(parts.header_json, "kid");
+    const std::string alg = header_claims.value("alg", std::string{});
+    const std::string kid = header_claims.value("kid", std::string{});
 
     if (alg != "RS256" && alg != "ES256") {
         return {.error = std::format("Unsupported algorithm: {}", alg)};
@@ -280,33 +262,49 @@ IAuthProvider::AuthResult OidcAuthProvider::authenticate(
     }
 
     // Validate claims
-    const std::string iss = extract_json_string(parts.payload_json, "iss");
+    const std::string iss = payload_claims.value("iss", std::string{});
     if (!config_.issuer.empty() && iss != config_.issuer) {
         return {.error = std::format("Invalid issuer: expected '{}', got '{}'", config_.issuer, iss)};
     }
 
-    const std::string aud = extract_json_string(parts.payload_json, "aud");
+    const std::string aud = payload_claims.value("aud", std::string{});
     if (!config_.audience.empty() && aud != config_.audience) {
         return {.error = std::format("Invalid audience: expected '{}', got '{}'", config_.audience, aud)};
     }
 
     // Check expiration
-    const int64_t exp = extract_json_int(parts.payload_json, "exp");
-    if (exp > 0) {
-        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        if (now > exp) {
-            return {.error = "JWT expired"};
+    if (payload_claims.contains("exp") && payload_claims["exp"].is_number()) {
+        const auto exp = payload_claims["exp"].get<int64_t>();
+        if (exp > 0) {
+            const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            if (now > exp) {
+                return {.error = "JWT expired"};
+            }
         }
     }
 
-    // Extract user and roles
-    const std::string user = extract_json_string(parts.payload_json, config_.user_claim);
+    // Extract user
+    const std::string user = payload_claims.value(config_.user_claim, std::string{});
     if (user.empty()) {
         return {.error = std::format("Missing user claim '{}'", config_.user_claim)};
     }
 
-    const auto roles = extract_json_string_array(parts.payload_json, config_.roles_claim);
+    // Extract roles (supports nested claim paths like "realm_access.roles")
+    std::vector<std::string> roles;
+    JsonValue roles_node;
+    const auto dot = config_.roles_claim.find('.');
+    if (dot != std::string::npos) {
+        const auto outer = payload_claims[config_.roles_claim.substr(0, dot)];
+        roles_node = outer[config_.roles_claim.substr(dot + 1)];
+    } else {
+        roles_node = payload_claims[config_.roles_claim];
+    }
+    if (roles_node.is_array()) {
+        for (const auto& r : roles_node) {
+            if (r.is_string()) roles.push_back(r.get<std::string>());
+        }
+    }
 
     return {
         .authenticated = true,
@@ -356,103 +354,6 @@ std::string OidcAuthProvider::base64url_decode(const std::string& input) {
     return output;
 }
 
-std::string OidcAuthProvider::extract_json_string(const std::string& json, const std::string& key) {
-    const std::string needle = "\"" + key + "\"";
-    auto pos = json.find(needle);
-    if (pos == std::string::npos) return {};
-
-    pos = json.find(':', pos + needle.size());
-    if (pos == std::string::npos) return {};
-
-    // Skip whitespace
-    ++pos;
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\n' || json[pos] == '\r'))
-        ++pos;
-
-    if (pos >= json.size() || json[pos] != '"') return {};
-    ++pos;  // skip opening quote
-
-    std::string result;
-    while (pos < json.size() && json[pos] != '"') {
-        if (json[pos] == '\\' && pos + 1 < json.size()) {
-            ++pos;
-        }
-        result += json[pos++];
-    }
-    return result;
-}
-
-std::vector<std::string> OidcAuthProvider::extract_json_string_array(const std::string& json, const std::string& key) {
-    std::vector<std::string> result;
-
-    // Support nested claim paths like "realm_access.roles"
-    const auto dot = key.find('.');
-    if (dot != std::string::npos) {
-        // Find the outer object first
-        const std::string outer_key = key.substr(0, dot);
-        const std::string inner_key = key.substr(dot + 1);
-
-        const std::string needle = "\"" + outer_key + "\"";
-        auto pos = json.find(needle);
-        if (pos == std::string::npos) return result;
-
-        pos = json.find('{', pos);
-        if (pos == std::string::npos) return result;
-
-        // Find matching brace
-        int depth = 1;
-        size_t start = pos + 1;
-        size_t end = start;
-        while (end < json.size() && depth > 0) {
-            if (json[end] == '{') ++depth;
-            else if (json[end] == '}') --depth;
-            ++end;
-        }
-        const std::string inner_json = json.substr(pos, end - pos);
-        return extract_json_string_array(inner_json, inner_key);
-    }
-
-    const std::string needle = "\"" + key + "\"";
-    auto pos = json.find(needle);
-    if (pos == std::string::npos) return result;
-
-    pos = json.find('[', pos);
-    if (pos == std::string::npos) return result;
-
-    auto end_pos = json.find(']', pos);
-    if (end_pos == std::string::npos) return result;
-
-    const std::string arr = json.substr(pos + 1, end_pos - pos - 1);
-    size_t p = 0;
-    while (p < arr.size()) {
-        auto qs = arr.find('"', p);
-        if (qs == std::string::npos) break;
-        auto qe = arr.find('"', qs + 1);
-        if (qe == std::string::npos) break;
-        result.emplace_back(arr.substr(qs + 1, qe - qs - 1));
-        p = qe + 1;
-    }
-    return result;
-}
-
-int64_t OidcAuthProvider::extract_json_int(const std::string& json, const std::string& key) {
-    const std::string needle = "\"" + key + "\"";
-    auto pos = json.find(needle);
-    if (pos == std::string::npos) return 0;
-
-    pos = json.find(':', pos + needle.size());
-    if (pos == std::string::npos) return 0;
-    ++pos;
-
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
-
-    try {
-        return std::stoll(json.substr(pos));
-    } catch (...) {
-        return 0;
-    }
-}
-
 bool OidcAuthProvider::fetch_jwks() {
     std::string jwks_uri = effective_jwks_uri_;
 
@@ -463,7 +364,13 @@ bool OidcAuthProvider::fetch_jwks() {
             utils::log::error(std::format("OIDC: failed to fetch discovery from {}", jwks_uri));
             return false;
         }
-        const std::string actual_jwks_uri = extract_json_string(discovery, "jwks_uri");
+        std::string actual_jwks_uri;
+        try {
+            const auto disc_json = JsonValue::parse(discovery);
+            actual_jwks_uri = disc_json.value("jwks_uri", std::string{});
+        } catch (const JsonValue::parse_error&) {
+            actual_jwks_uri.clear();
+        }
         if (actual_jwks_uri.empty()) {
             utils::log::error("OIDC: discovery response missing jwks_uri");
             return false;
