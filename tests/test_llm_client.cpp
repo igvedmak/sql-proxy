@@ -39,8 +39,11 @@ TEST_CASE("LlmClient", "[llm_client]") {
         REQUIRE(client.is_enabled());
     }
 
-    SECTION("Cache hit on second identical request") {
-        LlmClient client(enabled_config());
+    SECTION("API call to unreachable endpoint returns error") {
+        auto cfg = enabled_config();
+        cfg.max_retries = 0;
+        cfg.timeout_ms = 1000;
+        LlmClient client(cfg);
 
         LlmRequest req;
         req.use_case = LlmUseCase::POLICY_GENERATOR;
@@ -48,17 +51,15 @@ TEST_CASE("LlmClient", "[llm_client]") {
         req.context = "test context";
 
         auto resp1 = client.complete(req);
-        REQUIRE(resp1.success);
+        // With a real HTTP client calling a non-existent endpoint, this fails
+        REQUIRE_FALSE(resp1.success);
         REQUIRE_FALSE(resp1.from_cache);
-
-        auto resp2 = client.complete(req);
-        REQUIRE(resp2.success);
-        REQUIRE(resp2.from_cache);
+        REQUIRE(resp1.error.find("connection error") != std::string::npos);
 
         auto stats = client.get_stats();
-        REQUIRE(stats.total_requests == 2);
-        REQUIRE(stats.cache_hits == 1);
+        REQUIRE(stats.total_requests == 1);
         REQUIRE(stats.api_calls == 1);
+        REQUIRE(stats.api_errors == 1);
     }
 
     SECTION("Cache key uniqueness — different use cases") {
@@ -76,20 +77,22 @@ TEST_CASE("LlmClient", "[llm_client]") {
     SECTION("Rate limiting") {
         auto cfg = enabled_config();
         cfg.max_requests_per_minute = 3;
+        cfg.max_retries = 0;
+        cfg.timeout_ms = 1000;
         LlmClient client(cfg);
 
         LlmRequest req;
         req.use_case = LlmUseCase::POLICY_GENERATOR;
 
-        // First 3 should succeed (different prompts to avoid cache)
+        // First 3 pass rate limit check (but API call fails — unreachable)
         req.prompt = "query 1";
-        REQUIRE(client.complete(req).success);
+        client.complete(req);  // fails at API level, but passes rate limit
         req.prompt = "query 2";
-        REQUIRE(client.complete(req).success);
+        client.complete(req);
         req.prompt = "query 3";
-        REQUIRE(client.complete(req).success);
+        client.complete(req);
 
-        // 4th should be rate limited
+        // 4th should be rate limited before even trying the API
         req.prompt = "query 4";
         auto resp = client.complete(req);
         REQUIRE_FALSE(resp.success);
@@ -115,20 +118,32 @@ TEST_CASE("LlmClient", "[llm_client]") {
         REQUIRE(p4.find("Classify") != std::string::npos);
     }
 
-    SECTION("Convenience methods") {
-        LlmClient client(enabled_config());
+    SECTION("Convenience methods call complete()") {
+        auto cfg = enabled_config();
+        cfg.max_retries = 0;
+        cfg.timeout_ms = 1000;
+        LlmClient client(cfg);
 
+        // All convenience methods should go through complete()
+        // They will fail at API level (unreachable endpoint) but exercise the code path
         auto r1 = client.generate_policy("SELECT * FROM users", "admin context");
-        REQUIRE(r1.success);
+        REQUIRE_FALSE(r1.success);  // API unreachable
 
         auto r2 = client.explain_anomaly("User accessed PII at 3am");
-        REQUIRE(r2.success);
+        REQUIRE_FALSE(r2.success);
 
         auto r3 = client.nl_to_policy("Block all access to salary column");
-        REQUIRE(r3.success);
+        REQUIRE_FALSE(r3.success);
 
         auto r4 = client.classify_intent("SELECT * FROM users; DROP TABLE users;--");
-        REQUIRE(r4.success);
+        REQUIRE_FALSE(r4.success);
+
+        auto r5 = client.nl_to_sql("Show all customers", "customers (id integer, name text)");
+        REQUIRE_FALSE(r5.success);
+
+        auto stats = client.get_stats();
+        REQUIRE(stats.total_requests == 5);
+        REQUIRE(stats.api_calls == 5);
     }
 
     SECTION("No API key returns error") {
@@ -150,5 +165,12 @@ TEST_CASE("LlmClient", "[llm_client]") {
         REQUIRE(std::string(llm_use_case_to_string(LlmUseCase::ANOMALY_EXPLANATION)) == "anomaly_explanation");
         REQUIRE(std::string(llm_use_case_to_string(LlmUseCase::NL_TO_POLICY)) == "nl_to_policy");
         REQUIRE(std::string(llm_use_case_to_string(LlmUseCase::SQL_INTENT_CLASSIFICATION)) == "sql_intent_classification");
+        REQUIRE(std::string(llm_use_case_to_string(LlmUseCase::NL_TO_SQL)) == "nl_to_sql");
+    }
+
+    SECTION("NL_TO_SQL system prompt") {
+        auto prompt = LlmClient::get_system_prompt(LlmUseCase::NL_TO_SQL);
+        REQUIRE(prompt.find("PostgreSQL") != std::string::npos);
+        REQUIRE(prompt.find("SELECT") != std::string::npos);
     }
 }

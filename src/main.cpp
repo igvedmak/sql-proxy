@@ -59,6 +59,7 @@
 #include "server/websocket_handler.hpp"
 #include "core/transaction_coordinator.hpp"
 #include "core/llm_client.hpp"
+#include "catalog/data_catalog.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -711,6 +712,18 @@ int main(int argc, char* argv[]) {
                 sdg_cfg.max_rows));
         }
 
+        // Data Catalog
+        std::shared_ptr<DataCatalog> data_catalog;
+        if (config_result.success && config_result.config.data_catalog_enabled) {
+            DataCatalog::Config dc_cfg;
+            dc_cfg.enabled = true;
+            data_catalog = std::make_shared<DataCatalog>(dc_cfg);
+            if (schema_cache) {
+                data_catalog->seed_from_schema(schema_cache->get_all_tables());
+            }
+            utils::log::info("Data catalog: enabled");
+        }
+
         // Cost-based query rewriting
         std::shared_ptr<CostBasedRewriter> cost_based_rewriter;
         if (config_result.success && config_result.config.cost_based_rewriting.enabled) {
@@ -764,6 +777,7 @@ int main(int argc, char* argv[]) {
         if (config_result.success && config_result.config.llm.enabled) {
             LlmClient::Config llm_cfg;
             llm_cfg.enabled = true;
+            llm_cfg.provider = config_result.config.llm.provider;
             llm_cfg.endpoint = config_result.config.llm.endpoint;
             llm_cfg.api_key = config_result.config.llm.api_key;
             llm_cfg.default_model = config_result.config.llm.default_model;
@@ -810,6 +824,7 @@ int main(int argc, char* argv[]) {
             .with_cost_based_rewriter(cost_based_rewriter)
             .with_transaction_coordinator(transaction_coordinator)
             .with_llm_client(llm_client)
+            .with_data_catalog(data_catalog)
             .with_masking_enabled(config_result.config.masking_enabled)
             .build();
 
@@ -860,7 +875,7 @@ int main(int argc, char* argv[]) {
             }
             dashboard_handler = std::make_shared<DashboardHandler>(
                 pipeline, g_alert_evaluator, std::move(dash_users),
-                config_result.config.routes);
+                config_result.config.routes, schema_cache);
         }
         utils::log::info("Dashboard: enabled at /dashboard");
 
@@ -901,6 +916,8 @@ int main(int argc, char* argv[]) {
         features.websocket_streaming = cfg.websocket.enabled;
         features.multi_db_transactions = cfg.transactions.enabled;
         features.llm_features = cfg.llm.enabled;
+        features.data_catalog = cfg.data_catalog_enabled;
+        features.policy_simulator = cfg.policy_simulator_enabled;
 
         // Create HTTP server (with Tier 2 + Tier 5 + Tier B components)
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
@@ -958,6 +975,9 @@ int main(int argc, char* argv[]) {
         }
         if (llm_client) {
             g_server->set_llm_client(llm_client);
+        }
+        if (data_catalog) {
+            g_server->set_data_catalog(data_catalog);
         }
 
         // WebSocket handler

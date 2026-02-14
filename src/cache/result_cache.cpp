@@ -170,7 +170,7 @@ void ResultCache::Shard::put(
 size_t ResultCache::Shard::invalidate(const std::string& database) {
     std::lock_guard lock(mutex_);
     // O(1) generation bump — stale entries are lazily evicted on get()
-    db_generations_[database]++;
+    ++db_generations_[database];
     return 0;  // Actual removal happens lazily
 }
 

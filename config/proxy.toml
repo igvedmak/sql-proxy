@@ -715,6 +715,23 @@ throttle_threshold_ms = 200
 enabled = true
 
 # ============================================================================
+# LLM Features (AI-powered proxy features)
+# ============================================================================
+
+[llm]
+enabled = false
+provider = "anthropic"                      # "openai" or "anthropic"
+endpoint = "https://api.anthropic.com"      # Base URL (no trailing slash)
+api_key = ""                                # Set via env: $LLM_API_KEY
+default_model = "claude-sonnet-4-20250514"  # Model name
+timeout_ms = 30000
+max_retries = 2
+max_requests_per_minute = 60
+cache_enabled = true
+cache_max_entries = 1000
+cache_ttl_seconds = 3600
+
+# ============================================================================
 # Feature Toggles (disable features that have no dedicated [section].enabled)
 # ============================================================================
 

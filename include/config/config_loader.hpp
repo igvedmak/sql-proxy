@@ -423,6 +423,7 @@ struct ProxyConfig {
     // LLM Features
     struct LlmConfig {
         bool enabled = false;
+        std::string provider = "openai";  // "openai" or "anthropic"
         std::string endpoint = "https://api.openai.com";
         std::string api_key;
         std::string default_model = "gpt-4";
@@ -442,6 +443,8 @@ struct ProxyConfig {
     bool masking_enabled = true;
     bool openapi_enabled = true;
     bool dry_run_enabled = true;
+    bool data_catalog_enabled = false;
+    bool policy_simulator_enabled = false;
 };
 
 // ============================================================================

@@ -203,6 +203,15 @@ struct RouteConfig {
     std::string llm_explain      = "/api/v1/llm/explain-anomaly";
     std::string llm_nl_policy    = "/api/v1/llm/nl-to-policy";
     std::string llm_classify     = "/api/v1/llm/classify-intent";
+    std::string nl_query         = "/api/v1/nl-query";
+
+    // Data catalog
+    std::string catalog_tables  = "/api/v1/catalog/tables";
+    std::string catalog_search  = "/api/v1/catalog/search";
+    std::string catalog_stats   = "/api/v1/catalog/stats";
+
+    // Policy simulator
+    std::string policy_simulate = "/api/v1/policies/simulate";
 
     // Optional
     std::string graphql         = "/api/v1/graphql";
@@ -241,6 +250,8 @@ struct FeatureFlags {
     bool websocket_streaming = false;
     bool multi_db_transactions = false;
     bool llm_features = false;
+    bool data_catalog = false;
+    bool policy_simulator = false;
 };
 
 } // namespace sqlproxy

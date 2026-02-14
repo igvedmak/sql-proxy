@@ -7,6 +7,7 @@
 #include "server/rate_limiter.hpp"
 #include "audit/audit_emitter.hpp"
 #include "policy/policy_engine.hpp"
+#include "analyzer/schema_cache.hpp"
 #include "core/utils.hpp"
 
 #pragma GCC diagnostic push
@@ -49,11 +50,13 @@ DashboardHandler::DashboardHandler(
     std::shared_ptr<Pipeline> pipeline,
     std::shared_ptr<AlertEvaluator> alert_evaluator,
     std::vector<DashboardUser> users,
-    RouteConfig routes)
+    RouteConfig routes,
+    std::shared_ptr<SchemaCache> schema_cache)
     : pipeline_(std::move(pipeline)),
       alert_evaluator_(std::move(alert_evaluator)),
       users_(std::move(users)),
-      routes_(std::move(routes)) {}
+      routes_(std::move(routes)),
+      schema_cache_(std::move(schema_cache)) {}
 
 void DashboardHandler::update_users(std::vector<DashboardUser> users) {
     users_ = std::move(users);
@@ -83,6 +86,12 @@ void DashboardHandler::register_routes(httplib::Server& svr, const std::string& 
     });
     svr.Get(routes_.dashboard_stream, [this](const httplib::Request& req, httplib::Response& res) {
         handle_metrics_stream(req, res);
+    });
+    svr.Get(routes_.dashboard + "/api/schema", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_schema(req, res);
+    });
+    svr.Get(routes_.dashboard + "/playground", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_playground_page(req, res);
     });
 }
 
@@ -327,6 +336,57 @@ void DashboardHandler::handle_metrics_stream(const httplib::Request& req, httpli
             return false; // End stream after max events
         }
     );
+}
+
+// ============================================================================
+// Handler: GET /dashboard/api/schema
+// ============================================================================
+
+void DashboardHandler::handle_schema(const httplib::Request& req, httplib::Response& res) {
+    if (!check_admin_auth(req, admin_token_)) {
+        res.status = httplib::StatusCode::Unauthorized_401;
+        res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
+        return;
+    }
+
+    if (!schema_cache_) {
+        res.set_content(R"({"tables":[]})", http::kJsonContentType);
+        return;
+    }
+
+    auto tables = schema_cache_->get_all_tables();
+
+    std::string json = "{\"tables\":[";
+    bool first_table = true;
+    for (const auto& [name, meta] : tables) {
+        if (!first_table) json += ',';
+        first_table = false;
+
+        json += std::format("{{\"name\":\"{}\",\"schema\":\"{}\",\"columns\":[",
+                            meta->name, meta->schema);
+
+        for (size_t i = 0; i < meta->columns.size(); ++i) {
+            if (i > 0) json += ',';
+            const auto& col = meta->columns[i];
+            json += std::format(
+                "{{\"name\":\"{}\",\"type\":\"{}\",\"nullable\":{},\"primary_key\":{}}}",
+                col.name, col.type,
+                utils::booltostr(col.nullable),
+                utils::booltostr(col.is_primary_key));
+        }
+        json += "]}";
+    }
+    json += "]}";
+
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: GET /dashboard/playground
+// ============================================================================
+
+void DashboardHandler::handle_playground_page(const httplib::Request&, httplib::Response& res) {
+    res.set_content(kPlaygroundHtml, "text/html");
 }
 
 } // namespace sqlproxy

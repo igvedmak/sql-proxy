@@ -41,6 +41,7 @@ class WebSocketHandler;
 class TransactionCoordinator;
 class LlmClient;
 class DistributedRateLimiter;
+class DataCatalog;
 
 /**
  * @brief User information for authentication
@@ -149,6 +150,9 @@ public:
     void set_distributed_rate_limiter(std::shared_ptr<DistributedRateLimiter> drl) {
         distributed_rate_limiter_ = std::move(drl);
     }
+    void set_data_catalog(std::shared_ptr<DataCatalog> dc) {
+        data_catalog_ = std::move(dc);
+    }
 
 private:
     // ── Authentication ──────────────────────────────────────────────────
@@ -205,9 +209,16 @@ private:
     void handle_llm_explain_anomaly(const httplib::Request& req, httplib::Response& res);
     void handle_llm_nl_to_policy(const httplib::Request& req, httplib::Response& res);
     void handle_llm_classify_intent(const httplib::Request& req, httplib::Response& res);
+    void handle_nl_query(const httplib::Request& req, httplib::Response& res);
+    void handle_catalog_tables(const httplib::Request& req, httplib::Response& res);
+    void handle_catalog_columns(const httplib::Request& req, httplib::Response& res);
+    void handle_catalog_search(const httplib::Request& req, httplib::Response& res);
+    void handle_catalog_stats(const httplib::Request& req, httplib::Response& res);
+    void handle_policy_simulate(const httplib::Request& req, httplib::Response& res);
 
     // ── Helpers ─────────────────────────────────────────────────────────
     std::string build_metrics_output();
+    std::string build_schema_context(const std::string& database) const;
 
     // ── Members ─────────────────────────────────────────────────────────
     std::shared_ptr<Pipeline> pipeline_;
@@ -265,6 +276,7 @@ private:
     std::shared_ptr<TransactionCoordinator> transaction_coordinator_;
     std::shared_ptr<LlmClient> llm_client_;
     std::shared_ptr<DistributedRateLimiter> distributed_rate_limiter_;
+    std::shared_ptr<DataCatalog> data_catalog_;
 };
 
 } // namespace sqlproxy

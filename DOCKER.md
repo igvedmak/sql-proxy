@@ -265,6 +265,23 @@ curl -X POST http://localhost:8080/policies/reload
 | `POST` | `/api/v1/llm/explain-anomaly` | AI-explain anomalous behavior |
 | `POST` | `/api/v1/llm/nl-to-policy` | Natural language to TOML policy |
 | `POST` | `/api/v1/llm/classify-intent` | AI-classify SQL intent |
+| `POST` | `/api/v1/nl-query` | Natural language to SQL (with optional execution) |
+
+### Data Catalog
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/catalog/tables` | List all cataloged tables with access stats |
+| `GET` | `/api/v1/catalog/tables/:name/columns` | Column details (PII type, confidence, access count) |
+| `GET` | `/api/v1/catalog/search?type=PII_EMAIL` | Search by PII classification type |
+| `GET` | `/api/v1/catalog/search?q=email` | Case-insensitive text search across names |
+| `GET` | `/api/v1/catalog/stats` | Aggregate stats (tables, columns, PII columns) |
+
+### Policy Simulator (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/admin/policies/simulate` | Dry-run proposed policies against audit JSONL |
 
 ### Compliance (Admin)
 

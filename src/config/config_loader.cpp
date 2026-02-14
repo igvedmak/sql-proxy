@@ -1135,6 +1135,7 @@ ProxyConfig::LlmConfig ConfigLoader::extract_llm(const toml::table& root) {
     const auto* sec = root["llm"].as_table();
     if (!sec) return cfg;
     cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.provider = (*sec)["provider"].value_or(std::string("openai"));
     cfg.endpoint = (*sec)["endpoint"].value_or(std::string("https://api.openai.com"));
     cfg.api_key = (*sec)["api_key"].value_or(std::string(""));
     cfg.default_model = (*sec)["default_model"].value_or(std::string("gpt-4"));
@@ -1176,6 +1177,11 @@ RouteConfig ConfigLoader::extract_routes(const toml::table& root) {
     cfg.graphql            = r["graphql"].value_or(cfg.graphql);
     cfg.firewall_mode      = r["firewall_mode"].value_or(cfg.firewall_mode);
     cfg.firewall_allowlist = r["firewall_allowlist"].value_or(cfg.firewall_allowlist);
+    cfg.nl_query           = r["nl_query"].value_or(cfg.nl_query);
+    cfg.catalog_tables     = r["catalog_tables"].value_or(cfg.catalog_tables);
+    cfg.catalog_search     = r["catalog_search"].value_or(cfg.catalog_search);
+    cfg.catalog_stats      = r["catalog_stats"].value_or(cfg.catalog_stats);
+    cfg.policy_simulate    = r["policy_simulate"].value_or(cfg.policy_simulate);
     return cfg;
 }
 
@@ -1187,6 +1193,9 @@ void ConfigLoader::extract_features(const toml::table& root, ProxyConfig& config
     config.masking_enabled        = (*feat)["masking"].value_or(config.masking_enabled);
     config.openapi_enabled        = (*feat)["openapi"].value_or(config.openapi_enabled);
     config.dry_run_enabled        = (*feat)["dry_run"].value_or(config.dry_run_enabled);
+
+    config.data_catalog_enabled       = (*feat)["data_catalog"].value_or(config.data_catalog_enabled);
+    config.policy_simulator_enabled   = (*feat)["policy_simulator"].value_or(config.policy_simulator_enabled);
 }
 
 // ---- Shared extraction + validation ----------------------------------------

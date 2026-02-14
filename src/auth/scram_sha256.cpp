@@ -137,8 +137,8 @@ std::vector<uint8_t> ScramSha256::base64_decode(std::string_view encoded) {
 
     // EVP_DecodeBlock doesn't account for padding, adjust size
     size_t actual = static_cast<size_t>(decoded);
-    if (encoded.size() >= 2 && encoded[encoded.size() - 1] == '=') actual--;
-    if (encoded.size() >= 2 && encoded[encoded.size() - 2] == '=') actual--;
+    if (encoded.size() >= 2 && encoded[encoded.size() - 1] == '=') --actual;
+    if (encoded.size() >= 2 && encoded[encoded.size() - 2] == '=') --actual;
     result.resize(actual);
     return result;
 }
@@ -206,7 +206,7 @@ ScramSha256::ClientFirstMessage ScramSha256::parse_client_first(std::string_view
     int comma_count = 0;
     for (size_t i = 0; i < message.size(); ++i) {
         if (message[i] == ',') {
-            comma_count++;
+            ++comma_count;
             if (comma_count == 2) {
                 gs2_end = i + 1;
                 break;

@@ -15,7 +15,8 @@ enum class LlmUseCase : uint8_t {
     POLICY_GENERATOR,
     ANOMALY_EXPLANATION,
     NL_TO_POLICY,
-    SQL_INTENT_CLASSIFICATION
+    SQL_INTENT_CLASSIFICATION,
+    NL_TO_SQL
 };
 
 [[nodiscard]] inline const char* llm_use_case_to_string(LlmUseCase uc) {
@@ -24,6 +25,7 @@ enum class LlmUseCase : uint8_t {
         case LlmUseCase::ANOMALY_EXPLANATION:       return "anomaly_explanation";
         case LlmUseCase::NL_TO_POLICY:              return "nl_to_policy";
         case LlmUseCase::SQL_INTENT_CLASSIFICATION: return "sql_intent_classification";
+        case LlmUseCase::NL_TO_SQL:                  return "nl_to_sql";
         default:                                     return "unknown";
     }
 }
@@ -62,6 +64,7 @@ class LlmClient {
 public:
     struct Config {
         bool enabled = false;
+        std::string provider = "openai";  // "openai" or "anthropic"
         std::string endpoint = "https://api.openai.com";
         std::string api_key;
         std::string default_model = "gpt-4";
@@ -87,6 +90,8 @@ public:
     [[nodiscard]] LlmResponse explain_anomaly(const std::string& description);
     [[nodiscard]] LlmResponse nl_to_policy(const std::string& natural_language);
     [[nodiscard]] LlmResponse classify_intent(const std::string& sql);
+    [[nodiscard]] LlmResponse nl_to_sql(const std::string& question,
+                                         const std::string& schema_context);
 
     // System prompt access (for testing)
     [[nodiscard]] static std::string get_system_prompt(LlmUseCase use_case);

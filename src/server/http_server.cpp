@@ -41,6 +41,8 @@
 #include "server/websocket_handler.hpp"
 #include "core/transaction_coordinator.hpp"
 #include "core/llm_client.hpp"
+#include "catalog/data_catalog.hpp"
+#include "policy/policy_simulator.hpp"
 
 // cpp-httplib is header-only — suppress its internal deprecation warnings
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -520,6 +522,33 @@ void HttpServer::register_optional_routes(httplib::Server& svr) {
         svr.Post(routes_.llm_classify, [this](const httplib::Request& req, httplib::Response& res) {
             handle_llm_classify_intent(req, res);
         });
+        svr.Post(routes_.nl_query, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_nl_query(req, res);
+        });
+    }
+
+    // Data catalog
+    if (features_.data_catalog && data_catalog_) {
+        svr.Get(routes_.catalog_tables, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_catalog_tables(req, res);
+        });
+        svr.Get(routes_.catalog_search, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_catalog_search(req, res);
+        });
+        svr.Get(routes_.catalog_stats, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_catalog_stats(req, res);
+        });
+        // Match /api/v1/catalog/tables/<anything>/columns
+        svr.Get(R"(/api/v1/catalog/tables/([^/]+)/columns)", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_catalog_columns(req, res);
+        });
+    }
+
+    // Policy simulator
+    if (features_.policy_simulator) {
+        svr.Post(routes_.policy_simulate, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_policy_simulate(req, res);
+        });
     }
 }
 
@@ -706,23 +735,26 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
         if (response.success) {
             res.status = httplib::StatusCode::OK_200;
         } else {
-            static constexpr httplib::StatusCode kErrorToHttp[] = {
-                httplib::StatusCode::OK_200,                   // NONE
-                httplib::StatusCode::BadRequest_400,           // PARSE_ERROR
-                httplib::StatusCode::Forbidden_403,            // ACCESS_DENIED
-                httplib::StatusCode::TooManyRequests_429,      // RATE_LIMITED
-                httplib::StatusCode::ServiceUnavailable_503,   // CIRCUIT_OPEN
-                httplib::StatusCode::BadGateway_502,           // DATABASE_ERROR
-                httplib::StatusCode::InternalServerError_500,  // INTERNAL_ERROR
-                httplib::StatusCode::BadRequest_400,           // INVALID_REQUEST
-                httplib::StatusCode::PayloadTooLarge_413,      // RESULT_TOO_LARGE
-                httplib::StatusCode::Forbidden_403,            // SQLI_BLOCKED
-                httplib::StatusCode::RequestTimeout_408,       // QUERY_TIMEOUT
-                httplib::StatusCode::Forbidden_403,            // QUERY_TOO_EXPENSIVE
+            static const std::unordered_map<ErrorCode, httplib::StatusCode> kErrorToHttp = {
+                {ErrorCode::NONE,               httplib::StatusCode::OK_200},
+                {ErrorCode::PARSE_ERROR,        httplib::StatusCode::BadRequest_400},
+                {ErrorCode::ACCESS_DENIED,      httplib::StatusCode::Forbidden_403},
+                {ErrorCode::RATE_LIMITED,        httplib::StatusCode::TooManyRequests_429},
+                {ErrorCode::CIRCUIT_OPEN,        httplib::StatusCode::ServiceUnavailable_503},
+                {ErrorCode::DATABASE_ERROR,      httplib::StatusCode::BadGateway_502},
+                {ErrorCode::INTERNAL_ERROR,      httplib::StatusCode::InternalServerError_500},
+                {ErrorCode::INVALID_REQUEST,     httplib::StatusCode::BadRequest_400},
+                {ErrorCode::RESULT_TOO_LARGE,    httplib::StatusCode::PayloadTooLarge_413},
+                {ErrorCode::SQLI_BLOCKED,        httplib::StatusCode::Forbidden_403},
+                {ErrorCode::QUERY_TIMEOUT,       httplib::StatusCode::RequestTimeout_408},
+                {ErrorCode::QUERY_TOO_EXPENSIVE, httplib::StatusCode::Forbidden_403},
+                {ErrorCode::FIREWALL_BLOCKED,    httplib::StatusCode::Forbidden_403},
+                {ErrorCode::RESIDENCY_BLOCKED,   httplib::StatusCode::Forbidden_403},
+                {ErrorCode::COPY_NOT_SUPPORTED,  httplib::StatusCode::BadRequest_400},
             };
-            const size_t idx = static_cast<size_t>(response.error_code);
-            res.status = (idx < std::size(kErrorToHttp))
-                ? kErrorToHttp[idx]
+            const auto it = kErrorToHttp.find(response.error_code);
+            res.status = (it != kErrorToHttp.end())
+                ? it->second
                 : httplib::StatusCode::InternalServerError_500;
         }
 
@@ -995,9 +1027,11 @@ std::string HttpServer::build_metrics_output() {
         const auto events = cb->get_recent_events();
         uint64_t to_open = 0, to_half_open = 0, to_closed = 0;
         for (const auto& e : events) {
-            if (e.to == CircuitState::OPEN) ++to_open;
-            else if (e.to == CircuitState::HALF_OPEN) ++to_half_open;
-            else if (e.to == CircuitState::CLOSED) ++to_closed;
+            switch (e.to) {
+                case CircuitState::OPEN:      ++to_open; break;
+                case CircuitState::HALF_OPEN: ++to_half_open; break;
+                case CircuitState::CLOSED:    ++to_closed; break;
+            }
         }
         output += std::format(
             "# HELP sql_proxy_circuit_breaker_transitions_total Circuit breaker state transitions\n"
@@ -1231,17 +1265,23 @@ void HttpServer::handle_circuit_breakers(const httplib::Request& req, httplib::R
     }
     const auto stats = cb->get_stats();
     const auto events = cb->get_recent_events();
-    const char* state_str = (stats.state == CircuitState::CLOSED) ? "closed" :
-                            (stats.state == CircuitState::OPEN) ? "open" : "half_open";
+    auto circuit_state_str = [](CircuitState s) -> const char* {
+        switch (s) {
+            case CircuitState::CLOSED:    return "closed";
+            case CircuitState::OPEN:      return "open";
+            case CircuitState::HALF_OPEN: return "half_open";
+            default:                      return "unknown";
+        }
+    };
+
+    const char* state_str = circuit_state_str(stats.state);
 
     std::string events_json = "[";
     for (size_t i = 0; i < events.size(); ++i) {
         if (i > 0) events_json += ",";
         const auto& e = events[i];
-        const char* from_str = (e.from == CircuitState::CLOSED) ? "closed" :
-                               (e.from == CircuitState::OPEN) ? "open" : "half_open";
-        const char* to_str = (e.to == CircuitState::CLOSED) ? "closed" :
-                             (e.to == CircuitState::OPEN) ? "open" : "half_open";
+        const char* from_str = circuit_state_str(e.from);
+        const char* to_str = circuit_state_str(e.to);
         events_json += std::format(
             R"({{"from":"{}","to":"{}","breaker":"{}"}})",
             from_str, to_str, e.breaker_name);
@@ -1643,9 +1683,9 @@ void HttpServer::handle_tenant_get(const httplib::Request& req, httplib::Respons
     res.set_content(
         std::format(R"({{"tenant_id":"{}","has_policy_engine":{},"has_rate_limiter":{},"has_audit_emitter":{},"user_count":{}}})",
             ctx->tenant_id,
-            ctx->policy_engine ? "true" : "false",
-            ctx->rate_limiter ? "true" : "false",
-            ctx->audit_emitter ? "true" : "false",
+            utils::booltostr(ctx->policy_engine != nullptr),
+            utils::booltostr(ctx->rate_limiter != nullptr),
+            utils::booltostr(ctx->audit_emitter != nullptr),
             ctx->users.size()),
         http::kJsonContentType);
 }
@@ -1876,13 +1916,13 @@ void HttpServer::handle_synthetic_data(const httplib::Request& req, httplib::Res
     if (!require_admin(admin_token_, req, res)) return;
 
     if (!synthetic_data_generator_ || !synthetic_data_generator_->is_enabled()) {
-        res.status = 400;
+        res.status = httplib::StatusCode::BadRequest_400;
         res.set_content(R"({"error":"Synthetic data generation is disabled"})", http::kJsonContentType);
         return;
     }
 
     if (!schema_cache_) {
-        res.status = 500;
+        res.status = httplib::StatusCode::InternalServerError_500;
         res.set_content(R"({"error":"Schema cache not available"})", http::kJsonContentType);
         return;
     }
@@ -1892,7 +1932,7 @@ void HttpServer::handle_synthetic_data(const httplib::Request& req, httplib::Res
     // Extract table name from body
     auto table_pos = body.find("\"table\"");
     if (table_pos == std::string::npos) {
-        res.status = 400;
+        res.status = httplib::StatusCode::BadRequest_400;
         res.set_content(R"({"error":"Missing 'table' field"})", http::kJsonContentType);
         return;
     }
@@ -1900,7 +1940,7 @@ void HttpServer::handle_synthetic_data(const httplib::Request& req, httplib::Res
     auto quote1 = body.find('"', colon + 1);
     auto quote2 = body.find('"', quote1 + 1);
     if (quote1 == std::string::npos || quote2 == std::string::npos) {
-        res.status = 400;
+        res.status = httplib::StatusCode::BadRequest_400;
         res.set_content(R"({"error":"Invalid 'table' field"})", http::kJsonContentType);
         return;
     }
@@ -1918,7 +1958,7 @@ void HttpServer::handle_synthetic_data(const httplib::Request& req, httplib::Res
 
     const auto table_meta = schema_cache_->get_table(table_name);
     if (!table_meta) {
-        res.status = 404;
+        res.status = httplib::StatusCode::NotFound_404;
         res.set_content(std::format(R"({{"error":"Table '{}' not found in schema cache"}})", table_name),
             http::kJsonContentType);
         return;
@@ -1954,7 +1994,7 @@ void HttpServer::handle_distributed_rate_limits(const httplib::Request& req, htt
     if (!require_admin(admin_token_, req, res)) return;
 
     if (!distributed_rate_limiter_) {
-        res.status = 400;
+        res.status = httplib::StatusCode::BadRequest_400;
         res.set_content(R"({"error":"Distributed rate limiting is disabled"})", http::kJsonContentType);
         return;
     }
@@ -1977,7 +2017,7 @@ void HttpServer::handle_transaction_begin(const httplib::Request& req, httplib::
     const auto xid = transaction_coordinator_->begin_transaction(user);
 
     if (xid.empty()) {
-        res.status = 429;
+        res.status = httplib::StatusCode::TooManyRequests_429;
         res.set_content(R"({"error":"Max active transactions reached"})", http::kJsonContentType);
         return;
     }
@@ -1992,7 +2032,7 @@ void HttpServer::handle_transaction_prepare(const httplib::Request& req, httplib
     if (transaction_coordinator_->prepare(xid)) {
         res.set_content(std::format(R"({{"xid":"{}","state":"PREPARED"}})", xid), http::kJsonContentType);
     } else {
-        res.status = 400;
+        res.status = httplib::StatusCode::BadRequest_400;
         res.set_content(std::format(R"({{"error":"Cannot prepare transaction {}","xid":"{}"}})", xid, xid), http::kJsonContentType);
     }
 }
@@ -2004,7 +2044,7 @@ void HttpServer::handle_transaction_commit(const httplib::Request& req, httplib:
     if (transaction_coordinator_->commit(xid)) {
         res.set_content(std::format(R"({{"xid":"{}","state":"COMMITTED"}})", xid), http::kJsonContentType);
     } else {
-        res.status = 400;
+        res.status = httplib::StatusCode::BadRequest_400;
         res.set_content(std::format(R"({{"error":"Cannot commit transaction {}","xid":"{}"}})", xid, xid), http::kJsonContentType);
     }
 }
@@ -2016,7 +2056,7 @@ void HttpServer::handle_transaction_rollback(const httplib::Request& req, httpli
     if (transaction_coordinator_->rollback(xid)) {
         res.set_content(std::format(R"({{"xid":"{}","state":"ABORTED"}})", xid), http::kJsonContentType);
     } else {
-        res.status = 400;
+        res.status = httplib::StatusCode::BadRequest_400;
         res.set_content(std::format(R"({{"error":"Cannot rollback transaction {}","xid":"{}"}})", xid, xid), http::kJsonContentType);
     }
 }
@@ -2083,10 +2123,10 @@ void HttpServer::handle_llm_generate_policy(const httplib::Request& req, httplib
     const auto resp = llm_client_->generate_policy(query_sample, context);
     std::string json = std::format(
         R"({{"success":{},"content":"{}","model":"{}","from_cache":{}}})",
-        resp.success ? "true" : "false",
+        utils::booltostr(resp.success),
         resp.success ? resp.content : resp.error,
         resp.model_used,
-        resp.from_cache ? "true" : "false");
+        utils::booltostr(resp.from_cache));
     res.set_content(json, http::kJsonContentType);
 }
 
@@ -2108,9 +2148,9 @@ void HttpServer::handle_llm_explain_anomaly(const httplib::Request& req, httplib
     const auto resp = llm_client_->explain_anomaly(description);
     std::string json = std::format(
         R"({{"success":{},"content":"{}","from_cache":{}}})",
-        resp.success ? "true" : "false",
+        utils::booltostr(resp.success),
         resp.success ? resp.content : resp.error,
-        resp.from_cache ? "true" : "false");
+        utils::booltostr(resp.from_cache));
     res.set_content(json, http::kJsonContentType);
 }
 
@@ -2132,9 +2172,9 @@ void HttpServer::handle_llm_nl_to_policy(const httplib::Request& req, httplib::R
     const auto resp = llm_client_->nl_to_policy(prompt);
     std::string json = std::format(
         R"({{"success":{},"content":"{}","from_cache":{}}})",
-        resp.success ? "true" : "false",
+        utils::booltostr(resp.success),
         resp.success ? resp.content : resp.error,
-        resp.from_cache ? "true" : "false");
+        utils::booltostr(resp.from_cache));
     res.set_content(json, http::kJsonContentType);
 }
 
@@ -2156,9 +2196,439 @@ void HttpServer::handle_llm_classify_intent(const httplib::Request& req, httplib
     const auto resp = llm_client_->classify_intent(sql);
     std::string json = std::format(
         R"({{"success":{},"content":"{}","from_cache":{}}})",
-        resp.success ? "true" : "false",
+        utils::booltostr(resp.success),
         resp.success ? resp.content : resp.error,
-        resp.from_cache ? "true" : "false");
+        utils::booltostr(resp.from_cache));
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Helper: Build schema context for LLM
+// ============================================================================
+
+std::string HttpServer::build_schema_context(const std::string& database) const {
+    if (!schema_cache_) return "";
+
+    const auto tables = schema_cache_->get_all_tables();
+    if (tables.empty()) return "";
+
+    std::string ctx;
+    ctx.reserve(4096);
+    ctx += "Database: ";
+    ctx += database;
+    ctx += "\n\nTables:\n";
+
+    for (const auto& [name, meta] : tables) {
+        ctx += '\n';
+        ctx += name;
+        ctx += " (";
+        for (size_t i = 0; i < meta->columns.size(); ++i) {
+            if (i > 0) ctx += ", ";
+            ctx += meta->columns[i].name;
+            ctx += ' ';
+            ctx += meta->columns[i].type;
+            if (meta->columns[i].is_primary_key) ctx += " PK";
+        }
+        ctx += ')';
+    }
+
+    return ctx;
+}
+
+// ============================================================================
+// Handler: POST /api/v1/nl-query (Natural Language to SQL)
+// ============================================================================
+
+void HttpServer::handle_nl_query(const httplib::Request& req, httplib::Response& res) {
+    // Authenticate user (same as query endpoint)
+    const auto auth_header = req.get_header_value(http::kAuthorizationHeader);
+    std::string user;
+    std::vector<std::string> roles;
+    std::unordered_map<std::string, std::string> attributes;
+
+    if (auth_header.size() > http::kBearerPrefix.size()) {
+        const std::string api_key(auth_header.substr(http::kBearerPrefix.size()));
+        const auto user_opt = authenticate_api_key(api_key);
+        if (!user_opt) {
+            res.status = httplib::StatusCode::Unauthorized_401;
+            res.set_content(R"({"success":false,"error":"Invalid API key"})", http::kJsonContentType);
+            return;
+        }
+        user = user_opt->name;
+        roles = user_opt->roles;
+        attributes = user_opt->attributes;
+    } else {
+        // Fall back to "user" field in body
+        const auto user_sv = parse_json_field(req.body, "user");
+        if (user_sv.empty()) {
+            res.status = httplib::StatusCode::Unauthorized_401;
+            res.set_content(R"({"success":false,"error":"Missing authorization or user field"})", http::kJsonContentType);
+            return;
+        }
+        user = std::string(user_sv);
+        const auto user_opt = validate_user(user);
+        if (user_opt) {
+            roles = user_opt->roles;
+            attributes = user_opt->attributes;
+        }
+    }
+
+    // Parse request body
+    const auto question_sv = parse_json_field(req.body, "question");
+    const auto database_sv = parse_json_field(req.body, "database");
+
+    if (question_sv.empty()) {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(R"({"success":false,"error":"Missing required field: question"})", http::kJsonContentType);
+        return;
+    }
+
+    std::string question(question_sv);
+    std::string database = database_sv.empty() ? "testdb" : std::string(database_sv);
+
+    // Check if execute is requested (default: false, just return the SQL)
+    const bool execute = req.body.find("\"execute\"") != std::string::npos &&
+                   req.body.find("true", req.body.find("\"execute\"")) != std::string::npos;
+
+    // Build schema context for LLM
+    const auto schema_ctx = build_schema_context(database);
+
+    // Call LLM
+    const auto llm_resp = llm_client_->nl_to_sql(question, schema_ctx);
+    if (!llm_resp.success) {
+        res.set_content(std::format(
+            R"({{"success":false,"error":"{}"}})",
+            utils::escape_json(llm_resp.error)),
+            http::kJsonContentType);
+        return;
+    }
+
+    // Clean up generated SQL (strip markdown fences if LLM adds them)
+    std::string generated_sql = llm_resp.content;
+    if (generated_sql.starts_with("```")) {
+        const auto first_newline = generated_sql.find('\n');
+        const auto last_fence = generated_sql.rfind("```");
+        if (first_newline != std::string::npos && last_fence > first_newline) {
+            generated_sql = generated_sql.substr(first_newline + 1, last_fence - first_newline - 1);
+        }
+    }
+    // Trim whitespace
+    while (!generated_sql.empty() && std::isspace(static_cast<unsigned char>(generated_sql.front())))
+        generated_sql.erase(generated_sql.begin());
+    while (!generated_sql.empty() && std::isspace(static_cast<unsigned char>(generated_sql.back())))
+        generated_sql.pop_back();
+
+    if (!execute) {
+        // Return generated SQL without executing
+        res.set_content(std::format(
+            R"({{"success":true,"sql":"{}","executed":false,"latency_ms":{}}})",
+            utils::escape_json(generated_sql),
+            llm_resp.latency.count()),
+            http::kJsonContentType);
+        return;
+    }
+
+    // Execute through full pipeline
+    ProxyRequest proxy_req;
+    proxy_req.user = user;
+    proxy_req.roles = roles;
+    proxy_req.sql = generated_sql;
+    proxy_req.database = database;
+    proxy_req.user_attributes = attributes;
+
+    const auto response = pipeline_->execute(proxy_req);
+
+    // Build response
+    std::string json = std::format(
+        R"({{"success":{},"sql":"{}","executed":true,"latency_ms":{},)",
+        utils::booltostr(response.success),
+        utils::escape_json(generated_sql),
+        llm_resp.latency.count());
+
+    if (response.success && response.result.has_value()) {
+        const auto& result = *response.result;
+        json += "\"columns\":[";
+        for (size_t i = 0; i < result.column_names.size(); ++i) {
+            if (i > 0) json += ',';
+            json += std::format("\"{}\"", utils::escape_json(result.column_names[i]));
+        }
+        json += "],\"rows\":[";
+        for (size_t i = 0; i < result.rows.size(); ++i) {
+            if (i > 0) json += ',';
+            json += '[';
+            for (size_t j = 0; j < result.rows[i].size(); ++j) {
+                if (j > 0) json += ',';
+                json += std::format("\"{}\"", utils::escape_json(result.rows[i][j]));
+            }
+            json += ']';
+        }
+        json += "],\"row_count\":";
+        json += std::to_string(result.rows.size());
+    } else if (!response.success) {
+        json += std::format("\"error\":\"{}\"", utils::escape_json(response.error_message));
+    }
+
+    json += '}';
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: GET /api/v1/catalog/tables
+// ============================================================================
+
+void HttpServer::handle_catalog_tables(const httplib::Request& req, httplib::Response& res) {
+    const auto auth = req.get_header_value(http::kAuthorizationHeader);
+    if (!admin_token_.empty()) {
+        if (auth.size() <= http::kBearerPrefix.size() ||
+            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            res.status = httplib::StatusCode::Unauthorized_401;
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
+            return;
+        }
+    }
+
+    auto tables = data_catalog_->get_tables();
+
+    std::string json = "{\"tables\":[";
+    for (size_t i = 0; i < tables.size(); ++i) {
+        if (i > 0) json += ',';
+        const auto& t = tables[i];
+        json += std::format(
+            "{{\"name\":\"{}\",\"database\":\"{}\",\"schema\":\"{}\","
+            "\"total_accesses\":{},\"column_count\":{},\"last_accessed\":\"{}\"}}",
+            utils::escape_json(t.name), utils::escape_json(t.database),
+            utils::escape_json(t.schema),
+            t.total_accesses, t.column_names.size(),
+            utils::format_timestamp(t.last_accessed));
+    }
+    json += std::format("],\"total\":{}}}", tables.size());
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: GET /api/v1/catalog/tables/:name/columns
+// ============================================================================
+
+void HttpServer::handle_catalog_columns(const httplib::Request& req, httplib::Response& res) {
+    const auto auth = req.get_header_value(http::kAuthorizationHeader);
+    if (!admin_token_.empty()) {
+        if (auth.size() <= http::kBearerPrefix.size() ||
+            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            res.status = httplib::StatusCode::Unauthorized_401;
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
+            return;
+        }
+    }
+
+    // Extract table name from regex match
+    std::string table_name;
+    if (!req.matches.empty() && req.matches.size() > 1) {
+        table_name = req.matches[1].str();
+    }
+
+    if (table_name.empty()) {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(R"({"error":"Missing table name"})", http::kJsonContentType);
+        return;
+    }
+
+    auto columns = data_catalog_->get_columns(table_name);
+
+    std::string json = "{\"columns\":[";
+    for (size_t i = 0; i < columns.size(); ++i) {
+        if (i > 0) json += ',';
+        const auto& c = columns[i];
+        json += std::format(
+            "{{\"name\":\"{}\",\"type\":\"{}\",\"pii_type\":\"{}\","
+            "\"confidence\":{:.2f},\"access_count\":{},"
+            "\"masked_count\":{},\"users_count\":{},"
+            "\"primary_key\":{},\"nullable\":{}}}",
+            utils::escape_json(c.column), utils::escape_json(c.data_type),
+            classification_type_to_string(c.pii_type),
+            c.confidence, c.access_count, c.masked_count,
+            c.accessing_users.size(),
+            utils::booltostr(c.is_primary_key),
+            utils::booltostr(c.is_nullable));
+    }
+    json += std::format("],\"total\":{}}}", columns.size());
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: GET /api/v1/catalog/search
+// ============================================================================
+
+void HttpServer::handle_catalog_search(const httplib::Request& req, httplib::Response& res) {
+    const auto auth = req.get_header_value(http::kAuthorizationHeader);
+    if (!admin_token_.empty()) {
+        if (auth.size() <= http::kBearerPrefix.size() ||
+            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            res.status = httplib::StatusCode::Unauthorized_401;
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
+            return;
+        }
+    }
+
+    const auto query_param = req.get_param_value("q");
+    const bool pii_only = req.get_param_value("pii") == "true";
+
+    std::vector<CatalogSearchResult> results;
+    if (pii_only) {
+        auto type_param = req.get_param_value("type");
+        ClassificationType type = ClassificationType::NONE;
+        if (!type_param.empty()) {
+            type = classification_type_from_string(type_param);
+        }
+        results = data_catalog_->search_pii(type);
+    } else if (!query_param.empty()) {
+        results = data_catalog_->search(query_param);
+    } else {
+        results = data_catalog_->search_pii();
+    }
+
+    std::string json = "{\"results\":[";
+    for (size_t i = 0; i < results.size(); ++i) {
+        if (i > 0) json += ',';
+        const auto& r = results[i];
+        json += std::format(
+            "{{\"table\":\"{}\",\"column\":\"{}\",\"pii_type\":\"{}\","
+            "\"confidence\":{:.2f},\"access_count\":{}}}",
+            utils::escape_json(r.table), utils::escape_json(r.column),
+            classification_type_to_string(r.pii_type),
+            r.confidence, r.access_count);
+    }
+    json += std::format("],\"total\":{}}}", results.size());
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: GET /api/v1/catalog/stats
+// ============================================================================
+
+void HttpServer::handle_catalog_stats(const httplib::Request& req, httplib::Response& res) {
+    const auto auth = req.get_header_value(http::kAuthorizationHeader);
+    if (!admin_token_.empty()) {
+        if (auth.size() <= http::kBearerPrefix.size() ||
+            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            res.status = httplib::StatusCode::Unauthorized_401;
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
+            return;
+        }
+    }
+
+    auto stats = data_catalog_->get_stats();
+    std::string json = std::format(
+        "{{\"total_tables\":{},\"total_columns\":{},\"pii_columns\":{},"
+        "\"total_classifications_recorded\":{}}}",
+        stats.total_tables, stats.total_columns, stats.pii_columns,
+        stats.total_classifications_recorded);
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: POST /api/v1/policies/simulate
+// ============================================================================
+
+void HttpServer::handle_policy_simulate(const httplib::Request& req, httplib::Response& res) {
+    const auto auth = req.get_header_value(http::kAuthorizationHeader);
+    if (!admin_token_.empty()) {
+        if (auth.size() <= http::kBearerPrefix.size() ||
+            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            res.status = httplib::StatusCode::Unauthorized_401;
+            res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
+            return;
+        }
+    }
+
+    const auto& body = req.body;
+
+    // Extract audit_file
+    std::string audit_file;
+    auto af_pos = body.find("\"audit_file\"");
+    if (af_pos != std::string::npos) {
+        auto colon = body.find(':', af_pos);
+        if (colon != std::string::npos) {
+            auto qs = body.find('"', colon + 1);
+            if (qs != std::string::npos) {
+                auto qe = utils::find_unescaped_quote(body, qs + 1);
+                if (qe != std::string::npos) {
+                    audit_file = body.substr(qs + 1, qe - qs - 1);
+                }
+            }
+        }
+    }
+
+    // Extract limit
+    size_t limit = 0;
+    auto lim_pos = body.find("\"limit\"");
+    if (lim_pos != std::string::npos) {
+        auto colon = body.find(':', lim_pos);
+        if (colon != std::string::npos) {
+            auto val_start = colon + 1;
+            while (val_start < body.size() && (body[val_start] == ' ' || body[val_start] == '\n'))
+                ++val_start;
+            limit = static_cast<size_t>(std::strtoul(body.c_str() + val_start, nullptr, 10));
+        }
+    }
+
+    // Extract max_diffs
+    size_t max_diffs = 100;
+    auto md_pos = body.find("\"max_diffs\"");
+    if (md_pos != std::string::npos) {
+        auto colon = body.find(':', md_pos);
+        if (colon != std::string::npos) {
+            auto val_start = colon + 1;
+            while (val_start < body.size() && (body[val_start] == ' ' || body[val_start] == '\n'))
+                ++val_start;
+            max_diffs = static_cast<size_t>(std::strtoul(body.c_str() + val_start, nullptr, 10));
+        }
+    }
+
+    // Parse policies from JSON
+    auto policies = PolicySimulator::parse_policies_json(body);
+    if (policies.empty()) {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(R"({"error":"No policies provided or invalid format"})", http::kJsonContentType);
+        return;
+    }
+
+    // Parse audit file
+    if (audit_file.empty()) {
+        audit_file = "audit.jsonl";
+    }
+    auto queries = PolicySimulator::parse_audit_file(audit_file, limit);
+    if (queries.empty()) {
+        res.set_content(R"({"error":"No audit records found or file not accessible","total":0,"changed":0})",
+                        http::kJsonContentType);
+        return;
+    }
+
+    // Run simulation
+    auto result = PolicySimulator::simulate(policies, queries, max_diffs);
+
+    // Build response
+    std::string json = std::format(
+        "{{\"total\":{},\"changed\":{},\"newly_blocked\":{},\"newly_allowed\":{},"
+        "\"unchanged\":{},\"duration_us\":{},\"diffs\":[",
+        result.total_queries, result.changed, result.newly_blocked, result.newly_allowed,
+        result.unchanged, result.duration.count());
+
+    for (size_t i = 0; i < result.diffs.size(); ++i) {
+        if (i > 0) json += ',';
+        const auto& d = result.diffs[i];
+        json += std::format(
+            "{{\"user\":\"{}\",\"sql\":\"{}\",\"database\":\"{}\","
+            "\"original_decision\":\"{}\",\"new_decision\":\"{}\","
+            "\"original_policy\":\"{}\",\"new_policy\":\"{}\"}}",
+            utils::escape_json(d.user),
+            utils::escape_json(d.sql.substr(0, 200)),
+            utils::escape_json(d.database),
+            decision_to_string(d.original_decision),
+            decision_to_string(d.new_decision),
+            utils::escape_json(d.original_policy),
+            utils::escape_json(d.new_policy));
+    }
+    json += "]}";
     res.set_content(json, http::kJsonContentType);
 }
 

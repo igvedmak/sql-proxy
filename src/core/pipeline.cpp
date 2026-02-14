@@ -31,6 +31,7 @@
 #include "core/cost_based_rewriter.hpp"
 #include "core/transaction_coordinator.hpp"
 #include "core/llm_client.hpp"
+#include "catalog/data_catalog.hpp"
 
 #include <thread>
 #include <unordered_set>
@@ -236,6 +237,14 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
 
     // Layer 6: Classify (runs on masked data — won't double-report PII)
     classify_results(ctx);
+
+    // Layer 6.1: Push classifications to data catalog
+    if (c_.data_catalog && !ctx.classification_result.classifications.empty()) {
+        c_.data_catalog->record_classifications(
+            ctx.database, ctx.user,
+            ctx.analysis, ctx.classification_result,
+            ctx.masking_applied);
+    }
 
     // Layer 6.5: Record data lineage for PII columns
     record_lineage(ctx);

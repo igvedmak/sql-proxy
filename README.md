@@ -117,7 +117,9 @@ Client Request
      |
 6  CLASSIFY ----------- PII detection (4-strategy chain)
      |
-6b LINEAGE ------------ Track PII access for compliance
+6b DATA CATALOG ------- Record classifications to metadata catalog
+     |
+6c LINEAGE ------------ Track PII access for compliance
      |
 7  AUDIT -------------- Async ring buffer -> file/webhook/syslog
      |
@@ -242,6 +244,8 @@ Hierarchical 4-level token bucket -- **all levels must pass** for a request to s
 - Cost-based query rewriting (SELECT * expansion, default LIMIT injection)
 
 **Data Governance**
+- Data catalog (auto-populated metadata from live query classifications)
+- Policy simulator (dry-run proposed policy changes against audit history)
 - Column-level data versioning (track who modified sensitive columns)
 - Synthetic data generation (PII-aware fake data from real schemas)
 
@@ -259,6 +263,7 @@ Hierarchical 4-level token bucket -- **all levels must pass** for a request to s
 - AI policy generator (analyze queries, auto-create access policies)
 - AI anomaly explanation (explain why behavior is anomalous)
 - Natural language to policy (admin types intent, LLM generates TOML)
+- Natural language to SQL (convert plain English questions to SQL with optional execution)
 - SQL intent classification (detect business-logic attacks beyond syntax)
 - Response caching and per-minute rate limiting for LLM API calls
 
@@ -395,6 +400,12 @@ Authenticate with the `admin_token` from `config/proxy.toml`.
 | POST | `/api/v1/llm/explain-anomaly` | Admin | AI-explain anomalous behavior |
 | POST | `/api/v1/llm/nl-to-policy` | Admin | Natural language to TOML policy |
 | POST | `/api/v1/llm/classify-intent` | Admin | AI-classify SQL intent |
+| POST | `/api/v1/nl-query` | API key | Natural language to SQL (with optional execution) |
+| GET | `/api/v1/catalog/tables` | API key | List all cataloged tables |
+| GET | `/api/v1/catalog/tables/:name/columns` | API key | Column details for a table |
+| GET | `/api/v1/catalog/search` | API key | Search catalog by PII type or text |
+| GET | `/api/v1/catalog/stats` | API key | Catalog aggregate statistics |
+| POST | `/api/v1/admin/policies/simulate` | Admin | Simulate policy changes against audit log |
 | GET | `/dashboard` | None | Admin dashboard UI |
 | GET | `/dashboard/api/stats` | Admin | Stats JSON snapshot |
 | GET | `/dashboard/api/metrics/stream` | Admin | SSE real-time stream |

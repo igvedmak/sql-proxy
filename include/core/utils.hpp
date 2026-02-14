@@ -179,6 +179,66 @@ inline std::vector<std::string> split(const std::string& str, char delimiter) {
 }
 
 // ============================================================================
+// JSON String Utilities
+// ============================================================================
+
+/**
+ * @brief Escape a string for safe embedding in a JSON string value.
+ * Handles: " \ \n \r \t
+ */
+[[nodiscard]] inline std::string escape_json(const std::string& s) {
+    std::string result;
+    result.reserve(s.size() + s.size() / 8);
+    for (const char c : s) {
+        switch (c) {
+            case '"':  result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\n': result += "\\n"; break;
+            case '\r': result += "\\r"; break;
+            case '\t': result += "\\t"; break;
+            default:   result += c;
+        }
+    }
+    return result;
+}
+
+/**
+ * @brief Find the next unescaped double-quote in a string.
+ * @return Position of the quote, or npos if not found.
+ */
+[[nodiscard]] inline size_t find_unescaped_quote(const std::string& s, size_t start) {
+    for (size_t i = start; i < s.size(); ++i) {
+        if (s[i] == '"' && (i == 0 || s[i - 1] != '\\')) {
+            return i;
+        }
+    }
+    return std::string::npos;
+}
+
+/**
+ * @brief Unescape a JSON string value (reverse of escape_json).
+ */
+[[nodiscard]] inline std::string unescape_json(const std::string& s) {
+    std::string result;
+    result.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            switch (s[i + 1]) {
+                case '"':  result += '"'; ++i; break;
+                case '\\': result += '\\'; ++i; break;
+                case 'n':  result += '\n'; ++i; break;
+                case 'r':  result += '\r'; ++i; break;
+                case 't':  result += '\t'; ++i; break;
+                default:   result += s[i]; break;
+            }
+        } else {
+            result += s[i];
+        }
+    }
+    return result;
+}
+
+// ============================================================================
 // Performance Timer
 // ============================================================================
 

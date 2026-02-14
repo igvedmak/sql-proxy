@@ -78,6 +78,12 @@ public:
     }
 
     /**
+     * @brief Get all cached tables (snapshot copy, wait-free read)
+     * @return Copy of the schema map (shared_ptrs are cheap to copy)
+     */
+    [[nodiscard]] SchemaMap get_all_tables() const;
+
+    /**
      * @brief Get number of cached tables
      */
     size_t table_count() const;

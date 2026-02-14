@@ -1,7 +1,14 @@
 #include "core/llm_client.hpp"
 #include "core/utils.hpp"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#include "../third_party/cpp-httplib/httplib.h"
+#pragma GCC diagnostic pop
+
 #include <format>
 #include <functional>
+#include <thread>
 
 namespace sqlproxy {
 
@@ -46,6 +53,13 @@ std::string LlmClient::get_system_prompt(LlmUseCase use_case) {
                    "PRIVILEGE_ESCALATION, INJECTION_ATTEMPT, SCHEMA_MANIPULATION, "
                    "DENIAL_OF_SERVICE, RECONNAISSANCE. Provide the classification and "
                    "a brief explanation. Format: CLASSIFICATION: <category>\\nEXPLANATION: <text>";
+
+        case LlmUseCase::NL_TO_SQL:
+            return "You are a SQL query generator for PostgreSQL. Given a natural language "
+                   "question and a database schema, generate a single valid PostgreSQL SELECT "
+                   "query that answers the question. Output ONLY the SQL query, no explanation, "
+                   "no markdown code fences, no comments. The query must be safe (no DDL, no "
+                   "mutations, only SELECT). Use the exact table and column names from the schema.";
 
         default:
             return "You are a helpful assistant for SQL proxy administration.";
@@ -155,20 +169,59 @@ LlmResponse LlmClient::complete(const LlmRequest& request) {
     return response;
 }
 
+// ============================================================================
+// LLM Response Parsing
+// ============================================================================
+
+static std::string extract_content(const std::string& body, const std::string& provider) {
+    using utils::find_unescaped_quote;
+    using utils::unescape_json;
+    if (provider == "anthropic") {
+        // Anthropic: {"content":[{"type":"text","text":"..."}]}
+        const auto text_pos = body.rfind("\"text\"");
+        if (text_pos != std::string::npos) {
+            const auto colon = body.find(':', text_pos + 5);
+            if (colon == std::string::npos) return body;
+            const auto quote_start = body.find('"', colon + 1);
+            if (quote_start == std::string::npos) return body;
+            const auto quote_end = find_unescaped_quote(body, quote_start + 1);
+            if (quote_end != std::string::npos) {
+                return unescape_json(body.substr(quote_start + 1, quote_end - quote_start - 1));
+            }
+        }
+    } else {
+        // OpenAI: {"choices":[{"message":{"content":"..."}}]}
+        const auto last_content = body.rfind("\"content\"");
+        if (last_content != std::string::npos) {
+            const auto colon = body.find(':', last_content + 8);
+            if (colon == std::string::npos) return body;
+            // Skip whitespace after colon
+            auto val_start = colon + 1;
+            while (val_start < body.size() && (body[val_start] == ' ' || body[val_start] == '\n')) ++val_start;
+            if (val_start < body.size() && body[val_start] == '"') {
+                const auto quote_end = find_unescaped_quote(body, val_start + 1);
+                if (quote_end != std::string::npos) {
+                    return unescape_json(body.substr(val_start + 1, quote_end - val_start - 1));
+                }
+            }
+        }
+    }
+    return body;
+}
+
+// ============================================================================
+// API Call
+// ============================================================================
+
 LlmResponse LlmClient::call_api(
     const std::string& system_prompt,
     const std::string& user_prompt,
     const std::string& model,
-    [[maybe_unused]] double temperature,
-    [[maybe_unused]] int max_tokens) {
+    double temperature,
+    int max_tokens) {
     api_calls_.fetch_add(1, std::memory_order_relaxed);
 
     const auto start = std::chrono::steady_clock::now();
-
-    // Build OpenAI-compatible request
-    // Note: Actual HTTP call requires httplib::Client; for now we return
-    // a structured response indicating the API endpoint is not reachable
-    // in test environments. In production, this would make the HTTP call.
 
     if (config_.api_key.empty()) {
         api_errors_.fetch_add(1, std::memory_order_relaxed);
@@ -180,27 +233,83 @@ LlmResponse LlmClient::call_api(
         return {false, "", "No endpoint configured", model, 0, 0, false, {}};
     }
 
-    // In production, this would use httplib::Client to call the API:
-    //   httplib::Client cli(config_.endpoint);
-    //   cli.set_bearer_token_auth(config_.api_key);
-    //   auto res = cli.Post("/v1/chat/completions", json_body, "application/json");
-    //
-    // For now, return a placeholder that tests can verify the flow
+    // Build JSON request body
+    std::string json_body;
+    if (config_.provider == "anthropic") {
+        json_body = std::format(
+            R"({{"model":"{}","max_tokens":{},"system":"{}","messages":[{{"role":"user","content":"{}"}}]}})",
+            model, max_tokens,
+            utils::escape_json(system_prompt),
+            utils::escape_json(user_prompt));
+    } else {
+        json_body = std::format(
+            R"({{"model":"{}","temperature":{},"max_tokens":{},"messages":[{{"role":"system","content":"{}"}},{{"role":"user","content":"{}"}}]}})",
+            model, temperature, max_tokens,
+            utils::escape_json(system_prompt),
+            utils::escape_json(user_prompt));
+    }
+
+    // HTTP client
+    httplib::Client cli(config_.endpoint);
+    cli.set_connection_timeout(std::chrono::milliseconds(config_.timeout_ms));
+    cli.set_read_timeout(std::chrono::milliseconds(config_.timeout_ms));
+
+    httplib::Headers headers;
+    std::string path;
+
+    if (config_.provider == "anthropic") {
+        headers = {
+            {"x-api-key", config_.api_key},
+            {"anthropic-version", "2023-06-01"},
+            {"content-type", "application/json"}
+        };
+        path = "/v1/messages";
+    } else {
+        headers = {
+            {"Authorization", "Bearer " + config_.api_key},
+            {"content-type", "application/json"}
+        };
+        path = "/v1/chat/completions";
+    }
+
+    // Retry loop
+    for (uint32_t attempt = 0; attempt <= config_.max_retries; ++attempt) {
+        const auto res = cli.Post(path, headers, json_body, "application/json");
+
+        if (!res) {
+            if (attempt < config_.max_retries) continue;
+            api_errors_.fetch_add(1, std::memory_order_relaxed);
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start);
+            return {false, "", "HTTP request failed: connection error", model, 0, 0, false, elapsed};
+        }
+
+        if (res->status == httplib::StatusCode::TooManyRequests_429) {
+            if (attempt < config_.max_retries) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000 * (attempt + 1)));
+                continue;
+            }
+        }
+
+        if (res->status != httplib::StatusCode::OK_200) {
+            api_errors_.fetch_add(1, std::memory_order_relaxed);
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start);
+            return {false, "", std::format("API error: HTTP {} - {}", res->status,
+                    res->body.substr(0, 200)), model, 0, 0, false, elapsed};
+        }
+
+        auto content = extract_content(res->body, config_.provider);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+
+        return {true, std::move(content), "", model, 0, 0, false, elapsed};
+    }
+
+    api_errors_.fetch_add(1, std::memory_order_relaxed);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start);
-
-    // Simulate API response for testing
-    LlmResponse response;
-    response.success = true;
-    response.content = std::format("[LLM Response] System: {}\nUser: {}",
-                                   system_prompt.substr(0, 50), user_prompt.substr(0, 50));
-    response.model_used = model;
-    response.prompt_tokens = static_cast<uint32_t>(system_prompt.size() / 4);
-    response.completion_tokens = static_cast<uint32_t>(response.content.size() / 4);
-    response.from_cache = false;
-    response.latency = elapsed;
-
-    return response;
+    return {false, "", "Max retries exceeded", model, 0, 0, false, elapsed};
 }
 
 // ============================================================================
@@ -238,6 +347,17 @@ LlmResponse LlmClient::classify_intent(const std::string& sql) {
     req.use_case = LlmUseCase::SQL_INTENT_CLASSIFICATION;
     req.prompt = "Classify the intent of this SQL query:\n" + sql;
     req.temperature = 0.0;
+    return complete(req);
+}
+
+LlmResponse LlmClient::nl_to_sql(const std::string& question,
+                                   const std::string& schema_context) {
+    LlmRequest req;
+    req.use_case = LlmUseCase::NL_TO_SQL;
+    req.prompt = question;
+    req.context = schema_context;
+    req.temperature = 0.0;
+    req.max_tokens = 1024;
     return complete(req);
 }
 

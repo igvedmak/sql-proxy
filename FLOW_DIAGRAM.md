@@ -68,13 +68,23 @@
 │  │  POST /api/v1/llm/explain-anomaly  → AI anomaly explanation          │   │
 │  │  POST /api/v1/llm/nl-to-policy    → Natural language → TOML policy   │   │
 │  │  POST /api/v1/llm/classify-intent → AI SQL intent classification     │   │
+│  │  POST /api/v1/nl-query            → Natural language to SQL + execute  │   │
+│  │                                                                      │   │
+│  │ Data Catalog:                                                          │   │
+│  │  GET  /api/v1/catalog/tables      → List cataloged tables             │   │
+│  │  GET  /api/v1/catalog/tables/:n/columns → Column details (PII, type)  │   │
+│  │  GET  /api/v1/catalog/search      → Search by PII type or text        │   │
+│  │  GET  /api/v1/catalog/stats       → Aggregate catalog statistics      │   │
+│  │                                                                      │   │
+│  │ Policy Simulator:                                                      │   │
+│  │  POST /api/v1/admin/policies/simulate → Dry-run policies vs audit log │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  Feature Flags (config-driven route gating):                                │
 │  ┌─ dry_run, openapi, swagger_ui, metrics, slow_query, schema_drift,       │
 │  │  classification, injection_detection, lineage_tracking, masking,         │
 │  │  dashboard, distributed_rate_limiting, websocket_streaming,              │
-│  └─ multi_db_transactions, llm_features — each toggleable via config       │
+│  └─ multi_db_transactions, llm_features, data_catalog, policy_simulator    │
 │                                                                              │
 │  Request Validation:                                                         │
 │  ┌─ Graceful shutdown check ─────────── DRAINING → 503 Server shutting down │
@@ -170,10 +180,11 @@
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐                 │
 │  │Layer 5.3 │─▶│Layer 5.5 │─▶│Layer 5.6 │─▶│ Layer 6  │──┐              │
 │  │ DECRYPT  │  │ COL ACL  │  │ MASKING  │  │ CLASSIFY │  │              │
-│  │ COLUMNS  │  │ (remove) │  │ (in-place│  │          │  │              │
+│  │ COLUMNS  │  │ (remove) │  │(in-place)│  │          │  │              │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  │              │
 │                                                           ▼              │
 │                                              ┌──────────────────────┐    │
+│                                              │ Layer 6.1: CATALOG   │    │
 │                                              │ Layer 6.5: LINEAGE   │    │
 │                                              │ Layer 7:  AUDIT      │    │
 │                                              │ BUILD RESPONSE       │    │
@@ -869,6 +880,33 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Layer 6.1: Data Catalog
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LAYER 6.1: DATA CATALOG (Post-classification)                               │
+│  Class: DataCatalog                                                          │
+│  Feature-gated: data_catalog_enabled                                         │
+│                                                                              │
+│  Input: ctx.classification_result, ctx.analysis, ctx.user, ctx.masking       │
+│  Only runs when classifications are non-empty                                │
+│                                                                              │
+│  Upserts table/column metadata from live query traffic:                      │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ CatalogColumn {                                                     │     │
+│  │   table, column, data_type, pii_type, confidence, strategy          │     │
+│  │   access_count, masked_count, accessing_users                       │     │
+│  │   first_seen, last_accessed, is_primary_key, is_nullable            │     │
+│  │ }                                                                   │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Thread safety: std::shared_mutex (unique_lock on writes)                    │
+│  Can also be seeded at startup from SchemaCache metadata                     │
+│                                                                              │
+│  Query API: get_tables(), get_columns(), search_pii(), search(), get_stats() │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Layer 6.5: Data Lineage Tracking
 
 ```
@@ -1161,6 +1199,16 @@
 │  POST /api/v1/llm/explain-anomaly   → AI anomaly explanation                 │
 │  POST /api/v1/llm/nl-to-policy      → Natural language → TOML policy         │
 │  POST /api/v1/llm/classify-intent   → AI SQL intent classification           │
+│  POST /api/v1/nl-query              → Natural language → SQL + execute       │
+│                                                                              │
+│  DATA CATALOG (feature-gated: data_catalog)                                  │
+│  GET  /api/v1/catalog/tables        → List tables with access stats          │
+│  GET  /api/v1/catalog/tables/:n/columns → Column PII, confidence, users     │
+│  GET  /api/v1/catalog/search        → Search by PII type or text             │
+│  GET  /api/v1/catalog/stats         → Aggregate catalog statistics           │
+│                                                                              │
+│  POLICY SIMULATOR (feature-gated: policy_simulator, admin)                   │
+│  POST /api/v1/admin/policies/simulate → Dry-run policies vs audit JSONL     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 

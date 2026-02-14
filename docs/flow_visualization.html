@@ -749,6 +749,23 @@
 
           <div class="sub-arrow">&#x25BC;</div>
 
+          <!-- Layer 6.1 -->
+          <div class="sub-block" id="sub-catalog">
+            <div class="sub-header" onclick="toggleSub(event,'sub-catalog')">
+              <span class="layer-num bg-cyan">L6.1</span>
+              <span class="sub-title">Data Catalog</span>
+              <span class="sub-perf">governance</span>
+              <span class="sub-chevron">&#x25B6;</span>
+            </div>
+            <div class="sub-detail">
+              <p>Records classification results into persistent metadata catalog. Upserts table/column entries with PII type, confidence, access counts, and accessing users.</p>
+              <p style="margin-top:6px">Thread safety: <code>std::shared_mutex</code> (unique_lock on writes, shared_lock on reads).</p>
+              <p style="margin-top:6px">Query API: <code>GET /api/v1/catalog/tables</code>, <code>/catalog/tables/:name/columns</code>, <code>/catalog/search</code>, <code>/catalog/stats</code>.</p>
+            </div>
+          </div>
+
+          <div class="sub-arrow">&#x25BC;</div>
+
           <!-- Layer 6.5 -->
           <div class="sub-block" id="sub-lineage">
             <div class="sub-header" onclick="toggleSub(event,'sub-lineage')">
@@ -890,6 +907,24 @@
           <li><code>POST /api/v1/llm/explain-anomaly</code> &mdash; AI-explain anomalous behavior</li>
           <li><code>POST /api/v1/llm/nl-to-policy</code> &mdash; Natural language &rarr; TOML policy</li>
           <li><code>POST /api/v1/llm/classify-intent</code> &mdash; AI SQL intent classification</li>
+          <li><code>POST /api/v1/nl-query</code> &mdash; Natural language to SQL with optional execution</li>
+        </ul>
+      </div>
+      <div class="detail-section">
+        <h4>Data Catalog</h4>
+        <p>Auto-populated metadata catalog built from live query classifications. Tracks PII type, confidence, access counts, and accessing users per column. Seeded at startup from SchemaCache.</p>
+        <ul style="margin-top:6px">
+          <li><code>GET /api/v1/catalog/tables</code> &mdash; List all cataloged tables with access stats</li>
+          <li><code>GET /api/v1/catalog/tables/:name/columns</code> &mdash; Column details (PII, confidence, users)</li>
+          <li><code>GET /api/v1/catalog/search</code> &mdash; Search by PII type or text substring</li>
+          <li><code>GET /api/v1/catalog/stats</code> &mdash; Aggregate catalog statistics</li>
+        </ul>
+      </div>
+      <div class="detail-section">
+        <h4>Policy Simulator</h4>
+        <p>Dry-run proposed policy changes against historical audit data. Reports which queries would be newly blocked or allowed, with detailed diffs.</p>
+        <ul style="margin-top:6px">
+          <li><code>POST /api/v1/admin/policies/simulate</code> &mdash; Simulate policies against audit JSONL file</li>
         </ul>
       </div>
     </div>

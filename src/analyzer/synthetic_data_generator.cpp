@@ -65,49 +65,66 @@ std::string SyntheticDataGenerator::generate_value(
     }
 
     // Type-based generators (fall through from NONE/CUSTOM)
+    enum class TypeCategory { INTEGER, BIGINT, SMALLINT, BOOLEAN, NUMERIC, DATE, UUID, JSON, TEXT };
+
+    static const std::unordered_map<std::string, TypeCategory> kTypeMap = {
+        {"integer",          TypeCategory::INTEGER},
+        {"int4",             TypeCategory::INTEGER},
+        {"int",              TypeCategory::INTEGER},
+        {"serial",           TypeCategory::INTEGER},
+        {"bigint",           TypeCategory::BIGINT},
+        {"int8",             TypeCategory::BIGINT},
+        {"bigserial",        TypeCategory::BIGINT},
+        {"smallint",         TypeCategory::SMALLINT},
+        {"int2",             TypeCategory::SMALLINT},
+        {"boolean",          TypeCategory::BOOLEAN},
+        {"bool",             TypeCategory::BOOLEAN},
+        {"numeric",          TypeCategory::NUMERIC},
+        {"decimal",          TypeCategory::NUMERIC},
+        {"float8",           TypeCategory::NUMERIC},
+        {"double precision", TypeCategory::NUMERIC},
+        {"real",             TypeCategory::NUMERIC},
+        {"float4",           TypeCategory::NUMERIC},
+        {"date",             TypeCategory::DATE},
+        {"uuid",             TypeCategory::UUID},
+        {"json",             TypeCategory::JSON},
+        {"jsonb",            TypeCategory::JSON},
+    };
+
     const auto& type = col.type;
+    auto it = kTypeMap.find(type);
 
-    // Integer types
-    if (type == "integer" || type == "int4" || type == "int" || type == "serial") {
-        return std::to_string(idx + 1);
-    }
-    if (type == "bigint" || type == "int8" || type == "bigserial") {
-        return std::to_string(idx + 1);
-    }
-    if (type == "smallint" || type == "int2") {
-        return std::to_string((idx % 32000) + 1);
+    // Substring match for timestamp variants (e.g. "timestamp with time zone")
+    if (it == kTypeMap.end() && type.find("timestamp") != std::string::npos) {
+        it = kTypeMap.find("date");  // reuse DATE category
     }
 
-    // Boolean
-    if (type == "boolean" || type == "bool") {
-        return (idx % 2 == 0) ? "true" : "false";
+    const auto category = (it != kTypeMap.end()) ? it->second : TypeCategory::TEXT;
+
+    switch (category) {
+        case TypeCategory::INTEGER:
+            return std::format("{}", idx + 1);
+        case TypeCategory::BIGINT:
+            return std::format("{}", idx + 1);
+        case TypeCategory::SMALLINT:
+            return std::format("{}", (idx % 32000) + 1);
+        case TypeCategory::BOOLEAN:
+            return utils::booltostr(idx % 2 == 0);
+        case TypeCategory::NUMERIC:
+            return std::format("{:.2f}", static_cast<double>(idx) * 1.5 + 0.5);
+        case TypeCategory::DATE: {
+            const int day = static_cast<int>((idx % 28) + 1);
+            const int month = static_cast<int>((idx / 28) % 12) + 1;
+            return std::format("2024-{:02d}-{:02d}", month, day);
+        }
+        case TypeCategory::UUID:
+            return std::format("00000000-0000-0000-0000-{:012d}", idx);
+        case TypeCategory::JSON:
+            return std::format("{{\"key\": \"value_{}\"}}", idx);
+        case TypeCategory::TEXT:
+            return std::format("{}_{}", col.name, idx + 1);
     }
 
-    // Numeric/decimal
-    if (type == "numeric" || type == "decimal" || type == "float8" ||
-        type == "double precision" || type == "real" || type == "float4") {
-        return std::format("{:.2f}", static_cast<double>(idx) * 1.5 + 0.5);
-    }
-
-    // Timestamp
-    if (type.find("timestamp") != std::string::npos || type == "date") {
-        // Generate dates from 2024-01-01 onwards
-        const int day = static_cast<int>((idx % 28) + 1);
-        const int month = static_cast<int>((idx / 28) % 12) + 1;
-        return std::format("2024-{:02d}-{:02d}", month, day);
-    }
-
-    // UUID
-    if (type == "uuid") {
-        return std::format("00000000-0000-0000-0000-{:012d}", idx);
-    }
-
-    // JSON/JSONB
-    if (type == "json" || type == "jsonb") {
-        return std::format("{{\"key\": \"value_{}\"}}", idx);
-    }
-
-    // Default: text/varchar
     return std::format("{}_{}", col.name, idx + 1);
 }
 

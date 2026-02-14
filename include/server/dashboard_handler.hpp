@@ -13,6 +13,7 @@ namespace sqlproxy {
 
 class Pipeline;
 class AlertEvaluator;
+class SchemaCache;
 
 /// Minimal user info for dashboard display (avoids pulling in http_server.hpp)
 struct DashboardUser {
@@ -36,7 +37,8 @@ public:
         std::shared_ptr<Pipeline> pipeline,
         std::shared_ptr<AlertEvaluator> alert_evaluator = nullptr,
         std::vector<DashboardUser> users = {},
-        RouteConfig routes = {});
+        RouteConfig routes = {},
+        std::shared_ptr<SchemaCache> schema_cache = nullptr);
 
     void register_routes(httplib::Server& svr, const std::string& admin_token);
 
@@ -50,12 +52,15 @@ private:
     void handle_users(const httplib::Request& req, httplib::Response& res);
     void handle_alerts(const httplib::Request& req, httplib::Response& res);
     void handle_metrics_stream(const httplib::Request& req, httplib::Response& res);
+    void handle_schema(const httplib::Request& req, httplib::Response& res);
+    void handle_playground_page(const httplib::Request& req, httplib::Response& res);
 
     std::shared_ptr<Pipeline> pipeline_;
     std::shared_ptr<AlertEvaluator> alert_evaluator_;
     std::vector<DashboardUser> users_;
     const RouteConfig routes_;
     std::string admin_token_;
+    std::shared_ptr<SchemaCache> schema_cache_;
 };
 
 } // namespace sqlproxy

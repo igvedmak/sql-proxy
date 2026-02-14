@@ -105,6 +105,7 @@ file(GLOB_RECURSE TRACING_SOURCES    src/tracing/*.cpp)
 file(GLOB_RECURSE ALERTING_SOURCES   src/alerting/*.cpp)
 file(GLOB_RECURSE AUTH_SOURCES       src/auth/*.cpp)
 file(GLOB_RECURSE CACHE_SOURCES     src/cache/*.cpp)
+file(GLOB_RECURSE CATALOG_SOURCES   src/catalog/*.cpp)
 
 # Exclude disabled database backends
 if(NOT ENABLE_POSTGRESQL)
@@ -133,6 +134,7 @@ set(LIB_SOURCES
     ${ALERTING_SOURCES}
     ${AUTH_SOURCES}
     ${CACHE_SOURCES}
+    ${CATALOG_SOURCES}
 )
 
 set(ALL_SOURCES

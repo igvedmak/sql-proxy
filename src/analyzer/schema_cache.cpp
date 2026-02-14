@@ -140,6 +140,14 @@ bool SchemaCache::has_table(const std::string& table_name) const {
     return get_table(table_name) != nullptr;
 }
 
+SchemaMap SchemaCache::get_all_tables() const {
+    const auto cache = std::atomic_load_explicit(&cache_ptr_, std::memory_order_acquire);
+    if (!cache) {
+        return {};
+    }
+    return *cache;
+}
+
 size_t SchemaCache::table_count() const {
     const auto cache = std::atomic_load_explicit(&cache_ptr_, std::memory_order_acquire);
     if (!cache) {

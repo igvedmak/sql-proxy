@@ -414,6 +414,60 @@ inline const char* decision_to_string(Decision decision) {
     }
 }
 
+inline const char* classification_type_to_string(ClassificationType t) {
+    switch (t) {
+        case ClassificationType::NONE:              return "NONE";
+        case ClassificationType::PII_EMAIL:         return "PII_EMAIL";
+        case ClassificationType::PII_PHONE:         return "PII_PHONE";
+        case ClassificationType::PII_SSN:           return "PII_SSN";
+        case ClassificationType::PII_CREDIT_CARD:   return "PII_CREDIT_CARD";
+        case ClassificationType::SENSITIVE_SALARY:  return "SENSITIVE_SALARY";
+        case ClassificationType::SENSITIVE_PASSWORD: return "SENSITIVE_PASSWORD";
+        case ClassificationType::CUSTOM:            return "CUSTOM";
+        default:                                    return "UNKNOWN";
+    }
+}
+
+inline ClassificationType classification_type_from_string(std::string_view s) {
+    if (s == "PII_EMAIL")         return ClassificationType::PII_EMAIL;
+    if (s == "PII_PHONE")         return ClassificationType::PII_PHONE;
+    if (s == "PII_SSN")           return ClassificationType::PII_SSN;
+    if (s == "PII_CREDIT_CARD")   return ClassificationType::PII_CREDIT_CARD;
+    if (s == "SENSITIVE_SALARY")  return ClassificationType::SENSITIVE_SALARY;
+    if (s == "SENSITIVE_PASSWORD") return ClassificationType::SENSITIVE_PASSWORD;
+    if (s == "CUSTOM")            return ClassificationType::CUSTOM;
+    return ClassificationType::NONE;
+}
+
+inline StatementType statement_type_from_string(std::string_view s) {
+    if (s == "SELECT")       return StatementType::SELECT;
+    if (s == "INSERT")       return StatementType::INSERT;
+    if (s == "UPDATE")       return StatementType::UPDATE;
+    if (s == "DELETE")       return StatementType::DELETE;
+    if (s == "CREATE_TABLE") return StatementType::CREATE_TABLE;
+    if (s == "ALTER_TABLE")  return StatementType::ALTER_TABLE;
+    if (s == "DROP_TABLE")   return StatementType::DROP_TABLE;
+    if (s == "CREATE_INDEX") return StatementType::CREATE_INDEX;
+    if (s == "DROP_INDEX")   return StatementType::DROP_INDEX;
+    if (s == "TRUNCATE")     return StatementType::TRUNCATE;
+    if (s == "BEGIN")        return StatementType::BEGIN;
+    if (s == "COMMIT")       return StatementType::COMMIT;
+    if (s == "ROLLBACK")     return StatementType::ROLLBACK;
+    if (s == "SET")          return StatementType::SET;
+    if (s == "SHOW")         return StatementType::SHOW;
+    if (s == "PREPARE")      return StatementType::PREPARE;
+    if (s == "EXECUTE")      return StatementType::EXECUTE_STMT;
+    if (s == "DEALLOCATE")   return StatementType::DEALLOCATE;
+    if (s == "COPY")         return StatementType::COPY;
+    return StatementType::UNKNOWN;
+}
+
+inline Decision decision_from_string(std::string_view s) {
+    if (s == "allow" || s == "ALLOW") return Decision::ALLOW;
+    if (s == "error" || s == "ERROR") return Decision::ERROR;
+    return Decision::BLOCK;
+}
+
 inline const char* error_code_to_string(ErrorCode code) {
     switch (code) {
         case ErrorCode::NONE: return "NONE";
