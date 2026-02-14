@@ -38,6 +38,7 @@ class CostBasedRewriter;
 class TransactionCoordinator;
 class LlmClient;
 class DataCatalog;
+class CostTracker;
 class Pipeline;
 
 /**
@@ -83,6 +84,7 @@ struct PipelineComponents {
     std::shared_ptr<TransactionCoordinator> transaction_coordinator;
     std::shared_ptr<LlmClient> llm_client;
     std::shared_ptr<DataCatalog> data_catalog;
+    std::shared_ptr<CostTracker> cost_tracker;
 
     // Feature flags (non-component toggles)
     bool masking_enabled = true;
@@ -137,6 +139,7 @@ public:
     PipelineBuilder& with_transaction_coordinator(std::shared_ptr<TransactionCoordinator> p)   { c_.transaction_coordinator = std::move(p); return *this; }
     PipelineBuilder& with_llm_client(std::shared_ptr<LlmClient> p)                            { c_.llm_client = std::move(p); return *this; }
     PipelineBuilder& with_data_catalog(std::shared_ptr<DataCatalog> p)                       { c_.data_catalog = std::move(p); return *this; }
+    PipelineBuilder& with_cost_tracker(std::shared_ptr<CostTracker> p)                     { c_.cost_tracker = std::move(p); return *this; }
     PipelineBuilder& with_masking_enabled(bool enabled)                                       { c_.masking_enabled = enabled; return *this; }
 
     /**

@@ -99,6 +99,9 @@ struct AuditRecord {
     // Request priority (Tier G)
     PriorityLevel priority = PriorityLevel::NORMAL;
 
+    // Cost attribution
+    double query_cost = 0.0;
+
     AuditRecord()
         : audit_id(utils::generate_uuid()),
           sequence_num(0),

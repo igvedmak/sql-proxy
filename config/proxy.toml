@@ -740,6 +740,8 @@ classification = true    # PII classification / data discovery
 masking        = true    # Data masking in query results
 openapi        = true    # OpenAPI spec + Swagger UI
 dry_run        = true    # Dry-run query endpoint
+cost_tracking  = true    # FinOps cost tracking and budgets
+access_requests = true   # Self-service data access workflows
 
 # ============================================================================
 # Route Configuration (URL paths for all API endpoints)
@@ -766,3 +768,40 @@ schema_approve       = "/api/v1/schema/approve"
 schema_reject        = "/api/v1/schema/reject"
 schema_drift         = "/api/v1/schema/drift"
 graphql              = "/api/v1/graphql"
+compliance_report    = "/api/v1/compliance/report"
+cost_summary         = "/api/v1/cost/summary"
+cost_top             = "/api/v1/cost/top-queries"
+cost_stats           = "/api/v1/cost/stats"
+access_requests      = "/api/v1/access-requests"
+
+# ============================================================================
+# FinOps Cost Tracking (Batch 3)
+# ============================================================================
+
+[cost_tracking]
+enabled = true
+max_top_queries = 50
+
+[cost_tracking.default_budget]
+daily_limit = 100000.0
+hourly_limit = 50000.0
+
+# Per-user budgets override defaults
+[cost_tracking.user_budgets.analyst]
+daily_limit = 50000.0
+hourly_limit = 10000.0
+
+[cost_tracking.user_budgets.developer]
+daily_limit = 2000.0
+hourly_limit = 500.0
+
+# ============================================================================
+# Self-Service Access Requests (Batch 3)
+# ============================================================================
+
+[access_requests]
+enabled = true
+max_duration_hours = 168
+default_duration_hours = 24
+max_pending_requests = 100
+cleanup_interval_seconds = 300

@@ -366,6 +366,9 @@ void append_performance(std::string& out, const AuditRecord& r) {
         "\"execution_time_us\":{},\"classification_time_us\":{},\"proxy_overhead_us\":{},",
         r.total_duration.count(), r.parse_time.count(), r.policy_time.count(),
         r.execution_time.count(), r.classification_time.count(), r.proxy_overhead.count());
+    if (r.query_cost > 0.0) {
+        out += std::format("\"query_cost\":{:.2f},", r.query_cost);
+    }
 }
 
 void append_operational(std::string& out, const AuditRecord& r) {

@@ -50,6 +50,10 @@ struct Policy {
     // Shadow mode: log decision but don't enforce
     bool shadow = false;
 
+    // Time-limited policies (for self-service access workflows)
+    std::optional<std::chrono::system_clock::time_point> valid_from;
+    std::optional<std::chrono::system_clock::time_point> valid_until;
+
     Policy() : priority(0), action(Decision::BLOCK) {}
 
     bool matches_user(const std::string& user) const {

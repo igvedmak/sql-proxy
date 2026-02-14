@@ -1,6 +1,7 @@
 #include "core/pipeline_stages.hpp"
 #include "core/query_rewriter.hpp"
 #include "core/query_cost_estimator.hpp"
+#include "finops/cost_tracker.hpp"
 #include "core/cost_based_rewriter.hpp"
 #include "db/database_router.hpp"
 #include "db/isql_parser.hpp"
@@ -269,8 +270,29 @@ IPipelineStage::Result CostCheckStage::process(RequestContext& ctx) {
     if (!c_.query_cost_estimator || !c_.query_cost_estimator->is_enabled()) return Result::CONTINUE;
     if (ctx.analysis.statement_type != StatementType::SELECT) return Result::CONTINUE;
 
+    // Budget check first (if cost tracker exists)
+    if (c_.cost_tracker) {
+        const auto reason = c_.cost_tracker->check_budget(ctx.user);
+        if (!reason.empty()) {
+            ctx.query_result.success = false;
+            ctx.query_result.error_code = ErrorCode::COST_BUDGET_EXCEEDED;
+            ctx.query_result.error_message = reason;
+            return Result::BLOCK;
+        }
+    }
+
     const uint64_t fp = ctx.fingerprint.has_value() ? ctx.fingerprint->hash : 0;
     const auto estimate = c_.query_cost_estimator->estimate(ctx.sql, fp);
+
+    // Store cost in context (flows to audit)
+    ctx.query_cost = estimate.total_cost;
+
+    // Record in tracker
+    if (c_.cost_tracker) {
+        c_.cost_tracker->record(ctx.user, estimate.total_cost,
+                                estimate.estimated_rows, ctx.sql);
+    }
+
     if (estimate.is_rejected()) {
         ctx.query_result.success = false;
         ctx.query_result.error_code = ErrorCode::QUERY_TOO_EXPENSIVE;

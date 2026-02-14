@@ -504,6 +504,11 @@ AuditRecord build_audit_record(const RequestContext& ctx) {
     // Priority
     r.priority = ctx.priority;
 
+    // Cost attribution
+    if (ctx.query_cost.has_value()) {
+        r.query_cost = *ctx.query_cost;
+    }
+
     return r;
 }
 

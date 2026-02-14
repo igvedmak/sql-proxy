@@ -78,13 +78,31 @@
 │  │                                                                      │   │
 │  │ Policy Simulator:                                                      │   │
 │  │  POST /api/v1/admin/policies/simulate → Dry-run policies vs audit log │   │
+│  │                                                                      │   │
+│  │ Compliance Reports:                                                    │   │
+│  │  GET  /api/v1/compliance/report      → SOC2/GDPR/HIPAA HTML or JSON  │   │
+│  │                                                                      │   │
+│  │ FinOps Cost Tracking:                                                  │   │
+│  │  GET  /api/v1/cost/summary           → Per-user cost breakdown        │   │
+│  │  GET  /api/v1/cost/top-queries       → Most expensive queries         │   │
+│  │  GET  /api/v1/cost/stats             → Aggregate cost metrics         │   │
+│  │                                                                      │   │
+│  │ Self-Service Access Requests:                                          │   │
+│  │  POST /api/v1/access-requests        → Submit access request (user)   │   │
+│  │  GET  /api/v1/access-requests        → List all requests (admin)      │   │
+│  │  GET  /api/v1/access-requests/pending→ Pending requests (admin)       │   │
+│  │  GET  /api/v1/access-requests/:id    → Get request details (admin)    │   │
+│  │  POST /api/v1/access-requests/:id/approve → Approve request (admin)   │   │
+│  │  POST /api/v1/access-requests/:id/deny    → Deny request (admin)      │   │
+│  │  GET  /api/v1/access-requests/stats  → Workflow statistics (admin)    │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  Feature Flags (config-driven route gating):                                │
 │  ┌─ dry_run, openapi, swagger_ui, metrics, slow_query, schema_drift,       │
 │  │  classification, injection_detection, lineage_tracking, masking,         │
 │  │  dashboard, distributed_rate_limiting, websocket_streaming,              │
-│  └─ multi_db_transactions, llm_features, data_catalog, policy_simulator    │
+│  └─ multi_db_transactions, llm_features, data_catalog, policy_simulator,   │
+│     cost_tracking, access_requests                                        │
 │                                                                              │
 │  Request Validation:                                                         │
 │  ┌─ Graceful shutdown check ─────────── DRAINING → 503 Server shutting down │
@@ -132,6 +150,8 @@
 │  │   // Timing breakdown (microseconds)                              │       │
 │  │   parse_time, policy_time, execution_time, classification_time    │       │
 │  │   column_policy_time, masking_time, injection_check_time          │       │
+│  │   // FinOps                                                       │       │
+│  │   query_cost (optional<double>, from cost estimation stage)       │       │
 │  │   // Flags                                                        │       │
 │  │   cache_hit, rate_limited, sql_rewritten, ddl_requires_approval   │       │
 │  │   // Tracing spans (ScopedSpan per layer)                         │       │
@@ -579,9 +599,14 @@
 │  │  │    ├─ schema specified:   +10 points                       │     │     │
 │  │  │    └─ database specified: +1 point                         │     │     │
 │  │  │                                                            │     │     │
-│  │  │ 4. At same specificity: BLOCK > ALLOW                     │     │     │
+│  │  │ 4. Filter time-limited policies:                           │     │     │
+│  │  │    ├─ valid_from set && now < valid_from → skip            │     │     │
+│  │  │    └─ valid_until set && now > valid_until → skip          │     │     │
 │  │  │                                                            │     │     │
-│  │  │ 5. No matching policies → DEFAULT DENY                    │     │     │
+│  │  │ 5. At same specificity: highest priority wins              │     │     │
+│  │  │    At same specificity AND priority: BLOCK > ALLOW         │     │     │
+│  │  │                                                            │     │     │
+│  │  │ 6. No matching policies → DEFAULT DENY                    │     │     │
 │  │  └────────────────────────────────────────────────────────────┘     │     │
 │  │                                                                     │     │
 │  │  Multi-table rule:                                                  │     │
@@ -590,12 +615,17 @@
 │  │                                                                     │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  HOT RELOAD (POST /policies/reload or ConfigWatcher):                        │
+│  HOT RELOAD (POST /policies/reload, ConfigWatcher, or AccessRequestManager): │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │ 1. Build new PolicyStore offline (no locks held)                    │     │
 │  │ 2. atomic_store(store_, new_store)  // RCU pointer swap             │     │
 │  │ 3. Old store destroyed when last reader finishes                    │     │
 │  │ Result: Zero-downtime reload, no request blocked                    │     │
+│  │                                                                     │     │
+│  │ AccessRequestManager injects time-limited temp policies:            │     │
+│  │   base_policies + active_temp_grants → reload_policies()            │     │
+│  │   Temp policies: priority=95, valid_from/valid_until set            │     │
+│  │   Background cleanup thread expires and purges old grants           │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  Output: PolicyEvaluationResult { decision, matched_policy, reason }         │
@@ -652,16 +682,24 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Layer 4.8: Query Cost Estimation
+### Layer 4.8: Query Cost Estimation + Budget Enforcement
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  LAYER 4.8: QUERY COST ESTIMATION (Blocking gate for expensive queries)      │
-│  Class: QueryCostEstimator                                                   │
+│  LAYER 4.8: QUERY COST ESTIMATION + BUDGET ENFORCEMENT                       │
+│  Classes: QueryCostEstimator + CostTracker                                   │
 │                                                                              │
 │  Only runs for SELECT statements when estimator is enabled.                 │
 │                                                                              │
-│  Uses EXPLAIN on real connection pool to get PostgreSQL cost estimate:       │
+│  Step 1: BUDGET PRE-CHECK (before EXPLAIN)                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ If CostTracker enabled:                                             │     │
+│  │   reason = cost_tracker->check_budget(user)                         │     │
+│  │   If non-empty → BLOCK with COST_BUDGET_EXCEEDED                    │     │
+│  │   (avoids wasting an EXPLAIN on an already-over-budget user)        │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Step 2: EXPLAIN + COST ESTIMATE                                            │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │ CostEstimate {                                                      │     │
 │  │   total_cost:      float (planner units)                            │     │
@@ -671,8 +709,27 @@
 │  │ }                                                                   │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
+│  Step 3: COST ATTRIBUTION (after estimate)                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ If CostTracker enabled:                                             │     │
+│  │   ctx.query_cost = estimate.total_cost                              │     │
+│  │   cost_tracker->record(user, cost, estimated_rows, sql)             │     │
+│  │   Tracks: per-user daily/hourly rolling windows, top-N queries      │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
 │  BLOCK → ErrorCode::QUERY_TOO_EXPENSIVE (HTTP 403)                          │
+│  BLOCK → ErrorCode::COST_BUDGET_EXCEEDED (HTTP 403, budget limit)           │
 │  Metrics: sql_proxy_query_cost_rejected_total, estimated_total              │
+│                                                                              │
+│  CostTracker internals:                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ UserCosts { cost_today, cost_this_hour, queries_today/hour }        │     │
+│  │ Rolling windows: reset on day-of-year or hour-of-day change         │     │
+│  │ Budgets: per-user overrides or default (daily_limit, hourly_limit)  │     │
+│  │ Top queries: sorted by cost, bounded to max_top_queries             │     │
+│  │ Thread safety: std::shared_mutex (reads) / unique_lock (writes)     │     │
+│  │ API: GET /api/v1/cost/summary, /top-queries, /stats                 │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -992,6 +1049,7 @@
 │  │   "anomaly_score": 0.3,                                             │     │
 │  │   "anomalies": ["NEW_TABLE:sensitive_data"],                        │     │
 │  │   "spans": [{"op":"rate_limit","us":48}, ...],  // Per-layer timing │     │
+│  │   "query_cost": 11.25,                 // FinOps cost attribution    │     │
 │  │   "priority": "NORMAL"                                              │     │
 │  │ }                                                                   │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
@@ -1087,6 +1145,7 @@
 │  │ ACCESS_DENIED             │ 403      │                                    │
 │  │ SQLI_BLOCKED              │ 403      │                                    │
 │  │ QUERY_TOO_EXPENSIVE       │ 403      │                                    │
+│  │ COST_BUDGET_EXCEEDED      │ 403      │                                    │
 │  │ QUERY_TIMEOUT             │ 408      │                                    │
 │  │ RESULT_TOO_LARGE          │ 413      │                                    │
 │  │ RATE_LIMITED              │ 429      │                                    │

@@ -105,7 +105,9 @@ file(GLOB_RECURSE TRACING_SOURCES    src/tracing/*.cpp)
 file(GLOB_RECURSE ALERTING_SOURCES   src/alerting/*.cpp)
 file(GLOB_RECURSE AUTH_SOURCES       src/auth/*.cpp)
 file(GLOB_RECURSE CACHE_SOURCES     src/cache/*.cpp)
-file(GLOB_RECURSE CATALOG_SOURCES   src/catalog/*.cpp)
+file(GLOB_RECURSE CATALOG_SOURCES      src/catalog/*.cpp)
+file(GLOB_RECURSE COMPLIANCE_SOURCES   src/compliance/*.cpp)
+file(GLOB_RECURSE FINOPS_SOURCES       src/finops/*.cpp)
 
 # Exclude disabled database backends
 if(NOT ENABLE_POSTGRESQL)
@@ -135,6 +137,8 @@ set(LIB_SOURCES
     ${AUTH_SOURCES}
     ${CACHE_SOURCES}
     ${CATALOG_SOURCES}
+    ${COMPLIANCE_SOURCES}
+    ${FINOPS_SOURCES}
 )
 
 set(ALL_SOURCES

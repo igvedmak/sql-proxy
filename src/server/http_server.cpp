@@ -43,6 +43,9 @@
 #include "core/llm_client.hpp"
 #include "catalog/data_catalog.hpp"
 #include "policy/policy_simulator.hpp"
+#include "compliance/report_generator.hpp"
+#include "finops/cost_tracker.hpp"
+#include "policy/access_request_manager.hpp"
 
 // cpp-httplib is header-only — suppress its internal deprecation warnings
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -86,6 +89,50 @@ std::string_view parse_json_field(std::string_view json, std::string_view field)
         ++pos;
     }
     return "";
+}
+
+// Parse a numeric JSON field value (no quotes): "field": 123
+std::string_view parse_json_number(std::string_view json, std::string_view field) {
+    std::string pattern = "\"";
+    pattern += field;
+    pattern += "\"";
+    auto pos = json.find(pattern);
+    if (pos == std::string_view::npos) return "";
+    pos += pattern.size();
+    // Skip whitespace and colon
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == ':')) ++pos;
+    if (pos >= json.size()) return "";
+    size_t start = pos;
+    while (pos < json.size() && (json[pos] >= '0' && json[pos] <= '9')) ++pos;
+    if (pos == start) return "";
+    return json.substr(start, pos - start);
+}
+
+// Parse a JSON array of strings: "field": ["a", "b"]
+std::vector<std::string> parse_json_string_array(std::string_view json, std::string_view field) {
+    std::vector<std::string> result;
+    std::string pattern = "\"";
+    pattern += field;
+    pattern += "\"";
+    auto pos = json.find(pattern);
+    if (pos == std::string_view::npos) return result;
+    pos += pattern.size();
+    pos = json.find('[', pos);
+    if (pos == std::string_view::npos) return result;
+    auto end = json.find(']', pos);
+    if (end == std::string_view::npos) return result;
+    auto arr = json.substr(pos + 1, end - pos - 1);
+    // Extract quoted strings
+    size_t p = 0;
+    while ((p = arr.find('"', p)) != std::string_view::npos) {
+        size_t e = p + 1;
+        while (e < arr.size() && arr[e] != '"') ++e;
+        if (e < arr.size()) {
+            result.emplace_back(arr.substr(p + 1, e - p - 1));
+        }
+        p = e + 1;
+    }
+    return result;
 }
 
 std::atomic<uint64_t> s_ip_blocks{0};
@@ -415,6 +462,12 @@ void HttpServer::register_compliance_routes(httplib::Server& svr) {
     svr.Get(routes_.data_subject_access, [this](const httplib::Request& req, httplib::Response& res) {
         handle_data_subject_access(req, res);
     });
+    // Compliance report generator (HTML/JSON)
+    if (report_generator_) {
+        svr.Get(routes_.compliance_report, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_compliance_report(req, res);
+        });
+    }
 }
 
 void HttpServer::register_schema_routes(httplib::Server& svr) {
@@ -548,6 +601,47 @@ void HttpServer::register_optional_routes(httplib::Server& svr) {
     if (features_.policy_simulator) {
         svr.Post(routes_.policy_simulate, [this](const httplib::Request& req, httplib::Response& res) {
             handle_policy_simulate(req, res);
+        });
+    }
+
+    // Cost tracking (FinOps)
+    if (features_.cost_tracking && cost_tracker_) {
+        svr.Get(routes_.cost_summary, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_cost_summary(req, res);
+        });
+        svr.Get(routes_.cost_summary + "/:user", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_cost_user_summary(req, res);
+        });
+        svr.Get(routes_.cost_top, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_cost_top_queries(req, res);
+        });
+        svr.Get(routes_.cost_stats, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_cost_stats(req, res);
+        });
+    }
+
+    // Access request workflow
+    if (features_.access_requests && access_request_manager_) {
+        svr.Post(routes_.access_requests, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_access_request_submit(req, res);
+        });
+        svr.Get(routes_.access_requests, [this](const httplib::Request& req, httplib::Response& res) {
+            handle_access_request_list(req, res);
+        });
+        svr.Get(routes_.access_requests + "/pending", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_access_request_pending(req, res);
+        });
+        svr.Get(routes_.access_requests + "/stats", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_access_request_stats(req, res);
+        });
+        svr.Get(R"(/api/v1/access-requests/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_access_request_get(req, res);
+        });
+        svr.Post(R"(/api/v1/access-requests/([^/]+)/approve)", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_access_request_approve(req, res);
+        });
+        svr.Post(R"(/api/v1/access-requests/([^/]+)/deny)", [this](const httplib::Request& req, httplib::Response& res) {
+            handle_access_request_deny(req, res);
         });
     }
 }
@@ -2629,6 +2723,277 @@ void HttpServer::handle_policy_simulate(const httplib::Request& req, httplib::Re
             utils::escape_json(d.new_policy));
     }
     json += "]}";
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handler: GET /api/v1/compliance/report
+// ============================================================================
+
+void HttpServer::handle_compliance_report(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    ReportOptions opts;
+    auto type_param = req.get_param_value("type");
+    if (type_param == "gdpr") opts.type = ReportType::GDPR;
+    else if (type_param == "hipaa") opts.type = ReportType::HIPAA;
+
+    opts.html = req.get_param_value("format") != "json";
+
+    auto content = report_generator_->generate(opts);
+    auto content_type = opts.html ? "text/html" : http::kJsonContentType;
+    res.set_content(content, content_type);
+}
+
+// ============================================================================
+// Handlers: Cost Attribution (FinOps)
+// ============================================================================
+
+void HttpServer::handle_cost_summary(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    auto summaries = cost_tracker_->get_all_summaries();
+    std::string json = "{\"users\":[";
+    for (size_t i = 0; i < summaries.size(); ++i) {
+        if (i > 0) json += ',';
+        const auto& s = summaries[i];
+        json += std::format(
+            R"({{"user":"{}","cost_today":{:.2f},"cost_this_hour":{:.2f},"queries_today":{},"queries_this_hour":{},"budget_daily":{:.2f},"budget_used_pct":{:.1f}}})",
+            s.user, s.cost_today, s.cost_this_hour, s.queries_today,
+            s.queries_this_hour, s.budget_daily, s.budget_used_pct);
+    }
+    json += "]}";
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_cost_user_summary(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    const auto user = req.path_params.at("user");
+    auto s = cost_tracker_->get_user_summary(user);
+    auto json = std::format(
+        R"({{"user":"{}","cost_today":{:.2f},"cost_this_hour":{:.2f},"queries_today":{},"queries_this_hour":{},"budget_daily":{:.2f},"budget_used_pct":{:.1f}}})",
+        s.user, s.cost_today, s.cost_this_hour, s.queries_today,
+        s.queries_this_hour, s.budget_daily, s.budget_used_pct);
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_cost_top_queries(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    size_t limit = 20;
+    auto limit_param = req.get_param_value("limit");
+    if (!limit_param.empty()) {
+        try { limit = std::stoul(limit_param); } catch (...) {}
+    }
+
+    auto queries = cost_tracker_->get_top_queries(limit);
+    std::string json = "{\"queries\":[";
+    for (size_t i = 0; i < queries.size(); ++i) {
+        if (i > 0) json += ',';
+        const auto& q = queries[i];
+        json += std::format(
+            R"({{"user":"{}","cost":{:.2f},"estimated_rows":{},"timestamp":"{}","sql_preview":"{}"}})",
+            q.user, q.cost, q.estimated_rows, q.timestamp, q.sql_preview);
+    }
+    json += "]}";
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_cost_stats(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    auto stats = cost_tracker_->get_stats();
+    auto json = std::format(
+        R"({{"total_recorded":{},"budget_rejections":{},"tracked_users":{}}})",
+        stats.total_recorded, stats.budget_rejections, stats.tracked_users);
+    res.set_content(json, http::kJsonContentType);
+}
+
+// ============================================================================
+// Handlers: Access Request Workflow
+// ============================================================================
+
+namespace {
+const char* access_status_to_string(AccessRequestStatus s) {
+    switch (s) {
+        case AccessRequestStatus::PENDING: return "pending";
+        case AccessRequestStatus::APPROVED: return "approved";
+        case AccessRequestStatus::DENIED: return "denied";
+        case AccessRequestStatus::EXPIRED: return "expired";
+        default: return "unknown";
+    }
+}
+
+std::string access_request_to_json(const AccessRequest& r) {
+    std::string json = "{";
+    json += std::format(R"("id":"{}","user":"{}","database":"{}","schema":"{}","table":"{}",)",
+                        r.id, r.user, r.database, r.schema, r.table);
+    json += "\"columns\":[";
+    for (size_t i = 0; i < r.columns.size(); ++i) {
+        if (i > 0) json += ',';
+        json += std::format("\"{}\"", r.columns[i]);
+    }
+    json += "],\"statement_types\":[";
+    for (size_t i = 0; i < r.statement_types.size(); ++i) {
+        if (i > 0) json += ',';
+        json += std::format("\"{}\"", r.statement_types[i]);
+    }
+    json += std::format(R"(],"duration_hours":{},"reason":"{}","status":"{}",)",
+                        r.duration_hours, r.reason, access_status_to_string(r.status));
+    json += std::format(R"("decided_by":"{}","deny_reason":"{}","generated_policy_name":"{}")",
+                        r.decided_by, r.deny_reason, r.generated_policy_name);
+    json += '}';
+    return json;
+}
+} // anonymous namespace
+
+void HttpServer::handle_access_request_submit(const httplib::Request& req, httplib::Response& res) {
+    // Any authenticated user can submit
+    const auto auth = req.get_header_value(http::kAuthorizationHeader);
+    if (auth.empty()) {
+        res.status = httplib::StatusCode::Unauthorized_401;
+        res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
+        return;
+    }
+
+    // Parse user from API key auth
+    std::string user;
+    if (auth.size() > http::kBearerPrefix.size() &&
+        std::string_view(auth).substr(0, http::kBearerPrefix.size()) == http::kBearerPrefix) {
+        auto key = std::string(std::string_view(auth).substr(http::kBearerPrefix.size()));
+        auto user_info = authenticate_api_key(key);
+        if (user_info) user = user_info->name;
+    }
+    if (user.empty()) {
+        // Try admin token as user "admin"
+        auto token = std::string_view(auth).substr(http::kBearerPrefix.size());
+        if (token == admin_token_) user = "admin";
+    }
+    if (user.empty()) {
+        res.status = httplib::StatusCode::Unauthorized_401;
+        res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
+        return;
+    }
+
+    auto database = std::string(parse_json_field(req.body, "database"));
+    auto schema = std::string(parse_json_field(req.body, "schema"));
+    auto table = std::string(parse_json_field(req.body, "table"));
+    auto reason = std::string(parse_json_field(req.body, "reason"));
+
+    if (table.empty()) {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(R"({"success":false,"error":"Missing required field: table"})", http::kJsonContentType);
+        return;
+    }
+
+    // Parse duration (numeric field, no quotes)
+    uint32_t duration = 0;
+    auto dur_str = parse_json_number(req.body, "duration_hours");
+    if (!dur_str.empty()) {
+        try { duration = static_cast<uint32_t>(std::stoul(std::string(dur_str))); } catch (...) {}
+    }
+
+    auto columns = parse_json_string_array(req.body, "columns");
+    auto stmt_types = parse_json_string_array(req.body, "statement_types");
+    if (stmt_types.empty()) stmt_types = {"SELECT"};
+
+    auto id = access_request_manager_->submit(user, database, schema, table,
+                                              columns, stmt_types, duration, reason);
+    if (id.empty()) {
+        res.status = httplib::StatusCode::TooManyRequests_429;
+        res.set_content(R"({"success":false,"error":"Too many pending requests"})", http::kJsonContentType);
+        return;
+    }
+
+    auto json = std::format(
+        R"({{"success":true,"request_id":"{}","status":"pending","message":"Access request submitted. Awaiting admin approval."}})",
+        id);
+    res.status = httplib::StatusCode::Created_201;
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_access_request_list(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    auto requests = access_request_manager_->get_all();
+    std::string json = "{\"requests\":[";
+    for (size_t i = 0; i < requests.size(); ++i) {
+        if (i > 0) json += ',';
+        json += access_request_to_json(requests[i]);
+    }
+    json += "]}";
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_access_request_pending(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    auto requests = access_request_manager_->get_pending();
+    std::string json = "{\"requests\":[";
+    for (size_t i = 0; i < requests.size(); ++i) {
+        if (i > 0) json += ',';
+        json += access_request_to_json(requests[i]);
+    }
+    json += "]}";
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_access_request_get(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    auto id = req.matches[1].str();
+    auto request = access_request_manager_->get(id);
+    if (!request) {
+        res.status = httplib::StatusCode::NotFound_404;
+        res.set_content(R"({"success":false,"error":"Request not found"})", http::kJsonContentType);
+        return;
+    }
+    res.set_content(access_request_to_json(*request), http::kJsonContentType);
+}
+
+void HttpServer::handle_access_request_approve(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    auto id = req.matches[1].str();
+    if (!access_request_manager_->approve(id, "admin")) {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(R"({"success":false,"error":"Cannot approve: not found or not pending"})", http::kJsonContentType);
+        return;
+    }
+
+    auto request = access_request_manager_->get(id);
+    auto json = std::format(
+        R"({{"success":true,"request_id":"{}","status":"approved","policy_name":"{}","message":"Access granted for {} hours"}})",
+        id, request ? request->generated_policy_name : "", request ? request->duration_hours : 0);
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_access_request_deny(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    auto id = req.matches[1].str();
+    auto reason = std::string(parse_json_field(req.body, "reason"));
+
+    if (!access_request_manager_->deny(id, "admin", reason)) {
+        res.status = httplib::StatusCode::BadRequest_400;
+        res.set_content(R"({"success":false,"error":"Cannot deny: not found or not pending"})", http::kJsonContentType);
+        return;
+    }
+
+    auto json = std::format(
+        R"({{"success":true,"request_id":"{}","status":"denied","message":"Access request denied"}})", id);
+    res.set_content(json, http::kJsonContentType);
+}
+
+void HttpServer::handle_access_request_stats(const httplib::Request& req, httplib::Response& res) {
+    if (!require_admin(admin_token_, req, res)) return;
+
+    auto stats = access_request_manager_->get_stats();
+    auto json = std::format(
+        R"({{"total_requests":{},"pending":{},"approved":{},"denied":{},"expired":{},"active_temp_policies":{}}})",
+        stats.total_requests, stats.pending, stats.approved,
+        stats.denied, stats.expired, stats.active_temp_policies);
     res.set_content(json, http::kJsonContentType);
 }
 

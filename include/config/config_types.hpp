@@ -213,6 +213,17 @@ struct RouteConfig {
     // Policy simulator
     std::string policy_simulate = "/api/v1/policies/simulate";
 
+    // Compliance report
+    std::string compliance_report = "/api/v1/compliance/report";
+
+    // Cost attribution
+    std::string cost_summary = "/api/v1/cost/summary";
+    std::string cost_top     = "/api/v1/cost/top-queries";
+    std::string cost_stats   = "/api/v1/cost/stats";
+
+    // Access requests
+    std::string access_requests = "/api/v1/access-requests";
+
     // Optional
     std::string graphql         = "/api/v1/graphql";
 
@@ -252,6 +263,8 @@ struct FeatureFlags {
     bool llm_features = false;
     bool data_catalog = false;
     bool policy_simulator = false;
+    bool cost_tracking = false;
+    bool access_requests = false;
 };
 
 } // namespace sqlproxy

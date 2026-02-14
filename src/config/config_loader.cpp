@@ -1148,6 +1148,45 @@ ProxyConfig::LlmConfig ConfigLoader::extract_llm(const toml::table& root) {
     return cfg;
 }
 
+ProxyConfig::CostTrackingConfig ConfigLoader::extract_cost_tracking(const toml::table& root) {
+    ProxyConfig::CostTrackingConfig cfg;
+    const auto* sec = root["cost_tracking"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.max_top_queries = static_cast<size_t>((*sec)["max_top_queries"].value_or(50));
+
+    const auto* budget = (*sec)["default_budget"].as_table();
+    if (budget) {
+        cfg.default_daily_limit = (*budget)["daily_limit"].value_or(0.0);
+        cfg.default_hourly_limit = (*budget)["hourly_limit"].value_or(0.0);
+    }
+
+    if (const auto* budgets = (*sec)["user_budgets"].as_table()) {
+        for (const auto& [user, val] : *budgets) {
+            const auto* t = val.as_table();
+            if (!t) continue;
+            ProxyConfig::CostTrackingConfig::UserBudget ub;
+            ub.user = std::string(user);
+            ub.daily_limit = (*t)["daily_limit"].value_or(0.0);
+            ub.hourly_limit = (*t)["hourly_limit"].value_or(0.0);
+            cfg.user_budgets.push_back(std::move(ub));
+        }
+    }
+    return cfg;
+}
+
+ProxyConfig::AccessRequestConfig ConfigLoader::extract_access_requests(const toml::table& root) {
+    ProxyConfig::AccessRequestConfig cfg;
+    const auto* sec = root["access_requests"].as_table();
+    if (!sec) return cfg;
+    cfg.enabled = (*sec)["enabled"].value_or(false);
+    cfg.max_duration_hours = static_cast<uint32_t>((*sec)["max_duration_hours"].value_or(168));
+    cfg.default_duration_hours = static_cast<uint32_t>((*sec)["default_duration_hours"].value_or(24));
+    cfg.max_pending_requests = static_cast<size_t>((*sec)["max_pending_requests"].value_or(100));
+    cfg.cleanup_interval_seconds = static_cast<uint32_t>((*sec)["cleanup_interval_seconds"].value_or(60));
+    return cfg;
+}
+
 RouteConfig ConfigLoader::extract_routes(const toml::table& root) {
     RouteConfig cfg;
     const auto* routes = root["routes"].as_table();
@@ -1182,6 +1221,11 @@ RouteConfig ConfigLoader::extract_routes(const toml::table& root) {
     cfg.catalog_search     = r["catalog_search"].value_or(cfg.catalog_search);
     cfg.catalog_stats      = r["catalog_stats"].value_or(cfg.catalog_stats);
     cfg.policy_simulate    = r["policy_simulate"].value_or(cfg.policy_simulate);
+    cfg.compliance_report  = r["compliance_report"].value_or(cfg.compliance_report);
+    cfg.cost_summary       = r["cost_summary"].value_or(cfg.cost_summary);
+    cfg.cost_top           = r["cost_top"].value_or(cfg.cost_top);
+    cfg.cost_stats         = r["cost_stats"].value_or(cfg.cost_stats);
+    cfg.access_requests    = r["access_requests"].value_or(cfg.access_requests);
     return cfg;
 }
 
@@ -1196,6 +1240,8 @@ void ConfigLoader::extract_features(const toml::table& root, ProxyConfig& config
 
     config.data_catalog_enabled       = (*feat)["data_catalog"].value_or(config.data_catalog_enabled);
     config.policy_simulator_enabled   = (*feat)["policy_simulator"].value_or(config.policy_simulator_enabled);
+    config.cost_tracking_enabled      = (*feat)["cost_tracking"].value_or(config.cost_tracking_enabled);
+    config.access_requests_enabled    = (*feat)["access_requests"].value_or(config.access_requests_enabled);
 }
 
 // ---- Shared extraction + validation ----------------------------------------
@@ -1246,6 +1292,8 @@ ProxyConfig ConfigLoader::extract_all_sections(const toml::table& tbl) {
     config.websocket = extract_websocket(tbl);
     config.transactions = extract_transactions(tbl);
     config.llm = extract_llm(tbl);
+    config.cost_tracking = extract_cost_tracking(tbl);
+    config.access_requests = extract_access_requests(tbl);
     config.routes = extract_routes(tbl);
     extract_features(tbl, config);
     return config;

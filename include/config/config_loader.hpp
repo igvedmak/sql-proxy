@@ -435,6 +435,29 @@ struct ProxyConfig {
         uint32_t cache_ttl_seconds = 3600;
     } llm;
 
+    // Cost Tracking (FinOps)
+    struct CostTrackingConfig {
+        bool enabled = false;
+        size_t max_top_queries = 50;
+        double default_daily_limit = 0.0;
+        double default_hourly_limit = 0.0;
+        struct UserBudget {
+            std::string user;
+            double daily_limit = 0.0;
+            double hourly_limit = 0.0;
+        };
+        std::vector<UserBudget> user_budgets;
+    } cost_tracking;
+
+    // Access Request Workflow
+    struct AccessRequestConfig {
+        bool enabled = false;
+        uint32_t max_duration_hours = 168;
+        uint32_t default_duration_hours = 24;
+        size_t max_pending_requests = 100;
+        uint32_t cleanup_interval_seconds = 60;
+    } access_requests;
+
     // Route paths (config-driven URL patterns)
     RouteConfig routes;
 
@@ -445,6 +468,8 @@ struct ProxyConfig {
     bool dry_run_enabled = true;
     bool data_catalog_enabled = false;
     bool policy_simulator_enabled = false;
+    bool cost_tracking_enabled = false;
+    bool access_requests_enabled = false;
 };
 
 // ============================================================================
@@ -529,6 +554,8 @@ private:
     static ProxyConfig::WebSocketConfig extract_websocket(const toml::table& root);
     static ProxyConfig::TransactionConfig extract_transactions(const toml::table& root);
     static ProxyConfig::LlmConfig extract_llm(const toml::table& root);
+    static ProxyConfig::CostTrackingConfig extract_cost_tracking(const toml::table& root);
+    static ProxyConfig::AccessRequestConfig extract_access_requests(const toml::table& root);
 
     // Route config extractor
     static RouteConfig extract_routes(const toml::table& root);

@@ -272,9 +272,13 @@ PolicyEvaluationResult PolicyEngine::evaluate_table(
     // Partition into enforcement vs shadow policies
     std::vector<const Policy*> enforcement_policies;
     std::vector<const Policy*> shadow_policies;
+    const auto now = std::chrono::system_clock::now();
     for (const auto* policy : matching_policies) {
         if (!policy->scope.columns.empty()) continue;
         if (!matches_user(*policy, user, roles)) continue;
+        // Skip expired or not-yet-valid time-limited policies
+        if (policy->valid_from.has_value() && now < *policy->valid_from) continue;
+        if (policy->valid_until.has_value() && now > *policy->valid_until) continue;
 
         if (policy->shadow) {
             shadow_policies.push_back(policy);
@@ -339,19 +343,23 @@ PolicyEvaluationResult PolicyEngine::resolve_specificity(
         });
 
     const int highest = ranked[0].specificity;
+    const int top_priority = ranked[0].policy->priority;
 
-    // Single pass: BLOCK wins at highest specificity, track first ALLOW as fallback
+    // At highest specificity, take the highest-priority action.
+    // Among equal specificity AND equal priority, BLOCK wins as tiebreaker.
+    const Policy* first_block = nullptr;
     const Policy* first_allow = nullptr;
     for (const auto& [policy, spec] : ranked) {
         if (spec != highest) break;
-        if (policy->action == Decision::BLOCK) {
-            return PolicyEvaluationResult(Decision::BLOCK, policy->name, policy->reason);
-        }
-        if (!first_allow && policy->action == Decision::ALLOW) {
-            first_allow = policy;
-        }
+        if (policy->priority != top_priority) break;  // lower priority tier
+        if (!first_block && policy->action == Decision::BLOCK) first_block = policy;
+        if (!first_allow && policy->action == Decision::ALLOW) first_allow = policy;
     }
 
+    // BLOCK is tiebreaker only at equal priority; higher priority wins
+    if (first_block) {
+        return PolicyEvaluationResult(Decision::BLOCK, first_block->name, first_block->reason);
+    }
     if (first_allow) {
         return PolicyEvaluationResult(Decision::ALLOW, first_allow->name, first_allow->reason);
     }

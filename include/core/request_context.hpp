@@ -93,6 +93,9 @@ struct RequestContext {
     // Request priority (Tier G)
     PriorityLevel priority = PriorityLevel::NORMAL;
 
+    // Cost attribution (FinOps)
+    std::optional<double> query_cost;
+
     RequestContext()
         : request_id(utils::generate_uuid()),
           received_at(std::chrono::system_clock::now()),

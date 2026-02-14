@@ -42,6 +42,9 @@ class TransactionCoordinator;
 class LlmClient;
 class DistributedRateLimiter;
 class DataCatalog;
+class ReportGenerator;
+class CostTracker;
+class AccessRequestManager;
 
 /**
  * @brief User information for authentication
@@ -153,6 +156,15 @@ public:
     void set_data_catalog(std::shared_ptr<DataCatalog> dc) {
         data_catalog_ = std::move(dc);
     }
+    void set_report_generator(std::shared_ptr<ReportGenerator> rg) {
+        report_generator_ = std::move(rg);
+    }
+    void set_cost_tracker(std::shared_ptr<CostTracker> ct) {
+        cost_tracker_ = std::move(ct);
+    }
+    void set_access_request_manager(std::shared_ptr<AccessRequestManager> arm) {
+        access_request_manager_ = std::move(arm);
+    }
 
 private:
     // ── Authentication ──────────────────────────────────────────────────
@@ -215,6 +227,18 @@ private:
     void handle_catalog_search(const httplib::Request& req, httplib::Response& res);
     void handle_catalog_stats(const httplib::Request& req, httplib::Response& res);
     void handle_policy_simulate(const httplib::Request& req, httplib::Response& res);
+    void handle_compliance_report(const httplib::Request& req, httplib::Response& res);
+    void handle_cost_summary(const httplib::Request& req, httplib::Response& res);
+    void handle_cost_user_summary(const httplib::Request& req, httplib::Response& res);
+    void handle_cost_top_queries(const httplib::Request& req, httplib::Response& res);
+    void handle_cost_stats(const httplib::Request& req, httplib::Response& res);
+    void handle_access_request_submit(const httplib::Request& req, httplib::Response& res);
+    void handle_access_request_list(const httplib::Request& req, httplib::Response& res);
+    void handle_access_request_pending(const httplib::Request& req, httplib::Response& res);
+    void handle_access_request_get(const httplib::Request& req, httplib::Response& res);
+    void handle_access_request_approve(const httplib::Request& req, httplib::Response& res);
+    void handle_access_request_deny(const httplib::Request& req, httplib::Response& res);
+    void handle_access_request_stats(const httplib::Request& req, httplib::Response& res);
 
     // ── Helpers ─────────────────────────────────────────────────────────
     std::string build_metrics_output();
@@ -277,6 +301,11 @@ private:
     std::shared_ptr<LlmClient> llm_client_;
     std::shared_ptr<DistributedRateLimiter> distributed_rate_limiter_;
     std::shared_ptr<DataCatalog> data_catalog_;
+
+    // Batch 3 features
+    std::shared_ptr<ReportGenerator> report_generator_;
+    std::shared_ptr<CostTracker> cost_tracker_;
+    std::shared_ptr<AccessRequestManager> access_request_manager_;
 };
 
 } // namespace sqlproxy

@@ -88,7 +88,7 @@ docker run --rm sql-proxy-test /build/sql_proxy/build/sql_proxy_tests --reporter
 
 ### E2E Tests
 
-Run the full end-to-end test suite (184 tests across 33 suites) against a live proxy + PostgreSQL:
+Run the full end-to-end test suite (146+ tests across 33 suites) against a live proxy + PostgreSQL:
 
 ```bash
 # With E2E config (all features enabled):
@@ -291,6 +291,28 @@ curl -X POST http://localhost:8080/policies/reload
 | `GET` | `/api/v1/compliance/security-summary` | Security overview |
 | `GET` | `/api/v1/compliance/lineage` | Data lineage summaries |
 | `GET` | `/api/v1/compliance/data-subject-access` | GDPR Article 15 export |
+| `GET` | `/api/v1/compliance/report` | Full compliance report (SOC2/GDPR/HIPAA, HTML or JSON) |
+
+### FinOps Cost Tracking (Admin)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/cost/summary` | Per-user cost breakdown (daily/hourly, budget %) |
+| `GET` | `/api/v1/cost/summary?user=X` | Single-user cost summary |
+| `GET` | `/api/v1/cost/top-queries` | Most expensive queries (sorted by cost) |
+| `GET` | `/api/v1/cost/stats` | Aggregate cost metrics (recorded, rejections, users) |
+
+### Self-Service Access Requests
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/access-requests` | Submit access request (any authenticated user) |
+| `GET` | `/api/v1/access-requests` | List all requests (admin) |
+| `GET` | `/api/v1/access-requests/pending` | List pending requests (admin) |
+| `GET` | `/api/v1/access-requests/:id` | Get request details (admin) |
+| `POST` | `/api/v1/access-requests/:id/approve` | Approve request → creates temp policy (admin) |
+| `POST` | `/api/v1/access-requests/:id/deny` | Deny request with reason (admin) |
+| `GET` | `/api/v1/access-requests/stats` | Workflow statistics (admin) |
 
 ### Admin Dashboard
 
@@ -817,6 +839,122 @@ curl -X POST http://localhost:8080/api/v1/llm/explain-anomaly \
 ```
 
 Responses are cached by use case + input hash. Rate limiting prevents runaway API costs.
+
+## Compliance Reports
+
+Generate SOC2, GDPR, or HIPAA compliance reports from live telemetry. Reports are available in HTML (print-friendly) or JSON.
+
+```bash
+# SOC2 HTML report (open in browser)
+curl -H "Authorization: Bearer admin-secret-token" \
+  "http://localhost:8080/api/v1/compliance/report?type=soc2&format=html" > report.html
+
+# GDPR JSON report
+curl -H "Authorization: Bearer admin-secret-token" \
+  "http://localhost:8080/api/v1/compliance/report?type=gdpr&format=json"
+
+# HIPAA report
+curl -H "Authorization: Bearer admin-secret-token" \
+  "http://localhost:8080/api/v1/compliance/report?type=hipaa&format=html" > hipaa.html
+```
+
+Reports include: executive summary, PII inventory, access controls, security events, masking coverage, and audit chain integrity.
+
+## FinOps Cost Tracking
+
+Track per-user query costs with budget enforcement. Configure in `proxy.toml`:
+
+```toml
+[features]
+cost_tracking = true
+
+[cost_tracking]
+enabled = true
+max_top_queries = 50
+
+[cost_tracking.default_budget]
+daily_limit = 100000.0
+hourly_limit = 50000.0
+
+[cost_tracking.user_budgets.analyst]
+daily_limit = 50000.0
+hourly_limit = 10000.0
+```
+
+Queries are checked against the user's budget before execution. When a budget is exceeded, the query is rejected with `COST_BUDGET_EXCEEDED`.
+
+```bash
+# View cost summary for all users
+curl -H "Authorization: Bearer admin-secret-token" \
+  http://localhost:8080/api/v1/cost/summary
+
+# View single user
+curl -H "Authorization: Bearer admin-secret-token" \
+  "http://localhost:8080/api/v1/cost/summary?user=analyst"
+
+# Top expensive queries
+curl -H "Authorization: Bearer admin-secret-token" \
+  http://localhost:8080/api/v1/cost/top-queries
+
+# Aggregate stats
+curl -H "Authorization: Bearer admin-secret-token" \
+  http://localhost:8080/api/v1/cost/stats
+```
+
+## Self-Service Access Requests
+
+Users can request temporary access to restricted tables. Admins approve or deny, and approved requests create time-limited policies that auto-expire.
+
+```toml
+[features]
+access_requests = true
+
+[access_requests]
+enabled = true
+max_duration_hours = 168
+default_duration_hours = 24
+max_pending_requests = 100
+cleanup_interval_seconds = 300
+```
+
+Example workflow:
+
+```bash
+# 1. User submits access request
+curl -X POST http://localhost:8080/api/v1/access-requests \
+  -H "Authorization: Bearer sk-analyst-key-67890" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "database": "testdb",
+    "schema": "public",
+    "table": "sensitive_data",
+    "statement_types": ["SELECT"],
+    "duration_hours": 4,
+    "reason": "Fraud investigation ticket #1234"
+  }'
+
+# 2. Admin reviews pending requests
+curl -H "Authorization: Bearer admin-secret-token" \
+  http://localhost:8080/api/v1/access-requests/pending
+
+# 3. Admin approves (creates temporary ALLOW policy at priority 95)
+curl -X POST http://localhost:8080/api/v1/access-requests/req-abc123/approve \
+  -H "Authorization: Bearer admin-secret-token"
+
+# 4. User can now query the table (for 4 hours)
+curl -X POST http://localhost:8080/api/v1/query \
+  -H "Authorization: Bearer sk-analyst-key-67890" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM sensitive_data LIMIT 5", "database": "testdb"}'
+
+# 5. Admin can also deny with a reason
+curl -X POST http://localhost:8080/api/v1/access-requests/req-xyz789/deny \
+  -H "Authorization: Bearer admin-secret-token" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Insufficient justification"}'
+```
+
+Approved policies expire automatically after the specified duration. A background cleanup thread removes expired and old denied requests.
 
 ## Production Deployment
 

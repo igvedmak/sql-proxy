@@ -60,6 +60,9 @@
 #include "core/transaction_coordinator.hpp"
 #include "core/llm_client.hpp"
 #include "catalog/data_catalog.hpp"
+#include "compliance/report_generator.hpp"
+#include "finops/cost_tracker.hpp"
+#include "policy/access_request_manager.hpp"
 
 // Force-link backends (auto-register via static init)
 #ifdef ENABLE_POSTGRESQL
@@ -724,6 +727,21 @@ int main(int argc, char* argv[]) {
             utils::log::info("Data catalog: enabled");
         }
 
+        // Cost Tracker (FinOps)
+        std::shared_ptr<CostTracker> cost_tracker;
+        if (config_result.success && config_result.config.cost_tracking.enabled) {
+            CostTracker::Config ct_cfg;
+            ct_cfg.enabled = true;
+            ct_cfg.max_top_queries = config_result.config.cost_tracking.max_top_queries;
+            ct_cfg.default_budget.daily_limit = config_result.config.cost_tracking.default_daily_limit;
+            ct_cfg.default_budget.hourly_limit = config_result.config.cost_tracking.default_hourly_limit;
+            for (const auto& ub : config_result.config.cost_tracking.user_budgets) {
+                ct_cfg.user_budgets[ub.user] = CostBudget{ub.daily_limit, ub.hourly_limit};
+            }
+            cost_tracker = std::make_shared<CostTracker>(ct_cfg);
+            utils::log::info("Cost tracking: enabled");
+        }
+
         // Cost-based query rewriting
         std::shared_ptr<CostBasedRewriter> cost_based_rewriter;
         if (config_result.success && config_result.config.cost_based_rewriting.enabled) {
@@ -825,6 +843,7 @@ int main(int argc, char* argv[]) {
             .with_transaction_coordinator(transaction_coordinator)
             .with_llm_client(llm_client)
             .with_data_catalog(data_catalog)
+            .with_cost_tracker(cost_tracker)
             .with_masking_enabled(config_result.config.masking_enabled)
             .build();
 
@@ -918,6 +937,8 @@ int main(int argc, char* argv[]) {
         features.llm_features = cfg.llm.enabled;
         features.data_catalog = cfg.data_catalog_enabled;
         features.policy_simulator = cfg.policy_simulator_enabled;
+        features.cost_tracking = cfg.cost_tracking.enabled;
+        features.access_requests = cfg.access_requests.enabled;
 
         // Create HTTP server (with Tier 2 + Tier 5 + Tier B components)
         g_server = std::make_shared<HttpServer>(pipeline, host, port, users,
@@ -978,6 +999,36 @@ int main(int argc, char* argv[]) {
         }
         if (data_catalog) {
             g_server->set_data_catalog(data_catalog);
+        }
+
+        // Compliance Report Generator (always available when compliance_reporter exists)
+        auto report_generator = std::make_shared<ReportGenerator>(
+            compliance_reporter, lineage_tracker, audit_emitter, data_catalog);
+        g_server->set_report_generator(report_generator);
+
+        // Cost Tracker
+        if (cost_tracker) {
+            g_server->set_cost_tracker(cost_tracker);
+        }
+
+        // Access Request Manager
+        std::shared_ptr<AccessRequestManager> access_request_manager;
+        if (config_result.success && config_result.config.access_requests.enabled) {
+            AccessRequestManager::Config arm_cfg;
+            arm_cfg.enabled = true;
+            arm_cfg.max_duration_hours = config_result.config.access_requests.max_duration_hours;
+            arm_cfg.default_duration_hours = config_result.config.access_requests.default_duration_hours;
+            arm_cfg.max_pending_requests = config_result.config.access_requests.max_pending_requests;
+            arm_cfg.cleanup_interval_seconds = config_result.config.access_requests.cleanup_interval_seconds;
+
+            // Capture base policies for merging with temp policies
+            auto base_policies = policies;
+            access_request_manager = std::make_shared<AccessRequestManager>(
+                arm_cfg, policy_engine,
+                [base_policies]() { return base_policies; });
+            access_request_manager->start();
+            g_server->set_access_request_manager(access_request_manager);
+            utils::log::info("Access request workflow: enabled");
         }
 
         // WebSocket handler

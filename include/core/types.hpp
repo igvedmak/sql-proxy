@@ -105,7 +105,8 @@ enum class ErrorCode {
     QUERY_TOO_EXPENSIVE,
     FIREWALL_BLOCKED,
     RESIDENCY_BLOCKED,
-    COPY_NOT_SUPPORTED
+    COPY_NOT_SUPPORTED,
+    COST_BUDGET_EXCEEDED
 };
 
 enum class FailureCategory {
@@ -485,6 +486,7 @@ inline const char* error_code_to_string(ErrorCode code) {
         case ErrorCode::FIREWALL_BLOCKED: return "FIREWALL_BLOCKED";
         case ErrorCode::RESIDENCY_BLOCKED: return "RESIDENCY_BLOCKED";
         case ErrorCode::COPY_NOT_SUPPORTED: return "COPY_NOT_SUPPORTED";
+        case ErrorCode::COST_BUDGET_EXCEEDED: return "COST_BUDGET_EXCEEDED";
         default: return "UNKNOWN";
     }
 }
