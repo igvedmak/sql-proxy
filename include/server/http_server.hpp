@@ -102,6 +102,7 @@ public:
         uint64_t auth_rejects;
         uint64_t brute_force_blocks;
         uint64_t ip_blocks;
+        uint64_t ip_rate_rejects;
     };
     [[nodiscard]] static HttpStats get_http_stats();
 

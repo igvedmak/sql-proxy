@@ -11,7 +11,7 @@ PolicyEngine::PolicyEngine()
 void PolicyEngine::load_policies(const std::vector<Policy>& policies) {
     policies_ = policies;
     const auto new_store = build_store(policies);
-    std::atomic_store_explicit(&store_, new_store, std::memory_order_release);
+    store_.store(new_store, std::memory_order_release);
 }
 
 const std::vector<Policy>& PolicyEngine::get_policies() const {
@@ -25,7 +25,7 @@ PolicyEvaluationResult PolicyEngine::evaluate(
     const AnalysisResult& analysis) const {
 
     // Load current policy store (RCU read)
-    const auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
+    const auto store = store_.load(std::memory_order_acquire);
 
     if (!store) {
         return PolicyEvaluationResult(
@@ -95,7 +95,7 @@ std::vector<ColumnPolicyDecision> PolicyEngine::evaluate_columns(
     const AnalysisResult& analysis,
     const std::vector<std::string>& column_names) const {
 
-    const auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
+    const auto store = store_.load(std::memory_order_acquire);
     std::vector<ColumnPolicyDecision> decisions;
     decisions.reserve(column_names.size());
 
@@ -192,11 +192,11 @@ void PolicyEngine::reload_policies(const std::vector<Policy>& policies) {
 
     policies_ = policies;
     const auto new_store = build_store(policies);
-    std::atomic_store_explicit(&store_, new_store, std::memory_order_release);
+    store_.store(new_store, std::memory_order_release);
 }
 
 size_t PolicyEngine::policy_count() const {
-    const auto store = std::atomic_load_explicit(&store_, std::memory_order_acquire);
+    const auto store = store_.load(std::memory_order_acquire);
     if (!store) {
         return 0;
     }
@@ -215,7 +215,7 @@ size_t PolicyEngine::policy_count() const {
 
 void PolicyEngine::clear() {
     std::lock_guard<std::mutex> lock(reload_mutex_);
-    std::atomic_store_explicit(&store_, std::make_shared<PolicyStore>(), std::memory_order_release);
+    store_.store(std::make_shared<PolicyStore>(), std::memory_order_release);
 }
 
 PolicyEvaluationResult PolicyEngine::evaluate_table(

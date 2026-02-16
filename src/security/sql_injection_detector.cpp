@@ -70,6 +70,35 @@ size_t find_keyword(std::string_view sql, const char* keyword) {
     return std::string::npos;
 }
 
+// Strip all block comments (/* ... */) from SQL, preserving string literals
+std::string strip_block_comments(std::string_view sql) {
+    std::string result;
+    result.reserve(sql.size());
+    bool in_single = false;
+    bool in_double = false;
+
+    for (size_t i = 0; i < sql.size(); ++i) {
+        if (sql[i] == '\'' && !in_double) {
+            in_single = !in_single;
+            result += sql[i];
+        } else if (sql[i] == '"' && !in_single) {
+            in_double = !in_double;
+            result += sql[i];
+        } else if (!in_single && !in_double &&
+                   sql[i] == '/' && i + 1 < sql.size() && sql[i + 1] == '*') {
+            const size_t end = sql.find("*/", i + 2);
+            if (end != std::string::npos) {
+                i = end + 1;  // Skip past */
+            } else {
+                break;  // Unclosed comment — skip rest
+            }
+        } else {
+            result += sql[i];
+        }
+    }
+    return result;
+}
+
 } // anonymous namespace
 
 SqlInjectionDetector::SqlInjectionDetector(const Config& config)
@@ -109,6 +138,7 @@ SqlInjectionDetector::DetectionResult SqlInjectionDetector::analyze(
     check_tautologies(normalized_sql, result);
     check_union_injection(normalized_sql, parsed, result);
     check_comment_bypass(raw_sql, result);
+    check_comment_keyword_split(raw_sql, result);
     check_stacked_queries(raw_sql, result);
     check_time_based_blind(normalized_sql, result);
     check_error_based(normalized_sql, result);
@@ -250,6 +280,32 @@ void SqlInjectionDetector::check_comment_bypass(std::string_view raw_sql,
             }
         }
         block_start += 2;
+    }
+}
+
+void SqlInjectionDetector::check_comment_keyword_split(std::string_view raw_sql,
+                                                        DetectionResult& result) const {
+    // Strip all block comments and check if dangerous multi-word keywords emerge.
+    // Catches obfuscation like: UN/**/ION SE/**/LECT, DR/**/OP TA/**/BLE
+    const std::string stripped = strip_block_comments(raw_sql);
+    if (stripped.size() == raw_sql.size()) return;  // No comments were stripped
+
+    static const char* dangerous_keywords[] = {
+        "union select", "union all select",
+        "drop table", "drop database",
+        "insert into", "delete from",
+        "alter table", "truncate table",
+        "create table", "exec ",
+    };
+
+    for (const auto& kw : dangerous_keywords) {
+        // Only flag if the keyword is found in stripped but NOT in the original
+        if (find_keyword(stripped, kw) != std::string::npos &&
+            find_keyword(raw_sql, kw) == std::string::npos) {
+            result.patterns_matched.push_back("COMMENT_KEYWORD_SPLIT");
+            elevate_threat(result, ThreatLevel::CRITICAL);
+            return;
+        }
     }
 }
 

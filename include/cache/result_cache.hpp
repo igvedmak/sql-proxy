@@ -43,6 +43,9 @@ public:
     /// Invalidate entries that reference any of the given tables.
     void invalidate_tables(const std::vector<std::string>& tables);
 
+    /// Invalidate all entries (called on policy reload to prevent stale authorization).
+    void invalidate_all();
+
     [[nodiscard]] bool is_enabled() const { return config_.enabled; }
 
     struct Stats {
@@ -74,6 +77,7 @@ private:
                  std::chrono::steady_clock::time_point expires_at);
         size_t invalidate(const std::string& database);
         size_t invalidate_tables(const std::vector<std::string>& tables);
+        void clear();
         size_t size() const;
 
         std::atomic<uint64_t> evictions{0};

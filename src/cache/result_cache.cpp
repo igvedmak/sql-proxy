@@ -84,6 +84,13 @@ void ResultCache::invalidate_tables(const std::vector<std::string>& tables) {
     invalidations_.fetch_add(1, std::memory_order_relaxed);
 }
 
+void ResultCache::invalidate_all() {
+    for (auto& shard : shards_) {
+        shard->clear();
+    }
+    invalidations_.fetch_add(1, std::memory_order_relaxed);
+}
+
 ResultCache::Stats ResultCache::get_stats() const {
     size_t entries = 0;
     uint64_t evictions = 0;
@@ -197,6 +204,13 @@ size_t ResultCache::Shard::invalidate_tables(const std::vector<std::string>& tab
         }
     }
     return removed;
+}
+
+void ResultCache::Shard::clear() {
+    std::lock_guard lock(mutex_);
+    map_.clear();
+    lru_list_.clear();
+    db_generations_.clear();
 }
 
 size_t ResultCache::Shard::size() const {

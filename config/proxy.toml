@@ -7,6 +7,7 @@ threads = 128
 request_timeout_ms = 30000
 max_sql_length = 102400
 admin_token = "aproxy.toml:9"
+trusted_proxies = ["172.0.0.0/8", "127.0.0.1"]
 
 [logging]
 level = "info"

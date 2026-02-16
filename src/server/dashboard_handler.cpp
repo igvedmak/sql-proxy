@@ -179,19 +179,20 @@ void DashboardHandler::handle_policies(const httplib::Request& req, httplib::Res
         json += std::format(
             "{{\"name\":\"{}\",\"priority\":{},\"action\":\"{}\",\"database\":\"{}\","
             "\"table\":\"{}\",\"users\":[",
-            p.name, p.priority, decision_to_string(p.action),
-            p.scope.database.value_or("*"), p.scope.table.value_or("*"));
+            utils::escape_json(p.name), p.priority, decision_to_string(p.action),
+            utils::escape_json(p.scope.database.value_or("*")),
+            utils::escape_json(p.scope.table.value_or("*")));
         bool first = true;
         for (const auto& u : p.users) {
             if (!first) json += ",";
-            json += std::format("\"{}\"", u);
+            json += std::format("\"{}\"", utils::escape_json(u));
             first = false;
         }
         json += "],\"roles\":[";
         first = true;
         for (const auto& r : p.roles) {
             if (!first) json += ",";
-            json += std::format("\"{}\"", r);
+            json += std::format("\"{}\"", utils::escape_json(r));
             first = false;
         }
         json += "]}";
@@ -215,10 +216,10 @@ void DashboardHandler::handle_users(const httplib::Request& req, httplib::Respon
     for (size_t i = 0; i < users_.size(); ++i) {
         if (i > 0) json += ",";
         const auto& u = users_[i];
-        json += std::format("{{\"name\":\"{}\",\"roles\":[", u.name);
+        json += std::format("{{\"name\":\"{}\",\"roles\":[", utils::escape_json(u.name));
         for (size_t j = 0; j < u.roles.size(); ++j) {
             if (j > 0) json += ",";
-            json += std::format("\"{}\"", u.roles[j]);
+            json += std::format("\"{}\"", utils::escape_json(u.roles[j]));
         }
         json += "]}";
     }
@@ -252,7 +253,8 @@ void DashboardHandler::handle_alerts(const httplib::Request& req, httplib::Respo
         json += std::format(
             "{{\"id\":\"{}\",\"rule_name\":\"{}\",\"severity\":\"{}\","
             "\"message\":\"{}\",\"current_value\":{:.2f},\"threshold\":{:.2f}}}",
-            a.id, a.rule_name, a.severity, a.message,
+            utils::escape_json(a.id), utils::escape_json(a.rule_name),
+            utils::escape_json(a.severity), utils::escape_json(a.message),
             a.current_value, a.threshold);
     }
     json += "],\"history\":[";
@@ -262,7 +264,8 @@ void DashboardHandler::handle_alerts(const httplib::Request& req, httplib::Respo
         json += std::format(
             "{{\"id\":\"{}\",\"rule_name\":\"{}\",\"severity\":\"{}\","
             "\"resolved\":{}}}",
-            h.id, h.rule_name, h.severity, utils::booltostr(h.resolved));
+            utils::escape_json(h.id), utils::escape_json(h.rule_name),
+            utils::escape_json(h.severity), utils::booltostr(h.resolved));
     }
     json += std::format("],\"total\":{}}}", active.size());
     res.set_content(json, http::kJsonContentType);
@@ -363,14 +366,14 @@ void DashboardHandler::handle_schema(const httplib::Request& req, httplib::Respo
         first_table = false;
 
         json += std::format("{{\"name\":\"{}\",\"schema\":\"{}\",\"columns\":[",
-                            meta->name, meta->schema);
+                            utils::escape_json(meta->name), utils::escape_json(meta->schema));
 
         for (size_t i = 0; i < meta->columns.size(); ++i) {
             if (i > 0) json += ',';
             const auto& col = meta->columns[i];
             json += std::format(
                 "{{\"name\":\"{}\",\"type\":\"{}\",\"nullable\":{},\"primary_key\":{}}}",
-                col.name, col.type,
+                utils::escape_json(col.name), utils::escape_json(col.type),
                 utils::booltostr(col.nullable),
                 utils::booltostr(col.is_primary_key));
         }

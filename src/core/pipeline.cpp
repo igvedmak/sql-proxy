@@ -128,11 +128,12 @@ ProxyResponse Pipeline::execute(const ProxyRequest& request) {
         return build_response(ctx);
     }
 
-    // Layer 5: Execute (with retry on transient failures)
+    // Layer 5: Execute (with retry on transient failures — SELECT only)
     {
         bool exec_ok = execute_query(ctx);
         if (!exec_ok && retry_config_.enabled &&
-            ctx.query_result.error_code == ErrorCode::DATABASE_ERROR) {
+            ctx.query_result.error_code == ErrorCode::DATABASE_ERROR &&
+            ctx.analysis.statement_type == StatementType::SELECT) {
             int backoff_ms = retry_config_.initial_backoff_ms;
             for (int attempt = 0; attempt < retry_config_.max_retries; ++attempt) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
@@ -587,6 +588,23 @@ void Pipeline::record_lineage(RequestContext& ctx) {
     if (!c_.lineage_tracker) return;
     if (!ctx.query_result.success) return;
 
+    // Build column→table mapping from projection qualified references
+    std::unordered_map<std::string, std::string> column_table_map;
+    for (const auto& proj : ctx.analysis.projections) {
+        for (const auto& source : proj.derived_from) {
+            const auto dot = source.find('.');
+            if (dot != std::string::npos) {
+                const auto table_or_alias = source.substr(0, dot);
+                for (const auto& t : ctx.analysis.source_tables) {
+                    if (t.alias == table_or_alias || t.table == table_or_alias) {
+                        column_table_map[proj.name] = t.table;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     // Record lineage for each classified column
     for (const auto& [col_name, classification] : ctx.classification_result.classifications) {
         LineageEvent event;
@@ -597,8 +615,11 @@ void Pipeline::record_lineage(RequestContext& ctx) {
         event.classification = classification.type_string();
         event.access_type = "SELECT";
 
-        // Find the table for this column from analysis
-        if (!ctx.analysis.source_tables.empty()) {
+        // Find the table for this column: use projection mapping, fall back to first source
+        const auto it = column_table_map.find(col_name);
+        if (it != column_table_map.end()) {
+            event.table = it->second;
+        } else if (!ctx.analysis.source_tables.empty()) {
             event.table = ctx.analysis.source_tables[0].table;
         }
 

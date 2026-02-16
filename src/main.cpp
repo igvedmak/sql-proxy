@@ -90,6 +90,7 @@ std::shared_ptr<SchemaDriftDetector> g_schema_drift_detector;
 std::shared_ptr<AdaptiveRateController> g_adaptive_rate_controller;
 std::shared_ptr<DistributedRateLimiter> g_distributed_rate_limiter;
 std::shared_ptr<TransactionCoordinator> g_transaction_coordinator;
+std::shared_ptr<AuditEmitter> g_audit_emitter;
 
 // =========================================================================
 // Explicit Backend Registration (ensures linker includes backend objects)
@@ -153,6 +154,11 @@ void signal_handler(int signal) {
             utils::log::warn(std::format("Forced shutdown: {} requests still in flight",
                 g_shutdown->in_flight_count()));
         }
+    }
+
+    // Flush and shutdown audit emitter before exit to prevent record loss
+    if (g_audit_emitter) {
+        g_audit_emitter->shutdown();
     }
 
     if (g_server) {
@@ -387,12 +393,14 @@ int main(int argc, char* argv[]) {
         std::shared_ptr<AuditEmitter> audit_emitter;
         if (config_result.success) {
             audit_emitter = std::make_shared<AuditEmitter>(audit_config);
+            g_audit_emitter = audit_emitter;
             utils::log::info(std::format("Audit: file={}, webhook={}, syslog={}",
                 audit_config.output_file,
                 audit_config.webhook_enabled ? "enabled" : "disabled",
                 audit_config.syslog_enabled ? "enabled" : "disabled"));
         } else {
             audit_emitter = std::make_shared<AuditEmitter>(audit_file);
+            g_audit_emitter = audit_emitter;
             utils::log::info(std::format("Audit: writing to {}", audit_file));
         }
 
@@ -1129,11 +1137,17 @@ int main(int argc, char* argv[]) {
             // Register reload callback — dispatches to each component
             // Captures shared_ptrs to keep components alive
             g_config_watcher->set_callback(
-                [policy_engine, rate_limiter, query_rewriter, server = g_server]
+                [policy_engine, rate_limiter, query_rewriter, result_cache, server = g_server]
                 (const ProxyConfig& new_cfg) {
 
                 // 1. Hot-reload policies (RCU — zero-downtime atomic swap)
                 policy_engine->reload_policies(new_cfg.policies);
+
+                // 1b. Invalidate result cache (stale results may have wrong authorization)
+                if (result_cache) {
+                    result_cache->invalidate_all();
+                }
+
                 utils::log::info(std::format("Policies reloaded: {} policies",
                                               new_cfg.policies.size()));
 

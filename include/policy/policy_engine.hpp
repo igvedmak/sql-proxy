@@ -149,8 +149,8 @@ private:
     static std::shared_ptr<PolicyStore> build_store(const std::vector<Policy>& policies);
 
     // RCU: Readers load shared_ptr atomically, writers build offline and swap
-    // Note: Using shared_ptr with atomic operations (C++11 compatible)
-    std::shared_ptr<PolicyStore> store_;
+    // C++20 atomic<shared_ptr> — proper lock-free or efficient locking
+    std::atomic<std::shared_ptr<PolicyStore>> store_;
 
     // Raw policies for admin/dashboard access
     std::vector<Policy> policies_;

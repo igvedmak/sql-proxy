@@ -133,14 +133,19 @@ bool looks_like_email(std::string_view value) {
 
 bool looks_like_phone(std::string_view value) {
     int digits = 0;
+    int separators = 0;
     for (const char c : value) {
         if (c >= '0' && c <= '9') {
             ++digits;
-        } else if (c != '-' && c != '.' && c != ' ' && c != '(' && c != ')' && c != '+') {
-            return false;
+        } else if (c == '-' || c == ' ' || c == '(' || c == ')' || c == '+') {
+            ++separators;
+        } else {
+            return false;  // Reject '.', letters, and other chars
         }
     }
-    return digits >= 10 && digits <= 11;
+    // Require 10-11 digits AND at least one separator (pure digit strings
+    // are more likely IDs/timestamps than phone numbers)
+    return digits >= 10 && digits <= 11 && separators > 0;
 }
 
 bool looks_like_ssn(std::string_view value) {

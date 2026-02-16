@@ -140,6 +140,32 @@ std::vector<std::string> parse_json_string_array(std::string_view json, std::str
 std::atomic<uint64_t> s_ip_blocks{0};
 std::atomic<uint64_t> s_auth_rejects{0};
 std::atomic<uint64_t> s_brute_force_blocks{0};
+std::atomic<uint64_t> s_ip_rate_rejects{0};
+
+// Pre-auth per-IP rate limiter — prevents unauthenticated floods from
+// consuming CPU on JSON parsing and auth lookups.
+constexpr uint32_t kIpRatePerSecond = 200;
+constexpr uint32_t kIpBurstCapacity = 400;
+std::shared_mutex s_ip_rate_mutex;
+std::unordered_map<std::string, std::shared_ptr<TokenBucket>> s_ip_rate_buckets;
+
+bool check_ip_rate_limit(const std::string& ip) {
+    // Fast path: read lock
+    {
+        std::shared_lock lock(s_ip_rate_mutex);
+        auto it = s_ip_rate_buckets.find(ip);
+        if (it != s_ip_rate_buckets.end()) {
+            return it->second->try_acquire();
+        }
+    }
+    // Slow path: write lock + create bucket
+    std::unique_lock lock(s_ip_rate_mutex);
+    auto [it, inserted] = s_ip_rate_buckets.try_emplace(ip, nullptr);
+    if (inserted) {
+        it->second = std::make_shared<TokenBucket>(kIpRatePerSecond, kIpBurstCapacity);
+    }
+    return it->second->try_acquire();
+}
 
 /// Constant-time string comparison to prevent timing attacks on secret tokens.
 bool constant_time_equals(std::string_view a, std::string_view b) {
@@ -155,14 +181,11 @@ bool constant_time_equals(std::string_view a, std::string_view b) {
 }
 
 /// Check if remote_addr is a trusted proxy, meaning we can trust X-Forwarded-For.
-/// Supports exact IP match and simple private-range prefix checks.
+/// Supports exact IP match and CIDR ranges (e.g. "172.0.0.0/8").
 bool is_trusted_proxy(const std::string& remote_addr,
                       const std::vector<std::string>& trusted_proxies) {
     if (trusted_proxies.empty()) return false;
-    for (const auto& proxy : trusted_proxies) {
-        if (proxy == remote_addr) return true;
-    }
-    return false;
+    return IpAllowlist::is_allowed(remote_addr, trusted_proxies);
 }
 
 /// Extract the real client IP, only trusting X-Forwarded-For if the direct
@@ -407,7 +430,8 @@ HttpServer::HttpStats HttpServer::get_http_stats() {
     return {
         s_auth_rejects.load(std::memory_order_relaxed),
         s_brute_force_blocks.load(std::memory_order_relaxed),
-        s_ip_blocks.load(std::memory_order_relaxed)
+        s_ip_blocks.load(std::memory_order_relaxed),
+        s_ip_rate_rejects.load(std::memory_order_relaxed)
     };
 }
 
@@ -711,6 +735,18 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
     ShutdownGuard shutdown_guard{shutdown_coordinator_.get()};
 
     try {
+        // Extract source IP first — needed for pre-auth rate limiting
+        const std::string source_ip = extract_client_ip(req, trusted_proxies_);
+
+        // Pre-auth per-IP rate limit — reject before any parsing/auth work
+        if (!check_ip_rate_limit(source_ip)) {
+            s_ip_rate_rejects.fetch_add(1, std::memory_order_relaxed);
+            res.status = httplib::StatusCode::TooManyRequests_429;
+            res.set_header("Retry-After", "1");
+            res.set_content(R"({"success":false,"error":"Rate limited"})", http::kJsonContentType);
+            return;
+        }
+
         // Validate Content-Type
         const std::string content_type = req.get_header_value("Content-Type");
         if (!content_type.contains(http::kJsonContentType)) {
@@ -744,9 +780,6 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
                 http::kJsonContentType);
             return;
         }
-
-        // Extract source IP (only trust X-Forwarded-For from configured trusted proxies)
-        std::string source_ip = extract_client_ip(req, trusted_proxies_);
 
         // Authentication: Bearer token first, fallback to JSON body "user" field
         std::optional<UserInfo> user_info;
@@ -854,7 +887,7 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
         proxy_req.sql = sql;
         proxy_req.database = database;
         proxy_req.user_attributes = user_info->attributes;
-        proxy_req.source_ip = extract_client_ip(req, trusted_proxies_);
+        proxy_req.source_ip = source_ip;
         proxy_req.traceparent = req.get_header_value("traceparent");
         proxy_req.tracestate = req.get_header_value("tracestate");
 
@@ -1348,6 +1381,12 @@ void HttpServer::handle_policies_reload(const httplib::Request& req, httplib::Re
         }
 
         pipeline_->get_policy_engine()->reload_policies(load_result.policies);
+
+        // Invalidate result cache — stale results may have wrong authorization
+        auto rc = pipeline_->get_result_cache();
+        if (rc) {
+            rc->invalidate_all();
+        }
 
         res.status = httplib::StatusCode::OK_200;
         res.set_content(

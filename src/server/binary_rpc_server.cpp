@@ -134,7 +134,7 @@ void BinaryRpcServer::handle_connection(int client_fd, std::string /*remote_addr
             // Validate user
             const auto user_info = lookup_user(req->user);
             if (!user_info) {
-                const auto err = serialize_error(std::format("Unknown user: {}", req->user));
+                const auto err = serialize_error(std::format("Unknown user: {}", utils::escape_json(req->user)));
                 send_frame(client_fd, rpc::MSG_ERROR, err);
                 continue;
             }
@@ -245,7 +245,7 @@ std::vector<uint8_t> BinaryRpcServer::serialize_response(const ProxyResponse& re
         json = std::format(R"({{"success":true,"columns":[)", "");
         for (size_t i = 0; i < result.column_names.size(); ++i) {
             if (i > 0) json += ",";
-            json += std::format(R"("{}")", result.column_names[i]);
+            json += std::format(R"("{}")", utils::escape_json(result.column_names[i]));
         }
         json += "],\"rows\":[";
         for (size_t i = 0; i < result.rows.size(); ++i) {
@@ -253,20 +253,20 @@ std::vector<uint8_t> BinaryRpcServer::serialize_response(const ProxyResponse& re
             json += "[";
             for (size_t j = 0; j < result.rows[i].size(); ++j) {
                 if (j > 0) json += ",";
-                json += std::format(R"("{}")", result.rows[i][j]);
+                json += std::format(R"("{}")", utils::escape_json(result.rows[i][j]));
             }
             json += "]";
         }
         json += "]}";
     } else {
-        json = std::format(R"({{"success":false,"error":"{}"}})", response.error_message);
+        json = std::format(R"({{"success":false,"error":"{}"}})", utils::escape_json(response.error_message));
     }
 
     return std::vector<uint8_t>(json.begin(), json.end());
 }
 
 std::vector<uint8_t> BinaryRpcServer::serialize_error(const std::string& message) {
-    const std::string json = std::format(R"({{"error":"{}"}})", message);
+    const std::string json = std::format(R"({{"error":"{}"}})", utils::escape_json(message));
     return std::vector<uint8_t>(json.begin(), json.end());
 }
 
