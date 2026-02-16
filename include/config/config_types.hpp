@@ -31,6 +31,7 @@ struct ServerConfig {
     uint32_t shutdown_timeout_ms = 30000;  // Graceful shutdown timeout
     bool compression_enabled = false;
     size_t compression_min_size_bytes = 1024;
+    std::vector<std::string> trusted_proxies;  // CIDRs/IPs trusted for X-Forwarded-For
 
     ServerConfig()
         : host("0.0.0.0"),

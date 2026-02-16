@@ -17,6 +17,7 @@ public:
         uint32_t window_seconds = 60;
         uint32_t lockout_seconds = 300;
         uint32_t max_lockout_seconds = 3600;
+        size_t max_tracked_entries = 100000;  // Cap to prevent memory exhaustion
     };
 
     struct BlockStatus {
@@ -32,6 +33,9 @@ public:
                                           const std::string& username) const;
     void record_failure(const std::string& ip, const std::string& username);
     void record_success(const std::string& ip, const std::string& username);
+
+    /// Evict expired records to bound memory growth. Called periodically from record_failure.
+    void evict_expired();
 
     [[nodiscard]] uint64_t total_failures() const {
         return total_failures_.load(std::memory_order_relaxed);
@@ -59,6 +63,11 @@ private:
 
     mutable std::atomic<uint64_t> total_failures_{0};
     mutable std::atomic<uint64_t> total_blocks_{0};
+    std::atomic<uint64_t> eviction_counter_{0};  // Tracks record_failure calls for periodic eviction
+
+    /// Evict expired entries from a single map (helper, must hold unique_lock)
+    template<typename Map>
+    void evict_expired_from(Map& records);
 };
 
 } // namespace sqlproxy

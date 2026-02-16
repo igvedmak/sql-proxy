@@ -27,47 +27,46 @@ WireServer::~WireServer() {
 void WireServer::init_ssl_context() {
     if (!config_.tls.enabled) return;
 
-    ssl_ctx_ = SSL_CTX_new(TLS_server_method());
-    if (!ssl_ctx_) {
+    // RAII guard: automatically frees SSL_CTX if any setup step throws
+    struct SslCtxDeleter { void operator()(SSL_CTX* p) { if (p) SSL_CTX_free(p); } };
+    std::unique_ptr<SSL_CTX, SslCtxDeleter> ctx_guard(SSL_CTX_new(TLS_server_method()));
+    if (!ctx_guard) {
         throw std::runtime_error("Wire TLS: failed to create SSL_CTX");
     }
 
+    auto* ctx = ctx_guard.get();
+
     // Set minimum TLS version to 1.2
-    SSL_CTX_set_min_proto_version(ssl_ctx_, TLS1_2_VERSION);
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
 
     // Load server certificate
-    if (SSL_CTX_use_certificate_file(ssl_ctx_, config_.tls.cert_file.c_str(), SSL_FILETYPE_PEM) != 1) {
-        SSL_CTX_free(ssl_ctx_);
-        ssl_ctx_ = nullptr;
+    if (SSL_CTX_use_certificate_file(ctx, config_.tls.cert_file.c_str(), SSL_FILETYPE_PEM) != 1) {
         throw std::runtime_error(std::format("Wire TLS: failed to load certificate: {}",
             config_.tls.cert_file));
     }
 
     // Load private key
-    if (SSL_CTX_use_PrivateKey_file(ssl_ctx_, config_.tls.key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
-        SSL_CTX_free(ssl_ctx_);
-        ssl_ctx_ = nullptr;
+    if (SSL_CTX_use_PrivateKey_file(ctx, config_.tls.key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
         throw std::runtime_error(std::format("Wire TLS: failed to load private key: {}",
             config_.tls.key_file));
     }
 
     // Verify private key matches certificate
-    if (SSL_CTX_check_private_key(ssl_ctx_) != 1) {
-        SSL_CTX_free(ssl_ctx_);
-        ssl_ctx_ = nullptr;
+    if (SSL_CTX_check_private_key(ctx) != 1) {
         throw std::runtime_error("Wire TLS: private key does not match certificate");
     }
 
     // Optional: mTLS (client certificate verification)
     if (config_.tls.require_client_cert && !config_.tls.ca_file.empty()) {
-        SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
-        if (SSL_CTX_load_verify_locations(ssl_ctx_, config_.tls.ca_file.c_str(), nullptr) != 1) {
-            SSL_CTX_free(ssl_ctx_);
-            ssl_ctx_ = nullptr;
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+        if (SSL_CTX_load_verify_locations(ctx, config_.tls.ca_file.c_str(), nullptr) != 1) {
             throw std::runtime_error(std::format("Wire TLS: failed to load CA certificate: {}",
                 config_.tls.ca_file));
         }
     }
+
+    // Transfer ownership — RAII guard releases, ssl_ctx_ takes over
+    ssl_ctx_ = ctx_guard.release();
 
     utils::log::info(std::format("Wire TLS: initialized (cert={}, key={}{})",
         config_.tls.cert_file, config_.tls.key_file,

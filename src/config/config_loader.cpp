@@ -257,6 +257,14 @@ ServerConfig ConfigLoader::extract_server(const toml::table& root) {
     cfg.compression_enabled = s["compression_enabled"].value_or(false);
     cfg.compression_min_size_bytes = static_cast<size_t>(s["compression_min_size_bytes"].value_or(1024));
 
+    if (const auto* proxies = s["trusted_proxies"].as_array()) {
+        for (const auto& p : *proxies) {
+            if (auto v = p.value<std::string>()) {
+                cfg.trusted_proxies.push_back(*v);
+            }
+        }
+    }
+
     return cfg;
 }
 

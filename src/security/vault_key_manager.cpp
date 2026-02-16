@@ -153,8 +153,10 @@ std::string VaultKeyManager::vault_api_get(const std::string& path) const {
         if (res && res->status == httplib::StatusCode::OK_200) {
             return res->body;
         }
+    } catch (const std::exception& e) {
+        utils::log::error(std::format("Vault GET {} failed: {}", path, e.what()));
     } catch (...) {
-        // Connection failure
+        utils::log::error(std::format("Vault GET {} failed: unknown error", path));
     }
     return "";
 }
@@ -175,8 +177,10 @@ std::string VaultKeyManager::vault_api_post(const std::string& path) const {
         if (res && (res->status == httplib::StatusCode::OK_200 || res->status == httplib::StatusCode::NoContent_204)) {
             return res->body.empty() ? "{}" : res->body;
         }
+    } catch (const std::exception& e) {
+        utils::log::error(std::format("Vault POST {} failed: {}", path, e.what()));
     } catch (...) {
-        // Connection failure
+        utils::log::error(std::format("Vault POST {} failed: unknown error", path));
     }
     return "";
 }

@@ -191,8 +191,8 @@ bool SchemaCache::reload(const std::string& conn_string) {
 
         return true;
 
-    } catch (const std::exception&) {
-        // Connection or allocation failure - keep existing cache intact
+    } catch (const std::exception& e) {
+        utils::log::error(std::format("Schema cache reload failed (keeping existing cache): {}", e.what()));
         return false;
     }
 }

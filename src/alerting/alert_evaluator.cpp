@@ -271,8 +271,10 @@ void AlertEvaluator::send_webhook(const Alert& alert) {
             headers.emplace(http::kAuthorizationHeader, config_.webhook.auth_header);
         }
         cli.Post(path, headers, json, http::kJsonContentType);
+    } catch (const std::exception& e) {
+        utils::log::error(std::format("Alert webhook failed ({}): {}", config_.webhook.url, e.what()));
     } catch (...) {
-        // Webhook failures must never crash the evaluator
+        utils::log::error(std::format("Alert webhook failed ({}): unknown error", config_.webhook.url));
     }
 }
 

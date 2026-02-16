@@ -25,29 +25,36 @@ BinaryRpcServer::~BinaryRpcServer() {
 void BinaryRpcServer::start() {
     if (running_.load()) return;
 
-    server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd_ < 0) {
+    // Use RAII guard to prevent socket leak if setup throws
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
         throw std::runtime_error(std::format("BinaryRPC: socket() failed: {}", strerror(errno)));
     }
+    auto fd_guard = std::unique_ptr<int, void(*)(int*)>(
+        &fd, [](int* p) { if (*p >= 0) { close(*p); *p = -1; } });
 
     int opt = 1;
-    setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        utils::log::warn(std::format("BinaryRPC: setsockopt(SO_REUSEADDR) failed: {}", strerror(errno)));
+    }
 
     struct sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(config_.port);
     inet_aton(config_.host.c_str(), &addr.sin_addr);
 
-    if (bind(server_fd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        close(server_fd_);
+    if (bind(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
         throw std::runtime_error(std::format("BinaryRPC: bind({}:{}) failed: {}",
             config_.host, config_.port, strerror(errno)));
     }
 
-    if (listen(server_fd_, 64) < 0) {
-        close(server_fd_);
+    if (listen(fd, 64) < 0) {
         throw std::runtime_error(std::format("BinaryRPC: listen() failed: {}", strerror(errno)));
     }
+
+    // Transfer ownership — fd_guard will no longer close on scope exit
+    server_fd_ = fd;
+    fd = -1;
 
     running_.store(true);
     accept_thread_ = std::jthread([this](std::stop_token) { accept_loop(); });

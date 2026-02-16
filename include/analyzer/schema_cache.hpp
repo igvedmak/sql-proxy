@@ -134,21 +134,36 @@ private:
  *
  * Triggers async schema reload on destruction.
  * Use after successful DDL execution.
+ *
+ * Uses shared_ptr to SchemaCache to prevent use-after-free if the cache
+ * is destroyed before the background reload thread completes.
  */
 class SchemaInvalidator {
 public:
+    explicit SchemaInvalidator(std::shared_ptr<SchemaCache> cache, std::string conn_string)
+        : cache_(std::move(cache)), conn_string_(std::move(conn_string)) {}
+
+    // Non-shared_ptr overload for backward compatibility (wraps in aliasing shared_ptr)
     explicit SchemaInvalidator(SchemaCache& cache, std::string conn_string)
-        : cache_(cache), conn_string_(std::move(conn_string)) {}
+        : cache_(std::shared_ptr<SchemaCache>(&cache, [](SchemaCache*){})),
+          conn_string_(std::move(conn_string)) {}
 
     ~SchemaInvalidator() {
-        // Fire-and-forget background reload (RCU makes this safe for readers)
-        std::thread([&cache = cache_, cs = std::move(conn_string_)]() {
-            cache.reload(cs);
+        // Background reload with shared_ptr ownership — prevents dangling reference
+        auto cache_ptr = cache_;
+        auto cs = std::move(conn_string_);
+        std::thread([cache_ptr = std::move(cache_ptr), cs = std::move(cs)]() {
+            cache_ptr->reload(cs);
         }).detach();
     }
 
+    SchemaInvalidator(const SchemaInvalidator&) = delete;
+    SchemaInvalidator& operator=(const SchemaInvalidator&) = delete;
+    SchemaInvalidator(SchemaInvalidator&&) = default;
+    SchemaInvalidator& operator=(SchemaInvalidator&&) = default;
+
 private:
-    SchemaCache& cache_;
+    std::shared_ptr<SchemaCache> cache_;
     std::string conn_string_;
 };
 

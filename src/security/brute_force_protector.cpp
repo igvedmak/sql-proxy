@@ -47,6 +47,12 @@ void BruteForceProtector::record_failure(const std::string& ip, const std::strin
     if (!config_.enabled) return;
 
     total_failures_.fetch_add(1, std::memory_order_relaxed);
+
+    // Periodic eviction: every 1000 failures, clean expired entries
+    if (eviction_counter_.fetch_add(1, std::memory_order_relaxed) % 1000 == 0) {
+        evict_expired();
+    }
+
     const auto now = std::chrono::steady_clock::now();
 
     // Update IP record
@@ -115,6 +121,48 @@ void BruteForceProtector::prune_and_update(FailureRecord& record) {
     auto it = std::remove_if(record.timestamps.begin(), record.timestamps.end(),
         [&](const auto& ts) { return (now - ts) > window; });
     record.timestamps.erase(it, record.timestamps.end());
+}
+
+template<typename Map>
+void BruteForceProtector::evict_expired_from(Map& records) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto expiry = std::chrono::seconds(config_.window_seconds + config_.max_lockout_seconds);
+
+    for (auto it = records.begin(); it != records.end(); ) {
+        const auto& rec = it->second;
+        // Evict if: lockout expired AND no recent timestamps
+        const bool lockout_expired = rec.locked_until <= now;
+        bool timestamps_expired = true;
+        for (const auto& ts : rec.timestamps) {
+            if ((now - ts) <= expiry) {
+                timestamps_expired = false;
+                break;
+            }
+        }
+        if (lockout_expired && (rec.timestamps.empty() || timestamps_expired)) {
+            it = records.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void BruteForceProtector::evict_expired() {
+    {
+        std::unique_lock lock(ip_mutex_);
+        evict_expired_from(ip_records_);
+        // Hard cap: if still over limit, drop oldest entries
+        while (ip_records_.size() > config_.max_tracked_entries) {
+            ip_records_.erase(ip_records_.begin());
+        }
+    }
+    {
+        std::unique_lock lock(user_mutex_);
+        evict_expired_from(user_records_);
+        while (user_records_.size() > config_.max_tracked_entries) {
+            user_records_.erase(user_records_.begin());
+        }
+    }
 }
 
 } // namespace sqlproxy

@@ -6,6 +6,28 @@
 
 namespace sqlproxy {
 
+namespace {
+
+/// Escape a string for safe inclusion in SQL single-quoted literals.
+/// Doubles single quotes (SQL standard escaping) and rejects null bytes.
+std::string escape_sql_literal(const std::string& input) {
+    std::string result;
+    result.reserve(input.size() + input.size() / 8);  // Slight over-reserve for quotes
+    for (const char c : input) {
+        if (c == '\'') {
+            result += "''";
+        } else if (c == '\0') {
+            // Null bytes in SQL literals can cause truncation attacks
+            continue;
+        } else {
+            result += c;
+        }
+    }
+    return result;
+}
+
+} // anonymous namespace
+
 void QueryRewriter::load_rules(
     const std::vector<RlsRule>& rls_rules,
     const std::vector<RewriteRule>& rewrite_rules) {
@@ -142,17 +164,18 @@ std::string QueryRewriter::expand_template(
 
     std::string result = condition;
 
-    // Replace $USER
+    // Replace $USER (SQL-escaped to prevent injection)
     {
         const std::string placeholder = "$USER";
+        const std::string safe_user = escape_sql_literal(user);
         size_t pos = 0;
         while ((pos = result.find(placeholder, pos)) != std::string::npos) {
-            result.replace(pos, placeholder.size(), user);
-            pos += user.size();
+            result.replace(pos, placeholder.size(), safe_user);
+            pos += safe_user.size();
         }
     }
 
-    // Replace $ROLES (comma-separated quoted)
+    // Replace $ROLES (comma-separated, each value SQL-escaped)
     {
         const std::string placeholder = "$ROLES";
         size_t pos = result.find(placeholder);
@@ -161,14 +184,14 @@ std::string QueryRewriter::expand_template(
             for (size_t i = 0; i < roles.size(); ++i) {
                 if (i > 0) roles_str += ",";
                 roles_str += "'";
-                roles_str += roles[i];
+                roles_str += escape_sql_literal(roles[i]);
                 roles_str += "'";
             }
             result.replace(pos, placeholder.size(), roles_str);
         }
     }
 
-    // Replace $ATTR.key
+    // Replace $ATTR.key (SQL-escaped to prevent injection)
     {
         const std::string prefix = "$ATTR.";
         size_t pos = 0;
@@ -183,10 +206,11 @@ std::string QueryRewriter::expand_template(
 
             std::string key = result.substr(key_start, key_end - key_start);
             auto it = attributes.find(key);
-            const std::string& value = (it != attributes.end()) ? it->second : key;
+            const std::string& raw_value = (it != attributes.end()) ? it->second : key;
+            const std::string safe_value = escape_sql_literal(raw_value);
 
-            result.replace(pos, key_end - pos, value);
-            pos += value.size();
+            result.replace(pos, key_end - pos, safe_value);
+            pos += safe_value.size();
         }
     }
 

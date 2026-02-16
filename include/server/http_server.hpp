@@ -108,6 +108,9 @@ public:
     void update_users(std::unordered_map<std::string, UserInfo> new_users);
     void update_max_sql_length(size_t new_max) { max_sql_length_.store(new_max); }
 
+    void set_trusted_proxies(std::vector<std::string> proxies) {
+        trusted_proxies_ = std::move(proxies);
+    }
     void set_shutdown_coordinator(std::shared_ptr<ShutdownCoordinator> sc) {
         shutdown_coordinator_ = std::move(sc);
     }
@@ -250,6 +253,7 @@ private:
     const int port_;
     const std::string admin_token_;
     const TlsConfig tls_config_;
+    std::vector<std::string> trusted_proxies_;  // IPs/CIDRs trusted for X-Forwarded-For
     const RouteConfig routes_;
     const FeatureFlags features_;
     const size_t thread_pool_size_;

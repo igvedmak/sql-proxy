@@ -1,4 +1,5 @@
 #include "server/distributed_rate_limiter.hpp"
+#include "core/utils.hpp"
 #include <format>
 
 namespace sqlproxy {
@@ -79,8 +80,12 @@ RateLimitResult DistributedRateLimiter::check(
                 result.level = "global_override";
                 result.retry_after = std::chrono::milliseconds(0);
             }
+        } catch (const std::exception& e) {
+            backend_errors_.fetch_add(1, std::memory_order_relaxed);
+            utils::log::error(std::format("Distributed rate limiter check failed: {}", e.what()));
         } catch (...) {
             backend_errors_.fetch_add(1, std::memory_order_relaxed);
+            utils::log::error("Distributed rate limiter check failed: unknown error");
         }
     }
 
@@ -172,8 +177,12 @@ void DistributedRateLimiter::sync_loop() {
                 }
             }
             sync_cycles_.fetch_add(1, std::memory_order_relaxed);
+        } catch (const std::exception& e) {
+            backend_errors_.fetch_add(1, std::memory_order_relaxed);
+            utils::log::error(std::format("Distributed rate limiter sync failed: {}", e.what()));
         } catch (...) {
             backend_errors_.fetch_add(1, std::memory_order_relaxed);
+            utils::log::error("Distributed rate limiter sync failed: unknown error");
         }
     }
 }

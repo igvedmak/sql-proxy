@@ -17,6 +17,7 @@
 #include "executor/circuit_breaker.hpp"
 #include "executor/circuit_breaker_registry.hpp"
 #include "db/iconnection_pool.hpp"
+#include "db/pooled_connection.hpp"
 #include "parser/parse_cache.hpp"
 #include "policy/policy_loader.hpp"
 #include "security/brute_force_protector.hpp"
@@ -56,6 +57,7 @@
 
 #include <format>
 #include <string_view>
+#include <openssl/crypto.h>
 
 namespace sqlproxy {
 
@@ -139,13 +141,62 @@ std::atomic<uint64_t> s_ip_blocks{0};
 std::atomic<uint64_t> s_auth_rejects{0};
 std::atomic<uint64_t> s_brute_force_blocks{0};
 
+/// Constant-time string comparison to prevent timing attacks on secret tokens.
+bool constant_time_equals(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) {
+        // Still do a dummy comparison to avoid leaking length via timing.
+        // Compare against b itself so the work is proportional to b.size().
+        volatile unsigned char dummy = 0;
+        for (size_t i = 0; i < b.size(); ++i) dummy |= b[i];
+        (void)dummy;
+        return false;
+    }
+    return CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
+}
+
+/// Check if remote_addr is a trusted proxy, meaning we can trust X-Forwarded-For.
+/// Supports exact IP match and simple private-range prefix checks.
+bool is_trusted_proxy(const std::string& remote_addr,
+                      const std::vector<std::string>& trusted_proxies) {
+    if (trusted_proxies.empty()) return false;
+    for (const auto& proxy : trusted_proxies) {
+        if (proxy == remote_addr) return true;
+    }
+    return false;
+}
+
+/// Extract the real client IP, only trusting X-Forwarded-For if the direct
+/// connection is from a known trusted proxy.
+std::string extract_client_ip(const httplib::Request& req,
+                              const std::vector<std::string>& trusted_proxies) {
+    const std::string& remote = req.remote_addr;
+
+    if (!is_trusted_proxy(remote, trusted_proxies)) {
+        // Direct connection is not from a trusted proxy — ignore XFF entirely
+        return remote;
+    }
+
+    const std::string xff = req.get_header_value("X-Forwarded-For");
+    if (xff.empty()) return remote;
+
+    // Take the first (leftmost) IP from X-Forwarded-For
+    if (const auto comma = xff.find(','); comma != std::string::npos) {
+        auto ip = xff.substr(0, comma);
+        // Trim whitespace
+        while (!ip.empty() && ip.back() == ' ') ip.pop_back();
+        while (!ip.empty() && ip.front() == ' ') ip.erase(ip.begin());
+        return ip.empty() ? remote : ip;
+    }
+    return xff;
+}
+
 bool require_admin(std::string_view admin_token,
                    const httplib::Request& req, httplib::Response& res) {
     if (admin_token.empty()) return true;
     const auto auth = req.get_header_value(http::kAuthorizationHeader);
     if (auth.size() <= http::kBearerPrefix.size() ||
         std::string_view(auth).substr(0, http::kBearerPrefix.size()) != http::kBearerPrefix ||
-        std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token) {
+        !constant_time_equals(std::string_view(auth).substr(http::kBearerPrefix.size()), admin_token)) {
         res.status = httplib::StatusCode::Unauthorized_401;
         res.set_content(R"({"success":false,"error":"Unauthorized"})", http::kJsonContentType);
         return false;
@@ -255,6 +306,7 @@ HttpServer::HttpServer(
       port_(port),
       admin_token_(std::move(admin_token)),
       tls_config_(std::move(tls_config)),
+      trusted_proxies_(),
       routes_(std::move(routes)),
       features_(features),
       thread_pool_size_(thread_pool_size),
@@ -693,12 +745,8 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
             return;
         }
 
-        // Extract source IP
-        std::string source_ip = req.get_header_value("X-Forwarded-For");
-        if (source_ip.empty()) source_ip = req.remote_addr;
-        if (const auto comma = source_ip.find(','); comma != std::string::npos) {
-            source_ip = source_ip.substr(0, comma);
-        }
+        // Extract source IP (only trust X-Forwarded-For from configured trusted proxies)
+        std::string source_ip = extract_client_ip(req, trusted_proxies_);
 
         // Authentication: Bearer token first, fallback to JSON body "user" field
         std::optional<UserInfo> user_info;
@@ -806,8 +854,7 @@ void HttpServer::handle_query(const httplib::Request& req, httplib::Response& re
         proxy_req.sql = sql;
         proxy_req.database = database;
         proxy_req.user_attributes = user_info->attributes;
-        proxy_req.source_ip = req.get_header_value("X-Forwarded-For");
-        if (proxy_req.source_ip.empty()) proxy_req.source_ip = req.remote_addr;
+        proxy_req.source_ip = extract_client_ip(req, trusted_proxies_);
         proxy_req.traceparent = req.get_header_value("traceparent");
         proxy_req.tracestate = req.get_header_value("tracestate");
 
@@ -972,7 +1019,25 @@ void HttpServer::handle_health(const httplib::Request& req, httplib::Response& r
         const auto ps = pool->get_stats();
         const bool pool_ok = (ps.idle_connections > 0 || ps.active_connections < ps.total_connections);
         if (!pool_ok) all_ok = false;
-        checks += std::format(R"(,"connection_pool":"{}")", pool_ok ? "ok" : "exhausted");
+
+        // Deep health: actually probe the database with SELECT 1
+        bool db_reachable = false;
+        if (level == "deep" || level == "readiness") {
+            try {
+                auto conn = pool->acquire(std::chrono::milliseconds{2000});
+                if (conn && conn->is_valid()) {
+                    db_reachable = conn->get()->is_healthy("SELECT 1");
+                }
+            } catch (...) {
+                db_reachable = false;
+            }
+            if (!db_reachable) all_ok = false;
+            checks += std::format(R"(,"connection_pool":"{}","database":"{}")",
+                pool_ok ? "ok" : "exhausted",
+                db_reachable ? "ok" : "unreachable");
+        } else {
+            checks += std::format(R"(,"connection_pool":"{}")", pool_ok ? "ok" : "exhausted");
+        }
     } else {
         checks += R"(,"connection_pool":"ok")";
     }
@@ -2474,7 +2539,7 @@ void HttpServer::handle_catalog_tables(const httplib::Request& req, httplib::Res
     const auto auth = req.get_header_value(http::kAuthorizationHeader);
     if (!admin_token_.empty()) {
         if (auth.size() <= http::kBearerPrefix.size() ||
-            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            !constant_time_equals(std::string_view(auth).substr(http::kBearerPrefix.size()), admin_token_)) {
             res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
@@ -2507,7 +2572,7 @@ void HttpServer::handle_catalog_columns(const httplib::Request& req, httplib::Re
     const auto auth = req.get_header_value(http::kAuthorizationHeader);
     if (!admin_token_.empty()) {
         if (auth.size() <= http::kBearerPrefix.size() ||
-            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            !constant_time_equals(std::string_view(auth).substr(http::kBearerPrefix.size()), admin_token_)) {
             res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
@@ -2556,7 +2621,7 @@ void HttpServer::handle_catalog_search(const httplib::Request& req, httplib::Res
     const auto auth = req.get_header_value(http::kAuthorizationHeader);
     if (!admin_token_.empty()) {
         if (auth.size() <= http::kBearerPrefix.size() ||
-            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            !constant_time_equals(std::string_view(auth).substr(http::kBearerPrefix.size()), admin_token_)) {
             res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
@@ -2603,7 +2668,7 @@ void HttpServer::handle_catalog_stats(const httplib::Request& req, httplib::Resp
     const auto auth = req.get_header_value(http::kAuthorizationHeader);
     if (!admin_token_.empty()) {
         if (auth.size() <= http::kBearerPrefix.size() ||
-            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            !constant_time_equals(std::string_view(auth).substr(http::kBearerPrefix.size()), admin_token_)) {
             res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
@@ -2627,7 +2692,7 @@ void HttpServer::handle_policy_simulate(const httplib::Request& req, httplib::Re
     const auto auth = req.get_header_value(http::kAuthorizationHeader);
     if (!admin_token_.empty()) {
         if (auth.size() <= http::kBearerPrefix.size() ||
-            std::string_view(auth).substr(http::kBearerPrefix.size()) != admin_token_) {
+            !constant_time_equals(std::string_view(auth).substr(http::kBearerPrefix.size()), admin_token_)) {
             res.status = httplib::StatusCode::Unauthorized_401;
             res.set_content(R"({"error":"Unauthorized"})", http::kJsonContentType);
             return;
@@ -2784,7 +2849,11 @@ void HttpServer::handle_cost_top_queries(const httplib::Request& req, httplib::R
     size_t limit = 20;
     auto limit_param = req.get_param_value("limit");
     if (!limit_param.empty()) {
-        try { limit = std::stoul(limit_param); } catch (...) {}
+        try { limit = std::stoul(limit_param); } catch (...) {
+            res.status = httplib::StatusCode::BadRequest_400;
+            res.set_content(R"({"error":"Invalid 'limit' parameter: must be a positive integer"})", http::kJsonContentType);
+            return;
+        }
     }
 
     auto queries = cost_tracker_->get_top_queries(limit);
@@ -2866,9 +2935,9 @@ void HttpServer::handle_access_request_submit(const httplib::Request& req, httpl
         if (user_info) user = user_info->name;
     }
     if (user.empty()) {
-        // Try admin token as user "admin"
+        // Try admin token as user "admin" (constant-time comparison)
         auto token = std::string_view(auth).substr(http::kBearerPrefix.size());
-        if (token == admin_token_) user = "admin";
+        if (constant_time_equals(token, admin_token_)) user = "admin";
     }
     if (user.empty()) {
         res.status = httplib::StatusCode::Unauthorized_401;
@@ -2891,7 +2960,11 @@ void HttpServer::handle_access_request_submit(const httplib::Request& req, httpl
     uint32_t duration = 0;
     auto dur_str = parse_json_number(req.body, "duration_hours");
     if (!dur_str.empty()) {
-        try { duration = static_cast<uint32_t>(std::stoul(std::string(dur_str))); } catch (...) {}
+        try { duration = static_cast<uint32_t>(std::stoul(std::string(dur_str))); } catch (...) {
+            res.status = httplib::StatusCode::BadRequest_400;
+            res.set_content(R"({"success":false,"error":"Invalid 'duration_hours': must be a positive integer"})", http::kJsonContentType);
+            return;
+        }
     }
 
     auto columns = parse_json_string_array(req.body, "columns");

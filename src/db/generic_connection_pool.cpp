@@ -55,6 +55,13 @@ std::unique_ptr<PooledConnection> GenericConnectionPool::acquire(
         return nullptr;
     }
 
+    // Re-check shutdown after acquiring semaphore (TOCTOU: shutdown may have
+    // been set between the initial check and semaphore acquisition)
+    if (shutdown_.load(std::memory_order_acquire)) {
+        semaphore_.release();
+        return nullptr;
+    }
+
     total_acquires_.fetch_add(1, std::memory_order_relaxed);
 
     std::unique_ptr<IDbConnection> conn;
@@ -173,7 +180,7 @@ std::unique_ptr<PooledConnection> GenericConnectionPool::acquire(
 }
 
 PoolStats GenericConnectionPool::get_stats() const {
-    std::lock_guard lock(mutex_);
+    std::shared_lock lock(mutex_);  // Read-only: shared lock avoids blocking acquire/return
 
     PoolStats stats;
     stats.total_connections = total_connections_.load(std::memory_order_relaxed);

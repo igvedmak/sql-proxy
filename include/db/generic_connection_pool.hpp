@@ -9,6 +9,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <semaphore>
 #include <string>
 #include <unordered_map>
@@ -75,7 +76,7 @@ private:
 
     // Connection storage
     std::deque<std::unique_ptr<IDbConnection>> idle_connections_;
-    mutable std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
 
     // Semaphore for bounded pool (C++20)
     std::counting_semaphore<> semaphore_;

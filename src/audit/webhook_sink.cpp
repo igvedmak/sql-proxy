@@ -100,8 +100,10 @@ void WebhookSink::send_batch() {
             if (res && res->status >= httplib::StatusCode::OK_200 && res->status < httplib::StatusCode::MultipleChoices_300) {
                 success = true;
             }
+        } catch (const std::exception& e) {
+            utils::log::error(std::format("Audit webhook attempt {} failed: {}", attempt + 1, e.what()));
         } catch (...) {
-            // Swallow exceptions — webhook failures must not block audit
+            utils::log::error(std::format("Audit webhook attempt {} failed: unknown error", attempt + 1));
         }
     }
 

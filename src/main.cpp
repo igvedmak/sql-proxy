@@ -956,6 +956,7 @@ int main(int argc, char* argv[]) {
         }
         g_shutdown = std::make_shared<ShutdownCoordinator>(shutdown_cfg);
         g_server->set_shutdown_coordinator(g_shutdown);
+        g_server->set_trusted_proxies(config_result.config.server.trusted_proxies);
 
         // Tier F: Schema drift detector
         if (g_schema_drift_detector) {
