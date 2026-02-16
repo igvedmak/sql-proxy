@@ -110,6 +110,8 @@ public:
 
     [[nodiscard]] Stats get_stats() const;
 
+    [[nodiscard]] std::shared_ptr<IRateLimiter> get_inner() const { return local_; }
+
 private:
     void sync_loop();
 

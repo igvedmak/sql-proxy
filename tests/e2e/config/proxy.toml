@@ -8,6 +8,7 @@ threads = 4
 request_timeout_ms = 30000
 max_sql_length = 102400
 admin_token = "e2e-admin-token"
+trusted_proxies = ["172.0.0.0/8", "127.0.0.1"]
 
 [logging]
 level = "info"
@@ -456,12 +457,12 @@ injection_detection = true
 anomaly_detection = true
 lineage_tracking = true
 
-# Brute force protection (low thresholds for fast testing)
-brute_force_enabled = true
-brute_force_max_attempts = 3
-brute_force_window_seconds = 60
-brute_force_lockout_seconds = 2
-brute_force_max_lockout_seconds = 10
+[security.brute_force]
+enabled = true
+max_attempts = 20
+window_seconds = 60
+lockout_seconds = 2
+max_lockout_seconds = 10
 
 # ============================================================================
 # Encryption
@@ -654,3 +655,33 @@ max_entries = 100
 num_shards = 4
 ttl_seconds = 30
 max_result_size_bytes = 1048576
+
+# ============================================================================
+# Query Cost Estimation — ENABLED for E2E
+# ============================================================================
+
+[query_cost]
+enabled = true
+max_cost = 100000.0
+max_estimated_rows = 1000000
+log_estimates = false
+
+# ============================================================================
+# Schema Drift Detection — ENABLED for E2E
+# ============================================================================
+
+[schema_drift]
+enabled = true
+check_interval_seconds = 60
+database = "testdb"
+schema_name = "public"
+
+# ============================================================================
+# Adaptive Rate Limiting — ENABLED for E2E
+# ============================================================================
+
+[adaptive_rate_limiting]
+enabled = true
+adjustment_interval_seconds = 10
+latency_target_ms = 50
+throttle_threshold_ms = 200

@@ -195,6 +195,29 @@ ClassifierRegistry::ClassifierRegistry() {
     column_patterns_["cc_number"] = ClassificationType::PII_CREDIT_CARD;
     column_patterns_["creditcard"] = ClassificationType::PII_CREDIT_CARD;
 
+    column_patterns_["address"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["street"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["street_address"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["home_address"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["mailing_address"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["city"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["zip"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["zip_code"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["zipcode"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["postal_code"] = ClassificationType::PII_ADDRESS;
+    column_patterns_["postcode"] = ClassificationType::PII_ADDRESS;
+
+    column_patterns_["passport"] = ClassificationType::PII_PASSPORT;
+    column_patterns_["passport_number"] = ClassificationType::PII_PASSPORT;
+    column_patterns_["passport_no"] = ClassificationType::PII_PASSPORT;
+    column_patterns_["passport_id"] = ClassificationType::PII_PASSPORT;
+
+    column_patterns_["ip_address"] = ClassificationType::PII_IP_ADDRESS;
+    column_patterns_["ip_addr"] = ClassificationType::PII_IP_ADDRESS;
+    column_patterns_["client_ip"] = ClassificationType::PII_IP_ADDRESS;
+    column_patterns_["source_ip"] = ClassificationType::PII_IP_ADDRESS;
+    column_patterns_["remote_addr"] = ClassificationType::PII_IP_ADDRESS;
+
     column_patterns_["salary"] = ClassificationType::SENSITIVE_SALARY;
     column_patterns_["compensation"] = ClassificationType::SENSITIVE_SALARY;
     column_patterns_["pay"] = ClassificationType::SENSITIVE_SALARY;

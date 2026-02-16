@@ -55,6 +55,7 @@
 #include "../third_party/cpp-httplib/httplib.h"
 #pragma GCC diagnostic pop
 
+#include <chrono>
 #include <format>
 #include <string_view>
 #include <openssl/crypto.h>
@@ -146,25 +147,67 @@ std::atomic<uint64_t> s_ip_rate_rejects{0};
 // consuming CPU on JSON parsing and auth lookups.
 constexpr uint32_t kIpRatePerSecond = 200;
 constexpr uint32_t kIpBurstCapacity = 400;
+constexpr size_t kIpBucketHardCap = 50000;     // Max unique IPs tracked
+constexpr uint64_t kIpBucketTtlSeconds = 300;  // 5 min TTL for idle buckets
 std::shared_mutex s_ip_rate_mutex;
-std::unordered_map<std::string, std::shared_ptr<TokenBucket>> s_ip_rate_buckets;
+
+struct IpBucketEntry {
+    std::shared_ptr<TokenBucket> bucket;
+    uint64_t last_access_epoch{0};  // Protected by s_ip_rate_mutex (write) or relaxed read under shared_lock
+};
+std::unordered_map<std::string, IpBucketEntry> s_ip_rate_buckets;
+std::atomic<uint64_t> s_ip_eviction_counter{0};
+
+// Evict expired buckets (called under unique_lock)
+void evict_stale_ip_buckets() {
+    const auto now = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count() /
+        std::chrono::steady_clock::period::den);
+
+    auto it = s_ip_rate_buckets.begin();
+    while (it != s_ip_rate_buckets.end()) {
+        const auto age = now - it->second.last_access_epoch;
+        if (age > kIpBucketTtlSeconds) {
+            it = s_ip_rate_buckets.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
 
 bool check_ip_rate_limit(const std::string& ip) {
+    const auto now = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count() /
+        std::chrono::steady_clock::period::den);
+
     // Fast path: read lock
     {
         std::shared_lock lock(s_ip_rate_mutex);
         auto it = s_ip_rate_buckets.find(ip);
         if (it != s_ip_rate_buckets.end()) {
-            return it->second->try_acquire();
+            it->second.last_access_epoch = now;
+            return it->second.bucket->try_acquire();
         }
     }
     // Slow path: write lock + create bucket
     std::unique_lock lock(s_ip_rate_mutex);
-    auto [it, inserted] = s_ip_rate_buckets.try_emplace(ip, nullptr);
-    if (inserted) {
-        it->second = std::make_shared<TokenBucket>(kIpRatePerSecond, kIpBurstCapacity);
+
+    // Evict stale entries if over hard cap
+    if (s_ip_rate_buckets.size() >= kIpBucketHardCap) {
+        evict_stale_ip_buckets();
+        s_ip_eviction_counter.fetch_add(1, std::memory_order_relaxed);
+        // If still over cap after eviction, reject (defensive)
+        if (s_ip_rate_buckets.size() >= kIpBucketHardCap) {
+            return false;
+        }
     }
-    return it->second->try_acquire();
+
+    auto [it, inserted] = s_ip_rate_buckets.try_emplace(ip, IpBucketEntry{});
+    if (inserted) {
+        it->second.bucket = std::make_shared<TokenBucket>(kIpRatePerSecond, kIpBurstCapacity);
+    }
+    it->second.last_access_epoch = now;
+    return it->second.bucket->try_acquire();
 }
 
 /// Constant-time string comparison to prevent timing attacks on secret tokens.
@@ -180,21 +223,33 @@ bool constant_time_equals(std::string_view a, std::string_view b) {
     return CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
 }
 
+/// Strip IPv6-mapped IPv4 prefix (::ffff:) if present.
+/// cpp-httplib may return "::ffff:172.18.0.4" as remote_addr in Docker.
+std::string_view strip_ipv6_mapped(std::string_view addr) {
+    constexpr std::string_view prefix = "::ffff:";
+    if (addr.size() > prefix.size() && addr.substr(0, prefix.size()) == prefix) {
+        return addr.substr(prefix.size());
+    }
+    return addr;
+}
+
 /// Check if remote_addr is a trusted proxy, meaning we can trust X-Forwarded-For.
 /// Supports exact IP match and CIDR ranges (e.g. "172.0.0.0/8").
 bool is_trusted_proxy(const std::string& remote_addr,
                       const std::vector<std::string>& trusted_proxies) {
     if (trusted_proxies.empty()) return false;
-    return IpAllowlist::is_allowed(remote_addr, trusted_proxies);
+    const auto clean_ip = strip_ipv6_mapped(remote_addr);
+    return IpAllowlist::is_allowed(clean_ip, trusted_proxies);
 }
 
 /// Extract the real client IP, only trusting X-Forwarded-For if the direct
 /// connection is from a known trusted proxy.
 std::string extract_client_ip(const httplib::Request& req,
                               const std::vector<std::string>& trusted_proxies) {
-    const std::string& remote = req.remote_addr;
+    // Strip ::ffff: prefix from remote_addr (IPv6-mapped IPv4 in Docker)
+    const std::string remote{strip_ipv6_mapped(req.remote_addr)};
 
-    if (!is_trusted_proxy(remote, trusted_proxies)) {
+    if (!is_trusted_proxy(req.remote_addr, trusted_proxies)) {
         // Direct connection is not from a trusted proxy — ignore XFF entirely
         return remote;
     }
@@ -1087,7 +1142,12 @@ void HttpServer::handle_health(const httplib::Request& req, httplib::Response& r
 
     if (level == "readiness") {
         const auto rl = pipeline_->get_rate_limiter();
-        const auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(rl.get());
+        IRateLimiter* rl_raw = rl.get();
+        if (auto* drl = dynamic_cast<DistributedRateLimiter*>(rl_raw))
+            rl_raw = drl->get_inner().get();
+        if (auto* wrl = dynamic_cast<WaitableRateLimiter*>(rl_raw))
+            rl_raw = wrl->get_inner().get();
+        const auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(rl_raw);
         if (hierarchical_rl) {
             const auto rs = hierarchical_rl->get_stats();
             const uint64_t total_rejects = rs.global_rejects + rs.user_rejects +
@@ -1130,7 +1190,13 @@ std::string HttpServer::build_metrics_output() {
         allowed, ps.requests_blocked);
 
     const auto rate_limiter = pipeline_->get_rate_limiter();
-    const auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(rate_limiter.get());
+    // Unwrap decorator chain (DistributedRateLimiter -> WaitableRateLimiter -> HierarchicalRateLimiter)
+    IRateLimiter* raw_rl = rate_limiter.get();
+    if (auto* drl = dynamic_cast<DistributedRateLimiter*>(raw_rl))
+        raw_rl = drl->get_inner().get();
+    if (auto* wrl = dynamic_cast<WaitableRateLimiter*>(raw_rl))
+        raw_rl = wrl->get_inner().get();
+    const auto* hierarchical_rl = dynamic_cast<HierarchicalRateLimiter*>(raw_rl);
     if (hierarchical_rl) {
         const auto rl_stats = hierarchical_rl->get_stats();
         output += std::format(
@@ -1148,7 +1214,11 @@ std::string HttpServer::build_metrics_output() {
             rl_stats.total_checks);
     }
 
-    const auto* waitable_rl = dynamic_cast<WaitableRateLimiter*>(rate_limiter.get());
+    // Unwrap to find WaitableRateLimiter (may be under DistributedRateLimiter)
+    IRateLimiter* waitable_search = rate_limiter.get();
+    if (auto* drl2 = dynamic_cast<DistributedRateLimiter*>(waitable_search))
+        waitable_search = drl2->get_inner().get();
+    const auto* waitable_rl = dynamic_cast<WaitableRateLimiter*>(waitable_search);
     if (waitable_rl) {
         output += std::format(
             "# HELP sql_proxy_queue_depth Current requests waiting in queue\n"

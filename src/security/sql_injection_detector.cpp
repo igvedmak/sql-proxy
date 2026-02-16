@@ -99,6 +99,102 @@ std::string strip_block_comments(std::string_view sql) {
     return result;
 }
 
+// Decode hex-encoded strings: 0x53454C454354 → SELECT
+// Returns empty string if input is not a valid hex string
+std::string decode_hex_string(std::string_view hex) {
+    if (hex.size() < 4 || hex[0] != '0' || (hex[1] != 'x' && hex[1] != 'X')) return {};
+    const auto digits = hex.substr(2);
+    if (digits.size() % 2 != 0) return {};
+
+    std::string result;
+    result.reserve(digits.size() / 2);
+    for (size_t i = 0; i < digits.size(); i += 2) {
+        auto nibble = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+            if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+            return -1;
+        };
+        const int hi = nibble(digits[i]);
+        const int lo = nibble(digits[i + 1]);
+        if (hi < 0 || lo < 0) return {};
+        const auto ch = static_cast<char>((hi << 4) | lo);
+        if (ch < 0x20 || ch > 0x7E) return {};  // Only printable ASCII
+        result += ch;
+    }
+    return result;
+}
+
+// Replace all 0xHEX tokens in SQL with their decoded ASCII equivalents
+std::string decode_hex_tokens(std::string_view sql) {
+    std::string result;
+    result.reserve(sql.size());
+    bool in_single = false;
+    bool in_double = false;
+
+    for (size_t i = 0; i < sql.size(); ++i) {
+        if (sql[i] == '\'' && !in_double) { in_single = !in_single; result += sql[i]; continue; }
+        if (sql[i] == '"' && !in_single) { in_double = !in_double; result += sql[i]; continue; }
+        if (in_single || in_double) { result += sql[i]; continue; }
+
+        // Look for 0x prefix followed by hex digits
+        if (sql[i] == '0' && i + 3 < sql.size() && (sql[i + 1] == 'x' || sql[i + 1] == 'X')) {
+            size_t end = i + 2;
+            while (end < sql.size()) {
+                const char c = sql[end];
+                if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))
+                    ++end;
+                else
+                    break;
+            }
+            if (end > i + 2 && (end - i - 2) % 2 == 0 && (end - i - 2) >= 6) {
+                // At least 3 bytes (6 hex chars) — likely a string, not a number
+                const auto decoded = decode_hex_string(sql.substr(i, end - i));
+                if (!decoded.empty()) {
+                    result += decoded;
+                    i = end - 1;
+                    continue;
+                }
+            }
+        }
+        result += sql[i];
+    }
+    return result;
+}
+
+// Normalize Unicode fullwidth characters (U+FF01..U+FF5E) to ASCII (0x21..0x7E)
+// e.g., Ｓ (U+FF33) → S, ＊ (U+FF0A) → *
+std::string normalize_fullwidth(std::string_view sql) {
+    std::string result;
+    result.reserve(sql.size());
+    bool changed = false;
+
+    for (size_t i = 0; i < sql.size(); ++i) {
+        // UTF-8 fullwidth chars are 3 bytes: 0xEF 0xBC 0x81..0xEF 0xBD 0x9E
+        if (i + 2 < sql.size() &&
+            static_cast<unsigned char>(sql[i]) == 0xEF) {
+            const auto b1 = static_cast<unsigned char>(sql[i + 1]);
+            const auto b2 = static_cast<unsigned char>(sql[i + 2]);
+            // U+FF01..U+FF3F: 0xEF 0xBC 0x81..0xBF (! through _)
+            if (b1 == 0xBC && b2 >= 0x81 && b2 <= 0xBF) {
+                result += static_cast<char>(b2 - 0x60);  // 0x81→0x21('!'), 0xBF→0x5F('_')
+                i += 2;
+                changed = true;
+                continue;
+            }
+            // U+FF40..U+FF5E: 0xEF 0xBD 0x80..0x9E (` through ~)
+            if (b1 == 0xBD && b2 >= 0x80 && b2 <= 0x9E) {
+                result += static_cast<char>(b2 - 0x20);  // 0x80→0x60('`'), 0x9E→0x7E('~')
+                i += 2;
+                changed = true;
+                continue;
+            }
+        }
+        result += sql[i];
+    }
+    return changed ? result : std::string{sql};
+}
+
 } // anonymous namespace
 
 SqlInjectionDetector::SqlInjectionDetector(const Config& config)
@@ -142,6 +238,12 @@ SqlInjectionDetector::DetectionResult SqlInjectionDetector::analyze(
     check_stacked_queries(raw_sql, result);
     check_time_based_blind(normalized_sql, result);
     check_error_based(normalized_sql, result);
+
+    // Hex encoding detection: 0x53454C454354 → SELECT
+    check_hex_encoding(raw_sql, parsed, result);
+
+    // Unicode fullwidth normalization: ＳＥＬＥＣＴ → SELECT
+    check_unicode_bypass(raw_sql, parsed, result);
 
     // Encoding bypass detection: decode and re-check
     if (config_.encoding_detection_enabled) {
@@ -394,6 +496,54 @@ void SqlInjectionDetector::check_error_based(std::string_view sql,
             }
         }
     }
+}
+
+// Shared keyword list for encoding bypass checks
+static constexpr const char* kDangerousKeywords[] = {
+    "union select", "union all select",
+    "drop table", "drop database",
+    "insert into", "delete from",
+    "alter table", "truncate table",
+    "select ", "exec ",
+};
+
+void SqlInjectionDetector::check_hex_encoding(std::string_view raw_sql,
+                                                const ParsedQuery& parsed,
+                                                DetectionResult& result) const {
+    const std::string decoded = decode_hex_tokens(raw_sql);
+    if (decoded.size() == raw_sql.size() && decoded == raw_sql) return;
+
+    for (const auto& kw : kDangerousKeywords) {
+        if (find_keyword(decoded, kw) != std::string::npos &&
+            find_keyword(raw_sql, kw) == std::string::npos) {
+            result.patterns_matched.push_back("HEX_ENCODING_BYPASS");
+            elevate_threat(result, ThreatLevel::CRITICAL);
+            return;
+        }
+    }
+
+    check_tautologies(decoded, result);
+    check_union_injection(decoded, parsed, result);
+    check_stacked_queries(decoded, result);
+}
+
+void SqlInjectionDetector::check_unicode_bypass(std::string_view raw_sql,
+                                                  const ParsedQuery& parsed,
+                                                  DetectionResult& result) const {
+    const std::string normalized = normalize_fullwidth(raw_sql);
+    if (normalized == raw_sql) return;
+
+    for (const auto& kw : kDangerousKeywords) {
+        if (find_keyword(normalized, kw) != std::string::npos) {
+            result.patterns_matched.push_back("UNICODE_FULLWIDTH_BYPASS");
+            elevate_threat(result, ThreatLevel::CRITICAL);
+            return;
+        }
+    }
+
+    check_tautologies(normalized, result);
+    check_union_injection(normalized, parsed, result);
+    check_stacked_queries(normalized, result);
 }
 
 std::string SqlInjectionDetector::decode_encodings(std::string_view sql) const {

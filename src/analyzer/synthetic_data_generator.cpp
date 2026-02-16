@@ -56,6 +56,12 @@ std::string SyntheticDataGenerator::generate_value(
             return std::format("000-00-{:04d}", static_cast<int>((idx + 1) % 10000));
         case ClassificationType::PII_CREDIT_CARD:
             return std::format("4111111111{:06d}", static_cast<int>((idx) % 1000000));
+        case ClassificationType::PII_ADDRESS:
+            return std::format("{} Maple St, Springfield, IL 62704", idx + 100);
+        case ClassificationType::PII_PASSPORT:
+            return std::format("P{:08d}", static_cast<int>((idx + 1) % 100000000));
+        case ClassificationType::PII_IP_ADDRESS:
+            return std::format("192.168.{}.{}", static_cast<int>((idx / 256) % 256), static_cast<int>(idx % 256));
         case ClassificationType::SENSITIVE_SALARY:
             return std::to_string(30000 + ((idx * 1000) % 170000));
         case ClassificationType::SENSITIVE_PASSWORD:

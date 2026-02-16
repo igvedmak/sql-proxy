@@ -49,6 +49,8 @@ public:
     [[nodiscard]] uint64_t queue_timeouts() const { return total_timeouts_.load(std::memory_order_relaxed); }
     [[nodiscard]] uint32_t current_queue_depth() const { return current_queue_depth_.load(std::memory_order_relaxed); }
 
+    [[nodiscard]] std::shared_ptr<IRateLimiter> get_inner() const { return inner_; }
+
 private:
     std::shared_ptr<IRateLimiter> inner_;
     Config config_;

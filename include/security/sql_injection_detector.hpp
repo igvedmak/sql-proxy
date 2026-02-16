@@ -44,6 +44,10 @@ private:
     void check_time_based_blind(std::string_view sql, DetectionResult& result) const;
     void check_error_based(std::string_view sql, DetectionResult& result) const;
     void check_comment_keyword_split(std::string_view raw_sql, DetectionResult& result) const;
+    void check_hex_encoding(std::string_view raw_sql, const ParsedQuery& parsed,
+                            DetectionResult& result) const;
+    void check_unicode_bypass(std::string_view raw_sql, const ParsedQuery& parsed,
+                              DetectionResult& result) const;
     std::string decode_encodings(std::string_view sql) const;
     void check_encoding_bypass(std::string_view decoded,
         const ParsedQuery& parsed, DetectionResult& result) const;

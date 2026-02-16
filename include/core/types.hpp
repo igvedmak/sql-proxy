@@ -121,6 +121,9 @@ enum class ClassificationType {
     PII_PHONE,
     PII_SSN,
     PII_CREDIT_CARD,
+    PII_ADDRESS,
+    PII_PASSPORT,
+    PII_IP_ADDRESS,
     SENSITIVE_SALARY,
     SENSITIVE_PASSWORD,
     CUSTOM
@@ -352,6 +355,9 @@ struct ColumnClassification {
             case ClassificationType::PII_PHONE: return "PII.Phone";
             case ClassificationType::PII_SSN: return "PII.SSN";
             case ClassificationType::PII_CREDIT_CARD: return "PII.CreditCard";
+            case ClassificationType::PII_ADDRESS: return "PII.Address";
+            case ClassificationType::PII_PASSPORT: return "PII.Passport";
+            case ClassificationType::PII_IP_ADDRESS: return "PII.IpAddress";
             case ClassificationType::SENSITIVE_SALARY: return "Sensitive.Salary";
             case ClassificationType::SENSITIVE_PASSWORD: return "Sensitive.Password";
             case ClassificationType::CUSTOM: return custom_label;
@@ -422,6 +428,9 @@ inline const char* classification_type_to_string(ClassificationType t) {
         case ClassificationType::PII_PHONE:         return "PII_PHONE";
         case ClassificationType::PII_SSN:           return "PII_SSN";
         case ClassificationType::PII_CREDIT_CARD:   return "PII_CREDIT_CARD";
+        case ClassificationType::PII_ADDRESS:        return "PII_ADDRESS";
+        case ClassificationType::PII_PASSPORT:       return "PII_PASSPORT";
+        case ClassificationType::PII_IP_ADDRESS:     return "PII_IP_ADDRESS";
         case ClassificationType::SENSITIVE_SALARY:  return "SENSITIVE_SALARY";
         case ClassificationType::SENSITIVE_PASSWORD: return "SENSITIVE_PASSWORD";
         case ClassificationType::CUSTOM:            return "CUSTOM";
@@ -434,6 +443,9 @@ inline ClassificationType classification_type_from_string(std::string_view s) {
     if (s == "PII_PHONE")         return ClassificationType::PII_PHONE;
     if (s == "PII_SSN")           return ClassificationType::PII_SSN;
     if (s == "PII_CREDIT_CARD")   return ClassificationType::PII_CREDIT_CARD;
+    if (s == "PII_ADDRESS")       return ClassificationType::PII_ADDRESS;
+    if (s == "PII_PASSPORT")      return ClassificationType::PII_PASSPORT;
+    if (s == "PII_IP_ADDRESS")    return ClassificationType::PII_IP_ADDRESS;
     if (s == "SENSITIVE_SALARY")  return ClassificationType::SENSITIVE_SALARY;
     if (s == "SENSITIVE_PASSWORD") return ClassificationType::SENSITIVE_PASSWORD;
     if (s == "CUSTOM")            return ClassificationType::CUSTOM;
